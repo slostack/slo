@@ -32,6 +32,7 @@ __all__ = [
 
 TraceEventKind = Literal[
     "run_started",
+    "run_retrying",
     "steering_message",
     "assistant_message",
     "assistant_delta",

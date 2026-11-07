@@ -1,0 +1,301 @@
+
+--- tests/conftest.py ---
+203-        assert path.parent.resolve(strict=True) == tmp_path.resolve(strict=True)
+204-        with path.open(mode="x", encoding="utf-8") as stream:
+205-            stream.write(text)
+206:        path.chmod(0o700 if path == executable else 0o600)
+207-    fake_herdr_guard.register(executable=executable, files=(capture, barrier))
+208-    for name, value in {
+209-        "HERDR_ENV": "1",
+
+--- tests/scheduling/test_runtime_helpers.py ---
+221-        )
+222-        wrapper: Path = bin_dir / "slo"
+223-        wrapper.write_text("#!/bin/sh\n" f"exec '{sys.executable}' -I '{entry}' \"$@\"\n")
+224:        wrapper.chmod(0o755)
+225-        definition: ScheduleDefinitionDAO = _build_definition(
+226-            schedule_id="schedule-wrapper", session_mode="fresh"
+227-        ).model_copy(update={"cwd": str(hostile_root)})
+--
+305-        f"print(json.dumps([key in os.environ for key in {(*removed, *preserved)!r}]))\n",
+306-        encoding="utf-8",
+307-    )
+308:    executable.chmod(0o700)
+309-    identity = executable.stat()
+310-    definition = _build_definition(schedule_id="environment", session_mode="fresh").model_copy(
+311-        update={"cwd": str(root)}
+
+--- tests/scheduling/test_os_integration.py ---
+255-        fake_python.parent.mkdir(parents=True)
+256-        fake_python.write_text("", encoding="utf-8")
+257-        fake_slo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+258:        fake_slo.chmod(0o755)
+259-
+260-        with patch("sys.executable", str(fake_python)):
+261-            resolved: Path = ScheduleExecutableLocator.locate()
+
+--- tests/tui/test_herdr_activation_composed.py ---
+30-    executable = tmp_path / "slo"
+31-    assert executable.resolve().parent == tmp_path.resolve() and not executable.is_symlink()
+32-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+33:    executable.chmod(0o700)
+34-    monkeypatch.setenv(name="PATH", value=str(tmp_path) + os.pathsep + os.environ["PATH"])
+35-    monkeypatch.setenv(name="SLO_OPENAI_API_KEY", value="synthetic-offline-key")
+36-    with patch(
+
+--- tests/tui/test_code_validation.py ---
+23-        assert path.resolve().is_relative_to(tmp_path.resolve())
+24-    target.touch()
+25-    nested.mkdir()
+26:    link.symlink_to(target)
+27-    argument = {
+28-        "absolute": f'"{target}"',
+29-        "parent": '"../space ü.py"',
+--
+46-    """NUL, unknown homes and broken symlinks never submit a launch."""
+47-    broken = tmp_path / "broken.py"
+48-    assert broken.resolve().is_relative_to(tmp_path.resolve())
+49:    broken.symlink_to(tmp_path / "absent.py")
+50-    terminal = RecordingEditorTerminal()
+51-    notice = await EditorLauncher(terminal=terminal, executable_lookup=EditorLookup()).invoke(
+52-        argument=argument,
+--
+86-    for path in (executable, link, target):
+87-        assert path.resolve().is_relative_to(tmp_path.resolve())
+88-    executable.write_text(data="never executed", encoding="utf-8")
+89:    executable.chmod(mode=0o700)
+90:    link.symlink_to(executable.name)
+91-    target.touch()
+92-    monkeypatch.chdir(discovery)
+93-    monkeypatch.setenv(name="PATH", value=path_entry)
+
+--- tests/integration/test_herdr_two_process_restore.py ---
+57-        encoding="utf-8",
+58-    )
+59-    safety.contained(path=shim)
+60:    shim.chmod(0o700)
+61-    owner = OwnedProcessRun(root=tmp_path)
+62-    owner.safety.register_shim(path=shim)
+63-    environment = {
+
+--- tests/integration/herdr_restore_process_entry.py ---
+75-    capture = ROOT / "commands.jsonl"
+76-    capture.write_text("", encoding="utf-8")
+77-    executable.write_text(SAFETY.capture_script(path=capture), encoding="utf-8")
+78:    executable.chmod(0o700)
+79-    shim = ROOT / "slo"
+80-    guard = FakeHerdrSpawnGuard(root=ROOT)
+81-    guard.register(executable=executable, files=(capture, shim))
+
+--- tests/integration/test_herdr_restore_harness_safety.py ---
+13-
+14-@pytest.mark.parametrize(
+15-    "operation",
+16:    ["write_text", "touch", "chmod", "unlink", "replace_source", "replace_destination", "mkdir", "rmdir"],
+17-)
+18-def test_used_mutations_installed_guard(tmp_path: Path, operation: str) -> None:
+19-    """Exercise actual entry/persistence syscalls; a broken guard touches only owned victims."""
+--
+34-    statements = {
+35-        "write_text": "victim.write_text('bad')",
+36-        "touch": "victim.touch()",
+37:        "chmod": "victim.chmod(0o000)",
+38-        "unlink": "victim.unlink()",
+39-        "replace_source": "victim.replace(own)",
+40-        "replace_destination": "own.replace(victim)",
+--
+143-        owner.safety.contained(path=saved)
+144-        shim.rename(saved)
+145-        if case == "symlink":
+146:            shim.symlink_to(saved)
+147-        if case == "substituted":
+148-            owner.safety.contained(path=shim)
+149-            shim.write_text("pass\n")
+150:            shim.chmod(0o700)
+151-    if case == "mode":
+152-        owner.safety.contained(path=shim)
+153:        shim.chmod(0o600)
+154-    if case == "unregistered":
+155-        owner.safety = ProcessSafety(root=tmp_path)
+156-    with patch.object(subprocess, "Popen", side_effect=AssertionError("spawn reached")):
+--
+165-    target = tmp_path / "other"
+166-    safety.contained(path=target)
+167-    target.write_text("pass\n")
+168:    target.chmod(0o700)
+169-    with pytest.raises(PermissionError, match="unexpected shim pathname"):
+170-        safety.register_shim(path=target)
+171-    with pytest.raises(PermissionError, match="unregistered shim PATH"):
+--
+194-        and isinstance(node.func, ast.Attribute)
+195-        and isinstance(node.func.value, ast.Name)
+196-        and node.func.value.id == "shim"
+197:        and node.func.attr in {"write_text", "chmod", "unlink", "rename", "replace"}
+198-    ]
+199-    assert writes == []
+200-
+--
+425-    for path in (dummy, replacement):
+426-        safety.contained(path=path)
+427-        path.write_text(safety.capture_script(path=capture), encoding="utf-8")
+428:        path.chmod(0o700)
+429-    metadata = dummy.stat()
+430-    operations = {
+431-        "popen": "process=subprocess.Popen(args=[str(dummy), 'registered']); assert process.wait()==0",
+--
+478-
+479-    dummy = tmp_path / "dummy"
+480-    dummy.write_text(f"#!{sys.executable}\nprint('BYPASS')\n", encoding="utf-8")
+481:    dummy.chmod(0o700)
+482-    metadata = dummy.stat()
+483-    script = tmp_path / "entry.py"
+484-    repo = Path(__file__).resolve().parents[2]
+--
+529-    if kind == "directory":
+530-        capture.mkdir()
+531-    elif kind == "hardlink":
+532:        os.link(src=victim, dst=capture)
+533-    elif kind == "symlink":
+534:        capture.symlink_to(victim)
+535-    elif kind == "outside":
+536-        capture = victim
+537-    elif kind == "traversal":
+--
+559-        fd = real_open(path=path, flags=flags)
+560-        opened.append(fd)
+561-        if fault == "hardlink":
+562:            os.link(src=capture, dst=saved)
+563-        elif fault == "disappeared":
+564-            capture.unlink()
+565-        elif fault == "replaced":
+566-            capture.rename(saved)
+567-            victim.replace(capture)
+568-        else:
+569:            capture.chmod(0o400)
+570-        return fd
+571-
+572-    with patch.object(os, "open", new=change_after_open):
+--
+801-    for path in (*paths.values(), outside):
+802-        safety.contained(path=path)
+803-        path.write_bytes(b"sentinel")
+804:    paths["executable"].chmod(0o700)
+805-    target = paths[role]
+806-    alternate = root / "alternate"
+807-    safety.contained(path=alternate)
+--
+817-        alternate.mkdir()
+818-        paths[role] = alternate
+819-    elif fault == "symlink":
+820:        alternate.symlink_to(target)
+821-        paths[role] = alternate
+822-    elif fault == "hardlink":
+823:        os.link(src=target, dst=alternate)
+824-    else:
+825-        paths[role] = alternate
+826-    guard = FakeHerdrSpawnGuard(root=root)
+--
+844-    for path in paths.values():
+845-        safety.contained(path=path)
+846-        path.write_bytes(b"sentinel")
+847:        path.chmod(0o700 if path == paths["executable"] else 0o600)
+848-    guard = FakeHerdrSpawnGuard(root=tmp_path)
+849-    guard.register(executable=paths["executable"], files=(paths["capture"], paths["barrier"]))
+850-    guard.require_registered(path=paths["executable"])
+--
+854-        target.rename(saved)
+855-        safety.contained(path=target)
+856-        target.write_bytes(b"replacement")
+857:        target.chmod(0o700)
+858-    elif fault == "mode":
+859:        target.chmod(0o400)
+860-    elif fault == "missing":
+861-        target.rename(saved)
+862-    elif fault == "hardlink":
+863:        os.link(src=target, dst=saved)
+864-    elif fault in {"directory", "symlink"}:
+865-        target.rename(saved)
+866-        safety.contained(path=target)
+867-        if fault == "directory":
+868-            target.mkdir()
+869-        else:
+870:            target.symlink_to(saved)
+871-    real_stat = Path.stat
+872-
+873-    def inspected(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+--
+909-        safety.contained(path=path)
+910-        path.write_bytes(b"sentinel")
+911-    executable, capture, barrier = paths
+912:    executable.chmod(0o700)
+913-    if fault.startswith("root_"):
+914-        if fault == "root_missing":
+915-            with pytest.raises(FileNotFoundError):
+--
+926-            guard.require_registered(path=capture)
+927-        return
+928-    if fault == "mode":
+929:        executable.chmod(0o600)
+930-    real_stat = Path.stat
+931-    failed_path = {"executable_error": executable, "capture_error": capture}.get(fault, barrier)
+932-
+--
+1003-        yield
+1004-
+1005-
+1006:@pytest.mark.parametrize("event", ["open", "os.chmod", "os.truncate"])
+1007-def test_descriptor_mutation_refuses_parent_victim(tmp_path: Path, event: str) -> None:
+1008-    """Admission must refuse an already-open sibling without changing its bytes or mode."""
+1009-    allowed = tmp_path / "child"
+--
+1035-    victim.write_bytes(b"owned")
+1036-    target = tmp_path / "alias"
+1037-    if kind == "symlink":
+1038:        target.symlink_to(victim)
+1039-    elif kind == "hardlink":
+1040:        os.link(src=victim, dst=target)
+1041-    else:
+1042-        target = tmp_path / ".." / tmp_path.name / "victim"
+1043-    with pytest.raises(PermissionError):
+--
+1045-    assert victim.read_bytes() == b"owned"
+1046-
+1047-
+1048:@pytest.mark.parametrize("event", ["os.mkdir", "os.remove", "os.rmdir", "os.chmod", "os.rename", "os.link"])
+1049-def test_dirfd_mutations_refuse_sibling(tmp_path: Path, event: str, monkeypatch: pytest.MonkeyPatch) -> None:
+1050-    """Relative names must use the syscall directory, not the current directory."""
+1051-    allowed = tmp_path / "child"
+--
+1059-            "os.mkdir": ("victim", 0o700, fd),
+1060-            "os.remove": ("victim", fd),
+1061-            "os.rmdir": ("victim", fd),
+1062:            "os.chmod": ("victim", 0o600, fd),
+1063-            "os.rename": ("victim", "destination", fd, fd),
+1064:            "os.link": ("victim", "destination", fd, fd),
+1065-        }[event]
+1066-        with pytest.raises(PermissionError):
+1067-            ProcessSafety(root=allowed).audit(event=event, arguments=arguments)
+--
+1081-        ProcessSafety(root=tmp_path).audit(event=event, arguments=(str(dummy), [], None, {}))
+1082-
+1083-
+1084:@pytest.mark.parametrize("operation", ["write", "ftruncate", "fchmod"])
+1085-def test_fd_syscall_wrapper_denies_before_mutation(tmp_path: Path, operation: str) -> None:
+1086-    """Even a broken wrapper can affect only this newly created sibling victim."""
+1087-    allowed = tmp_path / "child"
+--
+1116-
+1117-
+1118-def test_stdio_permission_does_not_grant_file_mutation(tmp_path: Path) -> None:
+1119:    """Explicit stream identity allows writes only, not chmod/truncate."""
+1120-    allowed = tmp_path / "child"
+1121-    allowed.mkdir()
+1122-    sink = tmp_path / "capture"
+--
+1140-    safety.identity = (metadata.st_dev, metadata.st_ino)
+1141-    safety.audit(event="subprocess.Popen", arguments=(str(dummy), [], None, {}))
+1142-    alias = tmp_path / "alias"
+1143:    os.link(src=dummy, dst=alias)
+1144-    with pytest.raises(PermissionError):
+1145-        safety.audit(event="subprocess.Popen", arguments=(str(dummy), [], None, {}))
+1146-

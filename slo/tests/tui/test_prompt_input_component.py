@@ -245,7 +245,7 @@ async def test_key_precedence_and_single_submit(tmp_path: Path) -> None:
             editor.focus()
             await pilot.press("a")
             await pilot.press("shift+enter")
-            await pilot.press("ctrl+enter")
+            await pilot.press("shift+enter")
             await pilot.press("meta+enter")
             await pilot.pause()
             assert editor.text == "a\n\n\n"

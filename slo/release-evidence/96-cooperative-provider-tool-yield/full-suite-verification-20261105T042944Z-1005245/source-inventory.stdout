@@ -1,0 +1,586 @@
+
+FILE tests/agents/slo_agent/orchestrator/test_launch_isolation.py
+DOC Behavioral coverage of interpreter isolation at every agent launch boundary.
+CASE 94 tests/agents/slo_agent/orchestrator/test_launch_isolation.py::test_agent_isolation_does_not_isolate_project_commands
+CASE 167 tests/agents/slo_agent/orchestrator/test_launch_isolation.py::test_timeout_forwarding_and_pythonpath_filter_are_unchanged
+
+FILE tests/agents/slo_agent/plugins/test_installer.py
+DOC Tests for the managed-plugin installer (75.a.4).
+
+Covers: URL validation, manifest validation, payload copy, pinned revision,
+idempotent same-revision install, different-revision refusal with upgrade
+hint, staged temp dir + atomic move + rollback (M6(b) enumeration), upgrade
+keeps old install on swap failure, uninstall, and the HARD no-execution rule.
+CLASS 118 TestUrlValidation HTTPS github.com/gitlab.com owner/repo only.
+CASE 122 tests/agents/slo_agent/plugins/test_installer.py::TestUrlValidation::test_ssh_url_refused
+CASE 132 tests/agents/slo_agent/plugins/test_installer.py::TestUrlValidation::test_other_host_refused
+CASE 142 tests/agents/slo_agent/plugins/test_installer.py::TestUrlValidation::test_file_path_refused
+CLASS 152 TestManifestValidation Invalid manifests refuse the install with nothing written.
+CASE 156 tests/agents/slo_agent/plugins/test_installer.py::TestManifestValidation::test_extra_manifest_field_refused
+CASE 170 tests/agents/slo_agent/plugins/test_installer.py::TestManifestValidation::test_bad_schema_version_refused
+CASE 183 tests/agents/slo_agent/plugins/test_installer.py::TestManifestValidation::test_payload_escape_refused
+CLASS 196 TestInstallLifecycle Happy path, idempotency, revision rules, rollback, upgrade, uninstall.
+CASE 200 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_install_copies_payload_and_records_pin
+CASE 225 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_install_does_not_copy_undeclared_files
+CASE 246 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_reinstall_same_revision_is_noop
+CASE 268 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_reinstall_different_revision_refused_with_upgrade_hint
+CASE 289 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_different_source_same_id_refused_reporting_both_urls
+CASE 309 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_unconfirmed_new_namespace_refused
+CASE 322 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_mid_install_failure_leaves_no_dir_and_no_record
+CASE 337 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_invalid_manifest_failure_leaves_no_dir_and_no_record
+CASE 354 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_upgrade_moves_pin
+CASE 375 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_upgrade_keeps_old_install_on_fetch_failure
+CASE 404 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_upgrade_restores_old_install_when_registry_write_fails
+CASE 450 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_upgrade_unknown_plugin_refused
+CASE 459 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_install_restores_payload_when_registry_write_fails
+CASE 493 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_uninstall_removes_dir_and_record
+CASE 510 tests/agents/slo_agent/plugins/test_installer.py::TestInstallLifecycle::test_uninstall_unknown_plugin_refused
+CLASS 519 TestBundledPluginInstallation M4: packaged Bash live-output delivery uses managed install machinery.
+CASE 523 tests/agents/slo_agent/plugins/test_installer.py::TestBundledPluginInstallation::test_bundled_bash_plugin_installs_with_package_provenance
+CLASS 537 TestNoExecutionRule HARD rule: the installer never executes source files.
+CASE 541 tests/agents/slo_agent/plugins/test_installer.py::TestNoExecutionRule::test_install_never_executes_source_side_effects
+
+FILE tests/agents/slo_agent/test_prompts.py
+DOC Behavioural tests for ``SystemPromptBuilder``.
+
+Two layers of coverage:
+
+* ``TestSystemPromptBuilder`` keeps the legacy default-body wording checks
+  (role line, always-on guidelines, skills index pointer, knowledge base
+  pointer). These still hold against the no-argument default prompt.
+* ``TestSystemPromptBuilderInvoke`` covers the runtime assembly branches the
+  02.a builder introduced: custom prompt override, append handling, tool
+  snippet rendering, guideline selection, project context wrapping, cwd
+  rendering/normalization, and the ISO date line.
+
+The builder is a pure function: it never touches the network or the
+filesystem (it reads only ``SKILLS_DIR`` / ``SLO_KB_DIR`` wording and computes
+``date.today()``), so every test here is deterministic and isolated.
+CLASS 60 TestSystemPromptBuilder Default-body wording checks against the no-argument prompt.
+CASE 63 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilder::test_invoke_includes_role_statement
+CASE 67 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilder::test_invoke_includes_always_guidelines
+CASE 73 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilder::test_invoke_points_at_skills_index
+CASE 79 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilder::test_skills_index_path_is_absolute
+CASE 85 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilder::test_invoke_advertises_both_coding_and_analysis_skills
+CASE 96 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilder::test_invoke_points_at_knowledge_base
+CLASS 104 TestSystemPromptBuilderInvoke Branch-by-branch behavioral tests for runtime system-prompt assembly.
+CASE 108 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_returns_same_prompt_when_called_without_kwargs_twice
+CASE 113 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_custom_prompt_replaces_default_body_when_supplied
+CASE 131 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_append_prompt_is_ignored_when_blank_or_whitespace
+CASE 137 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_append_prompt_appears_after_body_when_non_empty
+CASE 149 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_renders_registered_tool_snippet_when_tool_is_supplied
+CASE 157 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_skips_tool_without_registered_snippet
+CASE 169 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_bash_only_toolset_emits_bash_exploration_guideline
+CASE 177 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_bash_with_native_explorers_emits_prefer_native_guideline
+CASE 195 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_write_tool_emits_inline_content_guideline
+CASE 202 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_write_guideline_absent_without_write_tool
+CASE 209 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_wraps_project_context_files_in_tags
+CASE 232 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_global_tier_entries_render_before_project_tier
+CASE 252 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_omits_project_context_block_when_no_files
+CASE 257 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_workspace_tier_entry_renders_inside_project_context
+CASE 274 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_renders_cwd_line_when_supplied
+CASE 279 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_omits_cwd_line_when_absent
+CASE 285 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_normalizes_windows_separators_in_cwd_line
+CASE 292 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_renders_current_date_in_iso_format
+CASE 302 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_workspace_folders_block_omitted_when_absent
+CASE 307 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderInvoke::test_workspace_folders_block_renders_named_and_unnamed_entries
+CLASS 327 TestSystemPromptBuilderXmlSkills Covers the XML skills block injected via the new ``skills`` parameter.
+CASE 346 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_available_skills_xml_block_present_when_skills_supplied
+CASE 353 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_each_skill_renders_name_description_location
+CASE 362 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_xml_replaces_skills_block_template_wording
+CASE 369 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_xml_preamble_lines_present
+CASE 377 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_falls_back_to_index_pointer_when_skills_empty
+CASE 384 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_falls_back_to_index_pointer_when_skills_none
+CASE 392 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderXmlSkills::test_xml_special_characters_are_escaped
+CLASS 411 TestSystemPromptBuilderOrchestratorDefault Builder behaviour when ``DEFAULT_ORCHESTRATOR_SYSTEM_PROMPT`` is the custom prompt.
+CASE 414 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderOrchestratorDefault::test_orchestrator_default_prompt_replaces_standard_role_line
+CASE 424 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderOrchestratorDefault::test_orchestrator_default_prompt_retains_cwd_grounding
+CASE 434 tests/agents/slo_agent/test_prompts.py::TestSystemPromptBuilderOrchestratorDefault::test_orchestrator_default_prompt_retains_date_grounding
+CLASS 456 TestSkillsLocationGuidance The prompt names where skills came from and how to find them when that fails.
+CASE 459 tests/agents/slo_agent/test_prompts.py::TestSkillsLocationGuidance::test_index_pointer_names_the_env_var_resolved_path_and_source
+CASE 465 tests/agents/slo_agent/test_prompts.py::TestSkillsLocationGuidance::test_index_pointer_gives_os_independent_recovery_steps
+CASE 479 tests/agents/slo_agent/test_prompts.py::TestSkillsLocationGuidance::test_xml_manifest_names_the_skills_directory_and_override
+CLASS 489 TestKnowledgeBaseLocationGuidance The KB block mirrors the locate-knowledge-base skill and never gates the task.
+CASE 492 tests/agents/slo_agent/test_prompts.py::TestKnowledgeBaseLocationGuidance::test_names_the_resolved_path_and_source
+CASE 497 tests/agents/slo_agent/test_prompts.py::TestKnowledgeBaseLocationGuidance::test_lists_the_lookup_order
+CASE 504 tests/agents/slo_agent/test_prompts.py::TestKnowledgeBaseLocationGuidance::test_names_every_entry_point_and_the_file_path_case
+CASE 510 tests/agents/slo_agent/test_prompts.py::TestKnowledgeBaseLocationGuidance::test_missing_kb_is_non_blocking_and_points_at_the_skill
+
+FILE tests/cli/test_chat_transcript_resources.py
+DOC Build real archives in disposable source and import the extracted CSS resource.
+CASE 14 tests/cli/test_chat_transcript_resources.py::test_archives_contain_exact_component_css_and_extracted_import
+CASE 73 tests/cli/test_chat_transcript_resources.py::test_adapter_import_orders_are_acyclic
+
+FILE tests/cli/test_declared_dependencies.py
+DOC Every third-party import in the shipped code must be a declared dependency.
+
+A ``pipx install`` builds the wheel and installs exactly what
+``[project] dependencies`` names — ``poetry.lock`` is not consulted, and
+neither are the dev groups. Anything imported but not declared therefore
+survives only as long as some *other* dependency keeps pulling it in.
+
+That contract broke in v0.16.x. ``src/cli/app.py`` imported ``click``
+directly, relying on Typer to supply it. Typer 0.20 vendored Click as
+``typer._click`` and dropped the ``click`` dependency, so a clean install
+had no ``click`` and every ``slo`` invocation died with
+``ModuleNotFoundError: No module named 'click'``. Dev machines never saw
+it: the dev-group ``black`` installs ``click``.
+
+This test parses the shipped packages, resolves each third-party import
+to its distribution name, and asserts that name is declared. It is a
+plain AST walk — no build, no network — so it runs in the default suite
+rather than behind the ``e2e`` marker that kept the installer smoke test
+from catching this.
+CLASS 142 TestDeclaredDependencies Hold ``[project] dependencies`` to what the shipped code imports.
+CASE 145 tests/cli/test_declared_dependencies.py::TestDeclaredDependencies::test_every_third_party_import_is_declared
+CASE 169 tests/cli/test_declared_dependencies.py::TestDeclaredDependencies::test_click_is_not_imported_by_shipped_code
+
+FILE tests/cli/test_deploy_install_worker.py
+DOC Subprocess contracts for the installer Worker deployment helper.
+CLASS 66 TestDeployInstallWorker Release-mode validation precedes all network publication behavior.
+CASE 116 tests/cli/test_deploy_install_worker.py::TestDeployInstallWorker::test_release_mode_rejects_non_public_or_mismatched_inputs
+CASE 135 tests/cli/test_deploy_install_worker.py::TestDeployInstallWorker::test_release_mode_accepts_strict_semver_prerelease
+CASE 152 tests/cli/test_deploy_install_worker.py::TestDeployInstallWorker::test_release_mode_constructs_tagged_public_source_url_before_publication
+CASE 172 tests/cli/test_deploy_install_worker.py::TestDeployInstallWorker::test_development_mode_remains_explicitly_non_release
+
+FILE tests/cli/test_generated_launcher_templates.py
+DOC Recognize supported console-script templates without executing their contents.
+CASE 28 tests/cli/test_generated_launcher_templates.py::test_generated_launcher_recognition
+
+FILE tests/cli/test_hosted_installer_smoke.py
+DOC Opt-in end-to-end proof for the published tagged installer artifact.
+CLASS 18 HostedInstallerSmokeConfig Immutable input contract for a disposable hosted-installer product smoke.
+CASE 96 tests/cli/test_hosted_installer_smoke.py::test_direct_pipx_regeneration_recovers_through_packaged_finalizer
+CASE 168 tests/cli/test_hosted_installer_smoke.py::test_hosted_installer_installs_and_runs_the_tagged_product
+CASE 217 tests/cli/test_hosted_installer_smoke.py::test_hosted_smoke_environment_uses_disposable_roots_and_retains_path
+CASE 228 tests/cli/test_hosted_installer_smoke.py::test_direct_pipx_recovery_flow_is_opt_in_and_uses_only_disposable_roots
+CASE 244 tests/cli/test_hosted_installer_smoke.py::test_hosted_smoke_config_rejects_non_release_inputs
+
+FILE tests/cli/test_install.py
+DOC Unit tests for ``install.sh`` — the self-bootstrapping installer.
+
+Each test sources ``install.sh`` in a bash subprocess with a stubbed ``PATH`` so the
+installer's decision points are exercised without mutating the host (no real
+brew / pyenv / pipx / git / network). Fake executables log their invocations to a
+call log the tests assert on. ``install.sh`` only runs ``main`` when executed
+directly, so sourcing it exposes every function for isolated testing.
+CLASS 104 FakeBin A throwaway PATH directory of fake executables that log their invocations.
+
+Tests opt tools in (present) or leave them out (absent) to drive the
+installer's ``command -v`` branches. ``uname`` is special-cased to echo a
+chosen kernel name so OS detection can be exercised on any host.
+CLASS 455 TestOsDetection `slo_os_kind` normalizes `uname -s` to a stable token.
+CASE 458 tests/cli/test_install.py::TestOsDetection::test_macos
+CASE 463 tests/cli/test_install.py::TestOsDetection::test_linux
+CASE 468 tests/cli/test_install.py::TestOsDetection::test_unsupported
+CLASS 474 TestLinuxDistro `slo_linux_distro` normalizes Debian-family Linux with builtins only.
+CASE 477 tests/cli/test_install.py::TestLinuxDistro::test_ubuntu
+CASE 482 tests/cli/test_install.py::TestLinuxDistro::test_debian
+CASE 487 tests/cli/test_install.py::TestLinuxDistro::test_derivative_via_id_like
+CASE 492 tests/cli/test_install.py::TestLinuxDistro::test_fedora_unsupported
+CASE 497 tests/cli/test_install.py::TestLinuxDistro::test_missing_file_unsupported
+CLASS 502 TestSudo `slo_sudo` prefixes apt commands only when escalation is required.
+CASE 505 tests/cli/test_install.py::TestSudo::test_root_no_sudo
+CASE 509 tests/cli/test_install.py::TestSudo::test_nonroot_with_sudo
+CASE 514 tests/cli/test_install.py::TestSudo::test_nonroot_without_sudo
+CLASS 519 TestEnsureBrew `slo_ensure_brew` is macOS-only.
+CASE 522 tests/cli/test_install.py::TestEnsureBrew::test_linux_is_noop
+CASE 528 tests/cli/test_install.py::TestEnsureBrew::test_macos_absent_installs
+CLASS 536 TestEnsurePipx `slo_ensure_pipx` is a no-op when present, OS-aware when absent.
+CASE 539 tests/cli/test_install.py::TestEnsurePipx::test_present_skips_install
+CASE 545 tests/cli/test_install.py::TestEnsurePipx::test_absent_macos_uses_brew
+CASE 551 tests/cli/test_install.py::TestEnsurePipx::test_debian_prefers_apt_pipx
+CASE 558 tests/cli/test_install.py::TestEnsurePipx::test_debian_falls_back_to_pip_when_apt_lacks_pipx
+CASE 577 tests/cli/test_install.py::TestEnsurePipx::test_non_debian_linux_uses_pip
+CLASS 585 TestEnsurePyenv `slo_ensure_pyenv` installs natively for the current OS when absent.
+CASE 588 tests/cli/test_install.py::TestEnsurePyenv::test_present_skips_brew_install
+CASE 594 tests/cli/test_install.py::TestEnsurePyenv::test_absent_installs_via_brew
+CASE 600 tests/cli/test_install.py::TestEnsurePyenv::test_linux_clones_pyenv
+CASE 611 tests/cli/test_install.py::TestEnsurePyenv::test_linux_skips_clone_when_root_exists
+CLASS 620 TestEnsurePython `slo_ensure_python` installs the pinned version via pyenv (idempotent -s).
+CASE 623 tests/cli/test_install.py::TestEnsurePython::test_installs_pinned_default
+CASE 628 tests/cli/test_install.py::TestEnsurePython::test_respects_version_override
+CLASS 634 TestEnsureBuildDeps `slo_ensure_build_deps` installs Linux pyenv headers only when needed.
+CASE 637 tests/cli/test_install.py::TestEnsureBuildDeps::test_debian_installs_headers
+CASE 645 tests/cli/test_install.py::TestEnsureBuildDeps::test_macos_noop
+CASE 651 tests/cli/test_install.py::TestEnsureBuildDeps::test_non_debian_linux_noop
+CLASS 659 TestEnsureHome `slo_ensure_home` honours an existing SLO_HOME, else defaults to ~/.slo.
+CASE 662 tests/cli/test_install.py::TestEnsureHome::test_defaults_when_unset
+CASE 668 tests/cli/test_install.py::TestEnsureHome::test_honours_existing
+CLASS 675 TestEnsureGit `slo_ensure_git` is a no-op when present; OS-specific when absent.
+CASE 678 tests/cli/test_install.py::TestEnsureGit::test_present_noop
+CASE 685 tests/cli/test_install.py::TestEnsureGit::test_absent_macos_uses_brew
+CASE 692 tests/cli/test_install.py::TestEnsureGit::test_absent_debian_uses_apt
+CASE 700 tests/cli/test_install.py::TestEnsureGit::test_absent_unsupported_distro_errors
+CLASS 708 TestAptRefresh `slo_apt_refresh` runs `apt-get update` at most once per invocation.
+CASE 711 tests/cli/test_install.py::TestAptRefresh::test_refreshes_once
+CLASS 720 TestInstall `slo_install` installs slo via pipx straight from the repo (no clone).
+CASE 723 tests/cli/test_install.py::TestInstall::test_pipx_install_from_repo
+CASE 732 tests/cli/test_install.py::TestInstall::test_resolves_concrete_interpreter_when_pyenv_present
+CASE 750 tests/cli/test_install.py::TestInstall::test_never_clones
+CASE 756 tests/cli/test_install.py::TestInstall::test_respects_ref_override
+CASE 761 tests/cli/test_install.py::TestInstall::test_ignores_legacy_repository_credentials
+CASE 779 tests/cli/test_install.py::TestInstall::test_targets_slo_subdirectory
+CASE 788 tests/cli/test_install.py::TestInstall::test_subdir_override_empty_installs_from_root
+CLASS 794 TestRepoConfig SLO_REPO_URL / SLO_REF are defined by the script and env-overridable.
+CASE 797 tests/cli/test_install.py::TestRepoConfig::test_default_repo_url
+CASE 801 tests/cli/test_install.py::TestRepoConfig::test_default_ref_is_main
+CASE 805 tests/cli/test_install.py::TestRepoConfig::test_repo_url_env_override
+CLASS 813 TestResolveVendoredSkillsDir `slo_resolve_vendored_skills_dir` resolves ONLY via pipx Location metadata.
+CASE 816 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_when_pipx_location_has_index
+CASE 825 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_when_location_is_missing
+CASE 833 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_when_location_is_ambiguous
+CASE 854 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_when_runpip_fails
+CASE 864 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_when_index_is_missing
+CASE 874 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_when_candidate_is_not_a_directory
+CASE 885 tests/cli/test_install.py::TestResolveVendoredSkillsDir::test_resolve_vendored_skills_dir_never_guesses_pipx_layout
+CLASS 898 TestWriteManagedEnvironmentFile `slo_write_managed_environment_file` owns exactly one marked 0644 file.
+CASE 915 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_creates_marked_0644_file
+CASE 932 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_environment_file_when_home_contains_spaces_and_apostrophe
+CASE 944 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_replaces_marked_file_atomically
+CASE 957 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_content_is_already_current
+CASE 970 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_existing_file_is_unmarked
+CASE 982 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_markers_are_malformed
+CASE 994 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_target_is_symlink
+CASE 1010 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_target_is_a_directory
+CASE 1020 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_target_is_a_fifo
+CASE 1031 tests/cli/test_install.py::TestWriteManagedEnvironmentFile::test_write_managed_environment_when_skills_dir_is_missing
+CLASS 1039 TestReconcileShellSourceBlock `slo_reconcile_shell_source_block` edits exactly one bounded block per profile.
+CASE 1054 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_profile_is_missing
+CASE 1064 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_no_markers
+CASE 1074 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_rerun
+CASE 1088 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_replaces_existing_pair
+CASE 1107 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_markers_are_malformed
+CASE 1117 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_multiple_pairs
+CASE 1130 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_preserves_every_byte_outside_the_replaced_block
+CASE 1147 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_suffix_is_only_trailing_newlines
+CASE 1161 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_replacement_happens_via_atomic_rename
+CASE 1181 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_target_is_a_fifo
+CASE 1190 tests/cli/test_install.py::TestReconcileShellSourceBlock::test_reconcile_shell_source_block_when_target_is_symlink
+CLASS 1205 TestInstallShellEnvironment `slo_install_shell_environment` applies the fixed Bash/Zsh/POSIX matrix.
+CASE 1208 tests/cli/test_install.py::TestInstallShellEnvironment::test_install_shell_environment_writes_all_four_profiles
+CASE 1217 tests/cli/test_install.py::TestInstallShellEnvironment::test_install_shell_environment_preserves_existing_content
+CASE 1226 tests/cli/test_install.py::TestInstallShellEnvironment::test_install_shell_environment_refuses_malformed_profile
+CLASS 1237 TestFinalizeShellEnvironment `slo_finalize_shell_environment` gateway: resolve → write → reconcile.
+CASE 1240 tests/cli/test_install.py::TestFinalizeShellEnvironment::test_finalize_shell_environment_happy_path
+CASE 1252 tests/cli/test_install.py::TestFinalizeShellEnvironment::test_finalize_shell_environment_when_metadata_is_missing
+CASE 1261 tests/cli/test_install.py::TestFinalizeShellEnvironment::test_finalize_shell_environment_when_pipx_install_fails
+CASE 1279 tests/cli/test_install.py::TestFinalizeShellEnvironment::test_finalize_shell_environment_rerun_is_idempotent
+CASE 1292 tests/cli/test_install.py::TestFinalizeShellEnvironment::test_finalize_shell_environment_rerun_refreshes_moved_location
+CASE 1309 tests/cli/test_install.py::TestFinalizeShellEnvironment::test_finalize_preserves_user_skills_and_absent_user_workflows
+CLASS 1323 TestFreshShellStartup Real shells started against the isolated HOME inherit the defaults.
+CASE 1341 tests/cli/test_install.py::TestFreshShellStartup::test_bash_login_shell_exports_defaults
+CASE 1350 tests/cli/test_install.py::TestFreshShellStartup::test_bash_interactive_non_login_shell_exports_defaults
+CASE 1360 tests/cli/test_install.py::TestFreshShellStartup::test_zsh_login_and_interactive_non_login_shell_export_defaults
+CASE 1372 tests/cli/test_install.py::TestFreshShellStartup::test_posix_sh_login_shell_exports_defaults
+CASE 1390 tests/cli/test_install.py::TestFreshShellStartup::test_explicit_environment_override_survives_source
+CLASS 1403 TestManagedEnvironmentKnowledgeBaseDefault The managed file also defaults ``SLO_KB_DIR`` — variable only, never a directory.
+CASE 1425 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_managed_file_guards_slo_kb_dir_by_existence
+CASE 1433 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_defaults_under_home_dot_slo_when_nothing_is_set
+CASE 1437 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_follows_a_preset_slo_home
+CASE 1441 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_kb_dir_is_used_when_slo_kb_dir_is_unset
+CASE 1445 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_preset_slo_kb_dir_wins_over_kb_dir
+CASE 1450 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_a_set_but_empty_slo_kb_dir_is_left_alone
+CASE 1454 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_kb_path_with_apostrophe_is_not_executed_or_split
+CASE 1459 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_sourcing_never_creates_the_kb_directory
+CASE 1463 tests/cli/test_install.py::TestManagedEnvironmentKnowledgeBaseDefault::test_fresh_login_shell_exports_the_kb_default
+CLASS 1473 TestMainDispatch Direct installer dispatch keeps both finalizers isolated and ordered.
+CASE 1476 tests/cli/test_install.py::TestMainDispatch::test_normal_install_orders_finalizers_then_path_and_cheatsheet
+CASE 1497 tests/cli/test_install.py::TestMainDispatch::test_normal_install_stops_after_launcher_finalization_failure
+CASE 1518 tests/cli/test_install.py::TestMainDispatch::test_finalize_environment_does_not_call_launcher_finalizer
+CLASS 1530 TestFinalizeEnvironmentMode ``install.sh --finalize-environment`` runs only the shell-environment step.
+
+``slo update`` calls this mode on the just-installed copy, so it must never
+provision toolchains or reinstall the package.
+CASE 1540 tests/cli/test_install.py::TestFinalizeEnvironmentMode::test_writes_managed_file_and_profiles_without_installing
+CASE 1552 tests/cli/test_install.py::TestFinalizeEnvironmentMode::test_fails_without_writing_when_the_package_cannot_be_located
+CASE 1560 tests/cli/test_install.py::TestFinalizeEnvironmentMode::test_rerun_is_idempotent
+CLASS 1570 TestSourcingGuard Sourcing install.sh must not run `main` (so tests can call functions).
+CASE 1573 tests/cli/test_install.py::TestSourcingGuard::test_sourcing_runs_nothing
+
+FILE tests/cli/test_install_documentation.py
+DOC Documentation contracts for the supported isolated-launcher lifecycle.
+CASE 16 tests/cli/test_install_documentation.py::test_install_guide_describes_launcher_finalization_and_no_envrc_requirement
+CASE 27 tests/cli/test_install_documentation.py::test_install_guide_distinguishes_initial_wrapper_environment_from_child_sanitation
+
+FILE tests/cli/test_install_mirror.py
+DOC Real Bash mirror retries against disposable fake pipx/git executables.
+CLASS 42 TestInstallerMirror Installation source retries preserve version selection and failure cutoffs.
+CASE 54 tests/cli/test_install_mirror.py::TestInstallerMirror::test_outage_retries_same_ref
+CASE 65 tests/cli/test_install_mirror.py::TestInstallerMirror::test_reachable_primary_preserves_build_error
+CASE 72 tests/cli/test_install_mirror.py::TestInstallerMirror::test_both_sources_fail_without_shell_finalization
+CASE 88 tests/cli/test_install_mirror.py::TestInstallerMirror::test_opt_out_duplicate_and_custom_repo_do_not_retry
+CASE 97 tests/cli/test_install_mirror.py::TestInstallerMirror::test_custom_mirror_and_empty_subdir
+CASE 108 tests/cli/test_install_mirror.py::TestInstallerMirror::test_success_never_probes
+CASE 115 tests/cli/test_install_mirror.py::TestInstallerMirror::test_default_mirror_matches_updater
+CASE 120 tests/cli/test_install_mirror.py::TestInstallerMirror::test_probe_timeout_is_unavailable
+CASE 135 tests/cli/test_install_mirror.py::TestInstallerMirror::test_missing_local_git_is_not_outage
+
+FILE tests/cli/test_install_mirror_e2e.py
+DOC Opt-in real Git/pipx outage proof with disposable installation and shell roots.
+CASE 109 tests/cli/test_install_mirror_e2e.py::test_real_pipx_install_and_update_during_gitlab_outage
+
+FILE tests/cli/test_install_smoke.py
+DOC Opt-in hermetic Docker smoke tests for the public Linux installer (spec 80).
+
+Hermetic contract (80.a.2, M1): the repository source parent is mounted at
+``/src:ro`` (read-only); the container copies ``/src/install.sh`` to a fresh
+writable in-container temporary file **before each install run** and never
+executes the mounted file directly. Every runtime root (HOME, XDG, pipx,
+pyenv) is created in-container under a ``mktemp -d`` directory; no host home,
+pipx root, profile, or output directory is mounted.
+
+The assertions live in ``install_smoke_container.sh`` (mounted read-only
+alongside the installer) so the container command stays a two-line bootstrap:
+install prerequisites, then run the assertion script. The script proves the
+managed environment file (0644, one marker pair, real ``INDEX.md`` under a
+non-``~/.slo`` ``SLO_SKILLS_DIR``), fresh Bash/Zsh login and interactive
+non-login shells, POSIX ``.profile`` fallback, explicit-override survival,
+user-skill preservation with absent ``user_workflows``, and second-run
+idempotency with a working ``slo --help``.
+CASE 97 tests/cli/test_install_smoke.py::test_requested_e2e_fails_when_docker_is_unavailable
+CASE 110 tests/cli/test_install_smoke.py::test_installer_bootstraps_and_finalises_shell_environment
+CASE 154 tests/cli/test_install_smoke.py::test_macos_runner_contract_requires_a_real_macos_host
+
+FILE tests/cli/test_install_smoke_source.py
+DOC Offline release-source contracts at the Docker argv and nested installer boundary.
+CASE 22 tests/cli/test_install_smoke_source.py::test_docker_forwards_tag_and_both_installs_resolve_it
+CASE 79 tests/cli/test_install_smoke_source.py::test_release_matrix_rejects_missing_or_invalid_tag
+CASE 87 tests/cli/test_install_smoke_source.py::test_local_smoke_retains_installer_default
+
+FILE tests/cli/test_isolated_launcher.py
+DOC Functional contracts for the isolated pipx user launcher.
+CLASS 50 TestDirectPipxAndVersionedLauncherContract Artifact-state tests keep direct-pipx and historic rollback claims honest.
+CASE 53 tests/cli/test_isolated_launcher.py::TestDirectPipxAndVersionedLauncherContract::test_direct_pipx_regeneration_leaves_plain_launcher_until_supported_finalizer
+CASE 71 tests/cli/test_isolated_launcher.py::TestDirectPipxAndVersionedLauncherContract::test_pre_82_rollback_has_plain_launcher_and_no_entry_trampoline
+CASE 81 tests/cli/test_isolated_launcher.py::TestDirectPipxAndVersionedLauncherContract::test_reinstalling_82_a_regenerates_then_restores_the_wrapper
+CLASS 103 TestIsolatedLauncherFunctional The installer-produced wrapper process owns hostile-import resistance.
+CASE 106 tests/cli/test_isolated_launcher.py::TestIsolatedLauncherFunctional::test_finalizer_generated_wrapper_ignores_foreign_pythonpath_and_preserves_slo_environment
+
+FILE tests/cli/test_isolated_launcher_layout.py
+DOC Black-box contracts for the installer-owned isolated launcher finalizer.
+CLASS 13 TestIsolatedLauncherLayoutResolver Validate portable pipx layout discovery without touching a real pipx root.
+CASE 36 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_resolves_valid_platform_layout
+CASE 56 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_rejects_failed_pipx_home_query_even_when_environment_exports_a_root
+CASE 87 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_rejects_outer_slo_venv_symlink_even_when_it_points_inside_pipx_home
+CASE 110 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_rejects_symlinked_bin_directory_and_preserves_external_launchers
+CASE 132 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_rejects_location_outside_validated_venv
+CASE 147 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_rejects_missing_entry_launcher_without_writing_user_launcher
+CASE 166 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_accepts_external_base_python_only_after_venv_path_proves_prefix
+CASE 191 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_rejects_python_symlink_cycle
+CASE 210 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherLayoutResolver::test_accepts_a_multi_hop_python_symlink_chain_contained_by_the_venv
+CLASS 230 TestIsolatedLauncherWriter Exercise exact activation, idempotence, and conservative refusal paths.
+CASE 252 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherWriter::test_finalizer_replaces_recognized_script_with_exact_wrapper_and_is_idempotent
+CASE 277 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherWriter::test_finalizer_refuses_unknown_or_changed_launcher_and_preserves_bytes
+CASE 290 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherWriter::test_finalizer_allows_pipx_managed_python_symlink
+CASE 316 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherWriter::test_finalizer_preserves_original_when_staging_file_cannot_be_created
+CASE 330 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherWriter::test_managed_environment_writer_refuses_when_mktemp_is_unavailable
+CASE 348 tests/cli/test_isolated_launcher_layout.py::TestIsolatedLauncherWriter::test_launcher_only_mode_does_not_call_pipx_install_or_touch_shell_profiles
+CASE 375 tests/cli/test_isolated_launcher_layout.py::test_old_pipx_list_root_is_authoritative_or_refused
+CASE 449 tests/cli/test_isolated_launcher_layout.py::test_modern_generated_launchers_are_exact_or_preserved
+CASE 501 tests/cli/test_isolated_launcher_layout.py::test_failed_or_invalid_root_query_never_uses_exported_root
+
+FILE tests/cli/test_isolated_launcher_writer.py
+DOC Safety and failure-preservation contracts for the installer-owned launcher writer.
+CLASS 63 TestIsolatedLauncherWriter The writer refuses unsafe targets and preserves a prior launcher on every failure.
+CASE 99 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_finalizer_replaces_both_exact_recognized_launchers
+CASE 111 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_finalizer_rejects_symlink_without_touching_external_target
+CASE 131 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_finalizer_rejects_directory_or_fifo_artifact
+CASE 153 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_writer_refuses_ambiguous_or_foreign_user_content_byte_for_byte
+CASE 176 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_writer_failure_preserves_existing_launcher_and_removes_stage
+CASE 194 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_writer_rejects_preexisting_external_regular_file_returned_by_mktemp
+CASE 222 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_writer_rejects_symlink_returned_by_mktemp_before_writing_external_target
+CASE 249 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_directory_fsync_failure_warns_after_atomic_rename_and_reports_success
+CASE 266 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_directory_fsync_runs_after_atomic_rename
+CASE 279 tests/cli/test_isolated_launcher_writer.py::TestIsolatedLauncherWriter::test_writer_failure_when_write_is_unwritable_preserves_existing_launcher
+
+FILE tests/cli/test_release_automation.py
+DOC Contract tests for tagged installer publication and release ordering.
+CLASS 35 TestReleaseAutomation The existing Make targets own the release publication chain.
+CASE 38 tests/cli/test_release_automation.py::TestReleaseAutomation::test_release_only_creates_and_pushes_a_strict_semver_tag_for_the_gitlab_pipeline
+CASE 53 tests/cli/test_release_automation.py::TestReleaseAutomation::test_release_rejects_invalid_version_before_any_git_command
+CASE 93 tests/cli/test_release_automation.py::TestReleaseAutomation::test_publish_installer_preserves_explicit_tagged_refs
+CASE 111 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_ci_parses_and_preserves_required_release_dependency_order
+CASE 128 tests/cli/test_release_automation.py::TestReleaseAutomation::test_only_macos_is_excluded_and_linux_release_gates_remain_required
+CASE 146 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_macos_job_selects_python_311_before_poetry_install
+CASE 163 tests/cli/test_release_automation.py::TestReleaseAutomation::test_linux_release_setup_uses_the_image_python_without_activating_a_disabled_venv
+CASE 175 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_tag_publication_fetches_the_same_tagged_public_installer_source
+CASE 192 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_hosted_release_jobs_override_default_e2e_deselection_and_collect_the_smoke
+CASE 269 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_tag_pipeline_requires_local_wheel_recovery_and_docker_matrix_proofs
+CASE 324 tests/cli/test_release_automation.py::TestReleaseAutomation::test_docker_smoke_contract_consumes_the_assigned_image_and_workspace_path
+CASE 335 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_hosted_smoke_commands_are_preserved_including_excluded_macos
+CASE 374 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_tag_pipeline_creates_the_release_only_after_all_required_evidence
+CASE 392 tests/cli/test_release_automation.py::TestReleaseAutomation::test_gitlab_tag_pipeline_runs_non_e2e_tests_before_publication
+CASE 406 tests/cli/test_release_automation.py::TestReleaseAutomation::test_repo_local_release_evidence_template_is_explicitly_non_evidence
+CASE 426 tests/cli/test_release_automation.py::TestReleaseAutomation::test_github_workflow_is_not_release_authority
+CASE 434 tests/cli/test_release_automation.py::TestReleaseAutomation::test_make_test_env_reports_clean_checkout_fallback_when_tests_env_is_absent
+CASE 441 tests/cli/test_release_automation.py::TestReleaseAutomation::test_release_installer_smoke_requires_a_version
+
+FILE tests/cli/test_release_pipx_bootstrap.py
+DOC Execute the Linux CI pipx bootstrap across the disposable HOME boundary.
+CASE 19 tests/cli/test_release_pipx_bootstrap.py::test_ci_pipx_runs_when_smoke_changes_home
+
+FILE tests/cli/test_update.py
+DOC Unit tests for ``src.cli.update`` — the pipx-VCS self-updater.
+
+The ``Updater`` reinstalls slo via ``pipx install --force
+"git+<url>@<ref>#subdirectory=slo"``, mirroring ``install.sh``. These tests
+patch ``subprocess.run`` / ``shutil.which`` so no real git, pipx, pyenv, or
+network is touched, and assert on the exact ref resolution, requirement spec,
+auth-URL injection, interpreter resolution, and uv-backend fallback.
+CLASS 33 TestPipxSpec ``_pipx_spec`` targets the slo/ subdirectory at the given ref.
+CASE 36 tests/cli/test_update.py::TestPipxSpec::test_spec_ignores_legacy_repository_credentials
+CLASS 49 TestResolveLatestReleaseTag ``resolve_latest_release_tag`` picks the highest vX.Y.Z from ls-remote.
+CASE 60 tests/cli/test_update.py::TestResolveLatestReleaseTag::test_picks_highest_semver
+CASE 68 tests/cli/test_update.py::TestResolveLatestReleaseTag::test_v0300_beats_prior_release_numbering
+CASE 79 tests/cli/test_update.py::TestResolveLatestReleaseTag::test_no_version_tags_exits
+CLASS 89 TestUvFallback ``_uv_present_but_broken`` only triggers when uv is on PATH but won't run.
+CASE 92 tests/cli/test_update.py::TestUvFallback::test_absent_uv_is_not_broken
+CASE 96 tests/cli/test_update.py::TestUvFallback::test_present_runnable_uv_is_not_broken
+CASE 103 tests/cli/test_update.py::TestUvFallback::test_present_failing_uv_is_broken
+CLASS 111 TestPythonBin ``_python_bin`` prefers the concrete pyenv interpreter over the shim.
+CASE 114 tests/cli/test_update.py::TestPythonBin::test_uses_concrete_pyenv_interpreter
+CASE 122 tests/cli/test_update.py::TestPythonBin::test_falls_back_to_path_python311
+CLASS 128 TestPipxInstall ``_pipx_install`` builds the pipx command and forces pip off a broken uv.
+CASE 131 tests/cli/test_update.py::TestPipxInstall::test_builds_force_install_command
+CASE 150 tests/cli/test_update.py::TestPipxInstall::test_forces_pip_backend_when_uv_broken
+CASE 160 tests/cli/test_update.py::TestPipxInstall::test_respects_caller_pinned_backend
+CLASS 171 TestInvoke ``invoke`` resolves the right ref per mode and installs it.
+CASE 189 tests/cli/test_update.py::TestInvoke::test_default_installs_latest_release
+CASE 196 tests/cli/test_update.py::TestInvoke::test_development_installs_main
+CASE 203 tests/cli/test_update.py::TestInvoke::test_explicit_ref_overrides_everything
+CLASS 211 TestMain ``main`` maps argv to ``Updater.invoke`` kwargs.
+CASE 222 tests/cli/test_update.py::TestMain::test_argv_maps_to_invoke
+CASE 227 tests/cli/test_update.py::TestMain::test_development_and_ref_are_mutually_exclusive
+CLASS 232 TestUpdateLauncherFinalization Updates harden regenerated scripts before touching shell defaults.
+CASE 235 tests/cli/test_update.py::TestUpdateLauncherFinalization::test_runs_launcher_finalizer_before_environment_defaults
+CASE 253 tests/cli/test_update.py::TestUpdateLauncherFinalization::test_launcher_failure_stops_before_environment_defaults
+CLASS 268 TestInvokeEnsuresEnvironmentDefaults Every update mode sets missing environment defaults, and only after pipx succeeds.
+CASE 276 tests/cli/test_update.py::TestInvokeEnsuresEnvironmentDefaults::test_runs_after_a_successful_install
+CASE 294 tests/cli/test_update.py::TestInvokeEnsuresEnvironmentDefaults::test_is_skipped_when_pipx_fails
+CLASS 310 TestMissingEnvironmentDefaults ``missing`` decides by existence; ``KB_DIR`` stands in for ``SLO_KB_DIR``.
+CASE 313 tests/cli/test_update.py::TestMissingEnvironmentDefaults::test_all_missing
+CASE 316 tests/cli/test_update.py::TestMissingEnvironmentDefaults::test_kb_dir_counts_as_slo_kb_dir
+CASE 320 tests/cli/test_update.py::TestMissingEnvironmentDefaults::test_set_but_empty_counts_as_present
+CASE 324 tests/cli/test_update.py::TestMissingEnvironmentDefaults::test_reports_only_what_is_missing
+CLASS 330 TestInstalledLocation ``installed_location`` reads pip metadata exactly like install.sh.
+CASE 333 tests/cli/test_update.py::TestInstalledLocation::test_returns_the_single_location
+CASE 342 tests/cli/test_update.py::TestInstalledLocation::test_returns_none_when_metadata_is_unusable
+CASE 346 tests/cli/test_update.py::TestInstalledLocation::test_returns_none_when_pipx_fails
+CASE 350 tests/cli/test_update.py::TestInstalledLocation::test_returns_none_when_pipx_is_absent
+CLASS 365 TestLauncherFinalizer ``finalize_launcher`` only delegates to the installed shell writer.
+CASE 368 tests/cli/test_update.py::TestLauncherFinalizer::test_uses_regular_installed_finalizer_with_exact_argv
+CASE 386 tests/cli/test_update.py::TestLauncherFinalizer::test_refuses_missing_or_symlinked_installer_with_recovery_guidance
+CASE 407 tests/cli/test_update.py::TestLauncherFinalizer::test_missing_location_includes_recovery_guidance
+CASE 418 tests/cli/test_update.py::TestLauncherFinalizer::test_subprocess_failure_includes_recovery_guidance
+CLASS 433 TestEnsureDecisions ``ensure`` runs the installer step only when a variable is missing, and fails loudly.
+CASE 436 tests/cli/test_update.py::TestEnsureDecisions::test_all_present_runs_nothing_and_says_so
+CASE 455 tests/cli/test_update.py::TestEnsureDecisions::test_missing_runs_the_installed_finalize_step
+CASE 470 tests/cli/test_update.py::TestEnsureDecisions::test_missing_without_a_locatable_package_exits_non_zero
+CASE 477 tests/cli/test_update.py::TestEnsureDecisions::test_missing_installer_copy_exits_non_zero
+CASE 484 tests/cli/test_update.py::TestEnsureDecisions::test_finalize_failure_exits_non_zero
+CLASS 495 TestStaleSkillsDirWarning An existing ``SLO_SKILLS_DIR`` is never rewritten, but a wrong one is reported.
+CASE 512 tests/cli/test_update.py::TestStaleSkillsDirWarning::test_matching_path_is_quiet
+CASE 516 tests/cli/test_update.py::TestStaleSkillsDirWarning::test_path_without_index_is_a_warning
+CASE 523 tests/cli/test_update.py::TestStaleSkillsDirWarning::test_different_valid_path_is_a_note
+CLASS 534 TestEnsureEndToEnd Real bash runs the real install.sh copy against an isolated HOME and a fake pipx.
+CASE 582 tests/cli/test_update.py::TestEnsureEndToEnd::test_missing_variables_are_persisted_for_new_shells
+CASE 595 tests/cli/test_update.py::TestEnsureEndToEnd::test_all_present_leaves_home_untouched
+CASE 607 tests/cli/test_update.py::TestEnsureEndToEnd::test_rerun_is_idempotent
+CLASS 615 TestCheckPathAfterInstall ``_check_path_after_install`` warns when ``~/.local/bin`` is off PATH.
+CASE 618 tests/cli/test_update.py::TestCheckPathAfterInstall::test_silent_when_local_bin_on_path
+CASE 632 tests/cli/test_update.py::TestCheckPathAfterInstall::test_warns_when_local_bin_missing
+
+FILE tests/cli/test_update_mirror.py
+DOC Deterministic GitLab-outage contracts; no actual git or pipx processes run.
+CLASS 20 TestMirrorUpdate Update retries have one source switch and preserve every ref selector.
+CASE 24 tests/cli/test_update_mirror.py::TestMirrorUpdate::test_outage_retries_same_ref_and_finalizes_once
+CASE 45 tests/cli/test_update_mirror.py::TestMirrorUpdate::test_build_failure_does_not_retry
+CASE 58 tests/cli/test_update_mirror.py::TestMirrorUpdate::test_both_installs_fail_without_finalization
+CASE 74 tests/cli/test_update_mirror.py::TestMirrorUpdate::test_disabled_or_duplicate_fallback_does_not_probe
+CASE 92 tests/cli/test_update_mirror.py::TestMirrorUpdate::test_custom_primary_does_not_fall_back_to_slo
+CASE 100 tests/cli/test_update_mirror.py::TestMirrorUpdate::test_missing_pipx_does_not_retry
+CLASS 112 TestMirrorReleaseLookup Release selection falls back only on transport failure, not absent tags.
+CASE 122 tests/cli/test_update_mirror.py::TestMirrorReleaseLookup::test_outage_resolves_numeric_latest_on_mirror
+CASE 134 tests/cli/test_update_mirror.py::TestMirrorReleaseLookup::test_no_tags_on_reachable_primary_does_not_switch_sources
+CASE 142 tests/cli/test_update_mirror.py::TestMirrorReleaseLookup::test_both_remotes_fail
+CASE 151 tests/cli/test_update_mirror.py::TestMirrorReleaseLookup::test_disabled_fallback_stops_tag_lookup
+CASE 168 tests/cli/test_update_mirror.py::TestMirrorReleaseLookup::test_probe_failure_is_unavailable
+CASE 173 tests/cli/test_update_mirror.py::TestMirrorReleaseLookup::test_probe_has_timeout_and_does_not_embed_tokens
+
+FILE tests/cli/test_wheel_contents.py
+DOC The built wheel must carry ``skills/`` and ``plugins/`` (packaging regression guard).
+
+``skills/`` is not a Python package, so nothing about the normal ``packages``
+declaration pulls it into the artifact — it ships only because
+``[tool.poetry] include`` names it. When that declaration was absent, a
+non-editable ``pipx install`` produced an agent that started with
+``vendored_count=0``: every workflow and convention skill silently missing,
+which reads as the model choosing badly rather than as a broken install.
+
+``plugins/`` has the same failure mode: the bundled bash_live_output payload
+is resolved by ``PluginInstallerService`` as ``Path(__file__).parents[4] /
+"plugins" / "bash_live_output"`` — ``<site-packages>/plugins/...`` in a pipx
+install — so a wheel without it makes
+``slo plugin install-bundled-bash-live-output`` fail with
+"plugin source has no readable slo-plugin.json".
+
+The build is slow, so this is opt-in like the install smoke test.
+CLASS 132 TestWheelShipsSkills ``[tool.poetry] include`` must place skills/ inside the wheel.
+CASE 135 tests/cli/test_wheel_contents.py::TestWheelShipsSkills::test_wheel_contains_every_authored_skill_file_in_current_snapshot
+CASE 151 tests/cli/test_wheel_contents.py::TestWheelShipsSkills::test_wheel_contains_the_workflow_entry_points
+CLASS 165 TestWheelShipsBundledPlugins ``[tool.poetry] include`` must place plugins/ inside the wheel.
+CASE 168 tests/cli/test_wheel_contents.py::TestWheelShipsBundledPlugins::test_wheel_contains_the_bundled_bash_live_output_payload
+CLASS 182 TestWheelConsoleScripts The wheel declares the generated launchers required before hardening.
+CASE 185 tests/cli/test_wheel_contents.py::TestWheelConsoleScripts::test_wheel_declares_slo_and_slo_entry
+CASE 199 tests/cli/test_wheel_contents.py::TestWheelConsoleScripts::test_local_pipx_install_generates_two_unwrapped_console_scripts
+CLASS 243 TestWheelShipsInstaller ``[tool.poetry] include`` must place install.sh at the package location.
+CASE 246 tests/cli/test_wheel_contents.py::TestWheelShipsInstaller::test_wheel_contains_install_sh_at_its_root
+
+FILE tests/config/test_cfg.py
+DOC Tests for ``config.cfg`` (sub-spec 01.n §5.4 — ``_resolve_skills_dir``, spec 29 — user dirs,
+knowledge-base resolution).
+CLASS 33 TestResolveSkillsDir 01.n §5.4: precedence — env > ~/.slo/skills > repo-local.
+CASE 36 tests/config/test_cfg.py::TestResolveSkillsDir::test_env_override_wins
+CASE 44 tests/config/test_cfg.py::TestResolveSkillsDir::test_env_override_returns_absolute_even_when_dir_missing
+CASE 54 tests/config/test_cfg.py::TestResolveSkillsDir::test_installed_path_when_env_unset_and_tree_is_populated
+CASE 67 tests/config/test_cfg.py::TestResolveSkillsDir::test_empty_installed_dir_does_not_shadow_packaged_tree
+CASE 84 tests/config/test_cfg.py::TestResolveSkillsDir::test_packaged_fallback_when_install_dir_missing
+CASE 100 tests/config/test_cfg.py::TestResolveSkillsDir::test_packaged_fallback_is_derived_from_cfg_module_location
+CLASS 127 TestResolveSkillsLocation The skills directory honours ``SLO_HOME`` and names the setting that supplied it.
+CASE 130 tests/config/test_cfg.py::TestResolveSkillsLocation::test_source_is_slo_skills_dir_when_env_is_set
+CASE 136 tests/config/test_cfg.py::TestResolveSkillsLocation::test_empty_slo_skills_dir_is_treated_as_unset
+CASE 143 tests/config/test_cfg.py::TestResolveSkillsLocation::test_populated_tree_under_slo_home_wins_over_package
+CASE 155 tests/config/test_cfg.py::TestResolveSkillsLocation::test_home_dot_slo_is_ignored_when_slo_home_points_elsewhere
+CASE 166 tests/config/test_cfg.py::TestResolveSkillsLocation::test_resolve_skills_dir_returns_the_location_path
+CLASS 173 TestResolveKbLocation KB lookup: ``SLO_KB_DIR`` → ``KB_DIR`` → ``$SLO_HOME/KnowledgeBase/KB``.
+CASE 182 tests/config/test_cfg.py::TestResolveKbLocation::test_default_is_under_home_dot_slo_when_nothing_is_set
+CASE 188 tests/config/test_cfg.py::TestResolveKbLocation::test_default_follows_slo_home
+CASE 192 tests/config/test_cfg.py::TestResolveKbLocation::test_kb_dir_is_a_fallback_alias
+CASE 196 tests/config/test_cfg.py::TestResolveKbLocation::test_slo_kb_dir_wins_over_kb_dir
+CASE 201 tests/config/test_cfg.py::TestResolveKbLocation::test_empty_values_are_treated_as_unset
+CASE 206 tests/config/test_cfg.py::TestResolveKbLocation::test_a_path_to_a_file_resolves_to_its_directory
+CASE 216 tests/config/test_cfg.py::TestResolveKbLocation::test_relative_and_tilde_values_become_absolute
+CASE 223 tests/config/test_cfg.py::TestResolveKbLocation::test_resolution_never_creates_the_directory
+CASE 226 tests/config/test_cfg.py::TestResolveKbLocation::test_module_constants_expose_the_resolved_location
+CLASS 239 TestHeadlessTimeoutDefaults Shipped timeout defaults exposed through ``config.cfg``.
+CASE 242 tests/config/test_cfg.py::TestHeadlessTimeoutDefaults::test_stream_inactivity_timeout_defaults_to_10800_seconds
+CASE 253 tests/config/test_cfg.py::TestHeadlessTimeoutDefaults::test_subagent_inactivity_timeout_defaults_to_7200_seconds
+CLASS 266 TestDetachedWorkflowConfig Detached-workflow kill switch and cap defaults.
+CASE 269 tests/config/test_cfg.py::TestDetachedWorkflowConfig::test_detached_workflows_default_enabled
+CASE 278 tests/config/test_cfg.py::TestDetachedWorkflowConfig::test_detached_workflows_false_strings_disable
+CASE 287 tests/config/test_cfg.py::TestDetachedWorkflowConfig::test_max_detached_workflows_defaults_to_two
+CASE 296 tests/config/test_cfg.py::TestDetachedWorkflowConfig::test_invalid_max_detached_workflows_falls_back_to_two
+CLASS 308 TestUserSkillsDirConstants Spec 29: USER_SKILLS_DIR and USER_WORKFLOWS_DIR config constants.
+CASE 311 tests/config/test_cfg.py::TestUserSkillsDirConstants::test_user_skills_dir_defaults_to_slo_home
+CASE 322 tests/config/test_cfg.py::TestUserSkillsDirConstants::test_user_workflows_dir_defaults_to_slo_home
+CASE 333 tests/config/test_cfg.py::TestUserSkillsDirConstants::test_user_skills_dir_env_override
+CASE 342 tests/config/test_cfg.py::TestUserSkillsDirConstants::test_user_workflows_dir_env_override
+CASE 351 tests/config/test_cfg.py::TestUserSkillsDirConstants::test_user_skills_dir_in_cfg_dict
+CASE 360 tests/config/test_cfg.py::TestUserSkillsDirConstants::test_user_workflows_dir_in_cfg_dict
+
+FILE tests/test_feature89_release_preparation.py
+DOC Offline guards for the bounded Feature 89 release candidate configuration.
+CASE 11 tests/test_feature89_release_preparation.py::test_release_candidate_version_and_notes_agree
+CASE 23 tests/test_feature89_release_preparation.py::test_v0301_release_metadata_preserves_packaging_owned_launchers
+CASE 31 tests/test_feature89_release_preparation.py::test_runner_defaults_cover_inherited_jobs_and_preserve_macos

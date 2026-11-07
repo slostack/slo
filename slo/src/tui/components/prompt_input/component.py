@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from src.agents.slo_agent.messaging.client import SessionMessagingClient
 from src.agents.slo_agent.messaging.dao import (
+    Priority,
     MessageAddressDAO,
     MessageErrorDAO,
     MessageReceiptDAO,
@@ -102,7 +103,7 @@ class _PromptIntent(Message):
 class PromptInputComponent(TextArea):
     """Let the user write prompts, browse suggestions, and recall earlier prompts.
 
-    Enter requests submission. Modified Enter keys, such as Shift+Enter,
+    Enter requests normal submission; Ctrl+Enter requests urgency. Shift/Meta+Enter
     insert a newline. Tab, Up, Down, and Escape control suggestions when
     the suggestion menu is visible.
 
@@ -181,13 +182,15 @@ class PromptInputComponent(TextArea):
     class Submitted(_PromptIntent):
         """Posted when the user presses Enter to submit the buffer."""
 
-        def __init__(self, *, text: str) -> None:
-            """Carry the submitted text.
+        def __init__(self, *, text: str, priority: Priority = "normal") -> None:
+            """Carry the submitted text and semantic delivery priority.
 
             Args:
                 text (str): The full multi-line buffer at submit time.
+                priority (Priority): Immutable normal or urgent delivery intent.
             """
             self.text: str = text
+            self.priority: Priority = priority
             super().__init__()
 
     class SuggestionAccepted(_PromptIntent):
@@ -520,17 +523,27 @@ class PromptInputComponent(TextArea):
             event.stop()
             self.post_message(self.SuggestionDismissed())
             return
-        if event.key == "enter":
+        if event.key in {"enter", "ctrl+enter"}:
             event.prevent_default()
             event.stop()
-            self.post_message(self.Submitted(text=self.text))
+            self.request_submission(priority="urgent" if event.key == "ctrl+enter" else "normal")
             return
-        if event.key in {"shift+enter", "ctrl+enter", "meta+enter"}:
+        if event.key in {"shift+enter", "meta+enter"}:
             event.prevent_default()
             event.stop()
             self.insert("\n")
             return
         await super()._on_key(event)
+
+    def request_submission(self, *, priority: Priority = "normal") -> None:
+        """Post one freshly stamped intent for the current editor on its owner loop.
+
+        Keys and host fallbacks share this operation; capture and registration
+        remain in the existing submitted handler. Closed editors refuse work.
+        """
+        self._ensure_prompt_open()
+        self._ensure_prompt_mounted()
+        self.post_message(self.Submitted(text=self.text, priority=priority))
 
     def _is_suggestion_acceptance_requested(self, *, event: events.Key) -> bool:
         """Return True when ``event`` should accept a suggestion.
@@ -982,7 +995,7 @@ class PromptInputComponent(TextArea):
         self._submission_sealed = False
 
     def build_draft_submission(
-        self, *, text: str, intent_revision: Optional[int]
+        self, *, text: str, intent_revision: Optional[int], priority: Priority = "normal"
     ) -> Optional[DraftSubmissionDAO]:
         """Capture the exact current draft and allocate its canonical ID, synchronously.
 
@@ -992,6 +1005,7 @@ class PromptInputComponent(TextArea):
 
         Args:
             text (str): Host-normalized draft text.
+            priority (Priority): Captured delivery priority, preserved on same-ID retry.
             intent_revision (Optional[int]): Revision stamped at Enter; ``None``
                 for slash-originated drafts, which are never auto-restored.
 
@@ -1016,6 +1030,7 @@ class PromptInputComponent(TextArea):
             target=self._submission_address,
             kind="agent_input",
             text=text,
+            priority=priority,
         )
         self._pending_capture = _PendingCapture(
             message_id=message_submission.message_id,

@@ -115,6 +115,22 @@ class SessionHistoryStoreProtocol(Protocol):
         """Persist the exact application once or fail closed on conflicting raw evidence."""
         ...
 
+    async def append_cooperative_event_once(self, *, event: SessionHistoryEventDAO) -> SessionHistoryEventDAO:
+        """Persist one validated cooperative event once or fail closed.
+
+        Args:
+            event (SessionHistoryEventDAO): Marked tool opening/result or
+                cooperative/no-start ``run_retrying`` diagnostic.
+
+        Returns:
+            SessionHistoryEventDAO: Matching persisted event with assigned history fields.
+
+        Raises:
+            CooperativeYieldSettlementError: Invalid evidence, conflict,
+                duplicate identity, redaction change or uncertain persistence.
+        """
+        ...
+
     async def application_evidence(
         self, *, session_id: str, after_sequence: int = 0, limit: int = 256
     ) -> MessageHistoryEvidenceDAO:

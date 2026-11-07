@@ -244,6 +244,10 @@ class AssistantStreamThinkingBlock(Vertical):
         self._dirty = True
         self._flush()
 
+    def mark_interrupted(self) -> None:
+        """Retain and seal reasoning from this interrupted provider response."""
+        self.seal()
+
     def seal(self) -> None:
         """Finalize this segment without losing accumulated reasoning.
 

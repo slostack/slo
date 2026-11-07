@@ -1,0 +1,5 @@
+interpreter probe exit=0; command: PYTHONDONTWRITEBYTECODE=1 /root/.pyenv/versions/slo-harness/bin/python -I -B -c <stdlib sys/importlib.metadata probe>; no project imports
+blocker source extraction exit=0; rg -n -C 3 chmod|symlink_to|os.link|pytestmark|skipif|mark.e2e on eight named source files (no imports)
+source AST inventory exit=0; approved interpreter -I -B; ast.parse only, no test/application imports or collection
+proposed-command generation and source node assertions exit=0; text generation ONLY, not shell execution
+tracked diff hash comparison exit=0; worktree porcelain comparison exit=0. No source edits made; coarse tracked-diff/status receipts, not independent hash attestation of every untracked byte.

@@ -7,7 +7,7 @@ import pytest
 
 from src.agents.providers.stream_recovery.dao import ProviderStreamProgressTimeout
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
-from src.agents.slo_agent.watchdog_timer import WatchDogTimer
+from src.agents.slo_agent.watchdog_timer import GraphReadOutcomeDAO, WatchDogTimer
 
 
 class TestWatchDogTimer:
@@ -45,7 +45,9 @@ class TestWatchDogTimer:
         )
         stream: AsyncIterator[object] = one_item_then_silent_stream()
 
-        assert await watchdog_timer.invoke(graph_stream=stream) == "provider progress"
+        first_outcome: GraphReadOutcomeDAO = await watchdog_timer.invoke(graph_stream=stream)
+        assert first_outcome.kind == "item"
+        assert first_outcome.item == "provider progress"
         with pytest.raises(ProviderStreamProgressTimeout, match="idle"):
             await watchdog_timer.invoke(graph_stream=stream)
 
@@ -70,7 +72,9 @@ class TestWatchDogTimer:
         )
         stream: AsyncIterator[object] = provider_then_slow_tool_results_stream()
 
-        assert await watchdog_timer.invoke(graph_stream=stream) == "provider progress"
+        first_outcome: GraphReadOutcomeDAO = await watchdog_timer.invoke(graph_stream=stream)
+        assert first_outcome.kind == "item"
+        assert first_outcome.item == "provider progress"
         watchdog_timer.observe_message_events(
             events=[
                 AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-1"),
@@ -79,12 +83,16 @@ class TestWatchDogTimer:
         )
         watchdog_timer.observe_message_events(events=[AgentStreamEventDAO(kind="tool_call_end")])
 
-        assert await watchdog_timer.invoke(graph_stream=stream) == "first tool result"
+        first_tool_outcome: GraphReadOutcomeDAO = await watchdog_timer.invoke(graph_stream=stream)
+        assert first_tool_outcome.kind == "item"
+        assert first_tool_outcome.item == "first tool result"
         watchdog_timer.observe_update_events(
             events=[AgentStreamEventDAO(kind="tool_result", tool_call_id="call-1")]
         )
 
-        assert await watchdog_timer.invoke(graph_stream=stream) == "second tool result"
+        second_tool_outcome: GraphReadOutcomeDAO = await watchdog_timer.invoke(graph_stream=stream)
+        assert second_tool_outcome.kind == "item"
+        assert second_tool_outcome.item == "second tool result"
         watchdog_timer.observe_update_events(
             events=[AgentStreamEventDAO(kind="tool_result", tool_call_id="call-2")]
         )
@@ -105,7 +113,9 @@ class TestWatchDogTimer:
             idle_timeout_seconds=1.0,
         )
 
-        assert await watchdog_timer.invoke(graph_stream=empty_stream()) is None
+        end_outcome: GraphReadOutcomeDAO = await watchdog_timer.invoke(graph_stream=empty_stream())
+        assert end_outcome.kind == "end"
+        assert end_outcome.item is None
 
     @pytest.mark.asyncio
     async def test_invoke_when_graph_stream_raises_non_timeout_error_propagates_it(self) -> None:

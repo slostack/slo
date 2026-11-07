@@ -396,6 +396,12 @@ class AssistantStreamBlock(Vertical):
         self._finalized = True
         self._stop_flush_timer()
 
+    def mark_interrupted(self) -> None:
+        """Seal partial text with the urgent-input marker, never abort wording."""
+        if self._terminal_note_text == "Response interrupted for urgent input.":
+            return
+        self._finish_with_warning(text="Response interrupted for urgent input.")
+
     def mark_aborted(self) -> None:
         """Mark the block as aborted while preserving partial content."""
         if self._finalized:

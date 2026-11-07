@@ -68,6 +68,8 @@ class TranscriptEntryDAO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: TranscriptEntryKind
+    attempt_turn_id: Optional[str] = Field(default=None, description="Exact history attempt UUID.")
+    interrupted: bool = Field(default=False, description="Assistant response interrupted for urgent input.")
     iteration: int = 0
     content: Optional[str] = None
     reasoning: Optional[str] = None
@@ -247,14 +249,19 @@ class _ReplayEntryBuilder:
     if/elif ladder, so adding a new event kind is one table entry.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, correlated: bool = False) -> None:
         """Seed empty folding state and the event-kind dispatch table."""
         self._entries: list[TranscriptEntryDAO] = []
         self._assistant: Optional[_AssistantTurnState] = None
         self._pending_tools: dict[str, TranscriptEntryDAO] = {}
+        self._correlated = correlated
+        self._attempt_turn_id: Optional[str] = None
+        self._interrupted_keys: set[tuple[Optional[str], int]] = set()
         # Flushed turns whose thinking segment still awaits its (late) end,
         # keyed by block id, so the end can repair the already emitted entry.
-        self._awaiting_thinking_end: dict[str, tuple[_AssistantTurnState, TranscriptEntryDAO]] = {}
+        self._awaiting_thinking_end: dict[
+            tuple[Optional[str], int, str], tuple[_AssistantTurnState, TranscriptEntryDAO]
+        ] = {}
         self._handlers: dict[str, Callable[..., None]] = {
             "user_message": self._absorb_user_message,
             "steering_message": self._absorb_steering_message,
@@ -262,6 +269,7 @@ class _ReplayEntryBuilder:
             "assistant_message": self._absorb_assistant_message,
             "tool_call": self._absorb_tool_call,
             "tool_result": self._absorb_tool_result,
+            "run_retrying": self._absorb_cooperative_interruption,
             "run_aborted": self._absorb_run_aborted,
             "run_failed": self._absorb_run_failed,
             "workflow_update": self._absorb_workflow_update,
@@ -278,6 +286,11 @@ class _ReplayEntryBuilder:
         Args:
             event (SessionHistoryEventDAO): One canonical event in append order.
         """
+        if event.turn_id != self._attempt_turn_id:
+            self._flush_assistant()
+            self._attempt_turn_id = event.turn_id
+        if event.kind == "assistant_delta" and (event.turn_id, event.iteration) in self._interrupted_keys:
+            return
         handler: Optional[Callable[..., None]] = self._handlers.get(event.kind)
         if handler is None:
             return
@@ -330,13 +343,16 @@ class _ReplayEntryBuilder:
         """
         block_id: Optional[str] = event.payload.block_id
         content: Optional[str] = event.payload.content
-        if self._assistant is not None and self._assistant.complete_thinking(
-            block_id=block_id, content=content
+        if (
+            self._assistant is not None
+            and self._assistant.iteration == event.iteration
+            and self._assistant.complete_thinking(block_id=block_id, content=content)
         ):
             return
-        if block_id is None or block_id not in self._awaiting_thinking_end:
+        key = (event.turn_id, event.iteration, block_id or "")
+        if block_id is None or key not in self._awaiting_thinking_end:
             return
-        turn, entry = self._awaiting_thinking_end.pop(block_id)
+        turn, entry = self._awaiting_thinking_end.pop(key)
         turn.complete_thinking(block_id=block_id, content=content)
         entry.reasoning = turn.reasoning_text or None
 
@@ -400,6 +416,33 @@ class _ReplayEntryBuilder:
             )
         )
 
+    def _absorb_cooperative_interruption(self, *, event: SessionHistoryEventDAO) -> None:
+        """Seal only this attempt/iteration and append one notice even for silence."""
+        diagnostic = event.payload.metadata.get("cooperative_yield_v1")
+        if not isinstance(diagnostic, dict) or diagnostic.get("disposition") != "interrupted":
+            return
+        key = (event.turn_id, event.iteration)
+        if key in self._interrupted_keys:
+            return
+        self._flush_assistant()
+        self._interrupted_keys.add(key)
+        for entry in self._entries:
+            if entry.kind == "assistant" and (entry.attempt_turn_id, entry.iteration) == key:
+                entry.interrupted = True
+        self._awaiting_thinking_end = {
+            block_id: pending
+            for block_id, pending in self._awaiting_thinking_end.items()
+            if (pending[1].attempt_turn_id, pending[1].iteration) != key
+        }
+        self._entries.append(
+            TranscriptEntryDAO(
+                kind="note",
+                attempt_turn_id=event.turn_id,
+                iteration=event.iteration,
+                content="Response interrupted for urgent input.",
+            )
+        )
+
     def _absorb_run_aborted(self, *, event: SessionHistoryEventDAO) -> None:
         """Mark the active turn aborted and close it."""
         turn: _AssistantTurnState = self._ensure_assistant(iteration=event.iteration)
@@ -433,6 +476,7 @@ class _ReplayEntryBuilder:
             return
         entry: TranscriptEntryDAO = TranscriptEntryDAO(
             kind="assistant",
+            attempt_turn_id=self._attempt_turn_id if self._correlated else None,
             iteration=turn.iteration,
             reasoning=turn.reasoning_text or None,
             answer=turn.answer_text or None,
@@ -441,7 +485,10 @@ class _ReplayEntryBuilder:
         self._entries.append(entry)
         for segment in turn.thinking_segments:
             if segment.block_id is not None and turn.awaits_thinking_end(block_id=segment.block_id):
-                self._awaiting_thinking_end[segment.block_id] = (turn, entry)
+                self._awaiting_thinking_end[(self._attempt_turn_id, turn.iteration, segment.block_id)] = (
+                    turn,
+                    entry,
+                )
 
 
 class ReplayEntryProjector:
@@ -471,7 +518,9 @@ class ReplayEntryProjector:
         Returns:
             list[TranscriptEntryDAO]: Completed entries in transcript order.
         """
-        builder: _ReplayEntryBuilder = _ReplayEntryBuilder()
+        builder: _ReplayEntryBuilder = _ReplayEntryBuilder(
+            correlated=any("cooperative_yield_v1" in event.payload.metadata for event in events)
+        )
         for event in events:
             builder.absorb(event=event)
         return builder.finish()
@@ -491,6 +540,8 @@ class ReplayEntryProjector:
         Returns:
             str: A markdown body. Empty when there is nothing to render.
         """
+        if any("cooperative_yield_v1" in event.payload.metadata for event in events):
+            return cls._render_correlated_entries(events=events)
         sections: list[str] = []
         for event in events:
             block: Optional[str] = cls._event_to_markdown(event=event)
@@ -499,6 +550,22 @@ class ReplayEntryProjector:
         if not sections:
             return ""
         return "\n\n".join(sections) + "\n"
+
+    @classmethod
+    def _render_correlated_entries(cls, *, events: list[SessionHistoryEventDAO]) -> str:
+        """Export the same interruption-folded audit entries used for replay."""
+        sections: list[str] = []
+        for entry in cls.build_entries(events=events):
+            if entry.kind == "assistant":
+                content = "\n\n".join(part for part in (entry.reasoning, entry.answer) if part)
+                sections.append(
+                    "## Assistant\n\n" + content + ("\n\n**Interrupted**" if entry.interrupted else "")
+                )
+            elif entry.kind == "tool":
+                sections.append(f"## Tool: {entry.tool_name or ''}\n\n{entry.output or ''}")
+            else:
+                sections.append(f"## {entry.kind.title()}\n\n{entry.content or ''}")
+        return "\n\n".join(sections) + ("\n" if sections else "")
 
     @classmethod
     def _event_to_markdown(

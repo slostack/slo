@@ -27,6 +27,10 @@ from src.agents.slo_agent.compaction.constants import (
 )
 from src.agents.slo_agent.graph import _is_pool_bound, adapt_chatgpt_backend_request
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
+from src.agents.slo_agent.history.projector import (
+    SessionHistoryProjector,
+    UnsettledToolGroupError,
+)
 
 __all__ = ["CompactionResult", "Compacter"]
 
@@ -157,9 +161,20 @@ class Compacter:
             CompactionResult: Summary text, cut-point ids, and token counts.
 
         Raises:
+            UnsettledToolGroupError: A raw marked tool group is unresolved,
+                malformed or conflicting; raised before selection or any
+                summary-provider request.
             ValueError: When the event list is too short or no viable cut
                 point exists (propagated from _find_cut_point).
         """
+        # Validate raw evidence before selection. Unresolved groups must never
+        # reach the summary provider, even when their turn would be excluded or
+        # the group falls inside the compacted prefix.
+        validated_events: list[SessionHistoryEventDAO] = SessionHistoryProjector.validate_tool_groups(
+            events=events
+        )
+        summary_visible_event_ids: set[str] = {event.event_id for event in validated_events}
+
         cut_point_index: int = cls._find_cut_point(events=events)
 
         compacted_events: list[SessionHistoryEventDAO] = events[: cut_point_index + 1]
@@ -182,7 +197,11 @@ class Compacter:
         )
         retained_events = overflow_events + retained_events
 
-        compaction_input: str = cls._build_compaction_input(events=compacted_events)
+        # Cut identities stay pinned to the ORIGINAL raw snapshot; only proven
+        # no-start openings/private anchors are omitted from model context.
+        compaction_input: str = cls._build_compaction_input(
+            events=[event for event in compacted_events if event.event_id in summary_visible_event_ids]
+        )
         summary_text: str = await cls._invoke_llm_summary(
             compaction_input=compaction_input,
             model_name=model_name,
@@ -251,11 +270,13 @@ class Compacter:
             events (list[SessionHistoryEventDAO]): Full event log in append order.
 
         Returns:
-            bool: ``True`` when compaction can retain a valid tail without I/O.
+            bool: ``True`` when compaction can retain a valid tail without I/O
+                and every raw marked tool group is settled.
         """
         try:
+            SessionHistoryProjector.validate_tool_groups(events=events)
             cls._find_cut_point(events=events)
-        except ValueError:
+        except (ValueError, UnsettledToolGroupError):
             return False
         return True
 

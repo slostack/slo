@@ -1,0 +1,1 @@
+pytest invocations=0; collection invocations=0; test resources launched=0; owned test children/tasks/containers=0. Only bounded foreground read-only source/probe commands; all returned. No cleanup signals or container commands issued. No suite-stub host-integrity check needed because no fixtures/tests executed.

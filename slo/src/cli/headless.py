@@ -159,8 +159,8 @@ class HeadlessRunner:
                     self._operation_credential = None
 
     async def _close_messaging(self) -> None:
-        """Join opt-in messaging before external reporting on every runner exit."""
-        if not self._messaging_started or self._session is None:
+        """Join session execution and presentation before reporting, including legacy runs."""
+        if self._session is None:
             return
         try:
             await self._session.close_messaging()

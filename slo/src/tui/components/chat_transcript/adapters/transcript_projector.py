@@ -122,16 +122,18 @@ class TranscriptProjectionAdapter:
         self._delivery_lock = asyncio.Lock()
         self._projection_version = 0
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._assistant_blocks: dict[int, AssistantStreamBlock] = {}
-        self._thinking_blocks: dict[str, AssistantStreamThinkingBlock] = {}
+        self._assistant_blocks: dict[tuple[str | None, int], AssistantStreamBlock] = {}
+        self._thinking_blocks: dict[tuple[str | None, int, str], AssistantStreamThinkingBlock] = {}
         """Normalized thinking ``block_id`` to mounted widget for this prompt."""
-        self._thinking_block_iterations: dict[str, int] = {}
+        self._thinking_block_iterations: dict[tuple[str | None, int, str], int] = {}
         """Thinking ``block_id`` to outer iteration for diagnostics only."""
-        self._open_thinking_block_ids: set[str] = set()
+        self._open_thinking_block_ids: set[tuple[str | None, int, str]] = set()
         """Normalized ids that may still receive their matching ``thinking_end``."""
-        self._tool_blocks: dict[str, ToolExecutionBlock] = {}
-        self._tool_argument_buffers: dict[str, str] = {}
-        self._recorded_tool_calls: set[str] = set()
+        self._interrupted: set[tuple[str | None, int]] = set()
+        self._yield_notices: set[tuple[str | None, int, str]] = set()
+        self._tool_blocks: dict[tuple[str | None, int, str], ToolExecutionBlock] = {}
+        self._tool_argument_buffers: dict[tuple[str | None, int, str], str] = {}
+        self._recorded_tool_calls: set[tuple[str | None, int, str]] = set()
         self._replay_projectors: dict[str, ReplayEntryProjector] = {
             "user": self._project_replay_user,
             "assistant": self._project_replay_assistant,
@@ -234,6 +236,8 @@ class TranscriptProjectionAdapter:
 
     def _reset_for_new_run(self) -> None:
         """Clear per-run tracking before the next prompt starts."""
+        self._interrupted.clear()
+        self._yield_notices.clear()
         self._assistant_blocks.clear()
         self._thinking_blocks.clear()
         self._thinking_block_iterations.clear()
@@ -249,6 +253,21 @@ class TranscriptProjectionAdapter:
         their block ID, not by assistant iteration, so each update reaches the
         original thinking block.
         """
+        response_key = (event.attempt_turn_id, event.iteration)
+        thinking_key = (*response_key, event.block_id or "")
+        if event.kind in {"yield_requested", "yield_deferred", "iteration_interrupted"}:
+            await self._project_cooperative_event(event=event)
+            return
+        if response_key in self._interrupted and event.kind in {
+            "text_delta",
+            "text_end",
+            "thinking_delta",
+            "thinking_end",
+            "run_completed",
+            "tool_call_delta",
+            "tool_call_end",
+        }:
+            return
         if event.kind == "thinking_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
@@ -259,7 +278,7 @@ class TranscriptProjectionAdapter:
                 )
                 return
             thinking_block: AssistantStreamThinkingBlock = await self._get_or_create_thinking_block(
-                block_id=event.block_id,
+                block_id=thinking_key,
                 iteration=event.iteration,
             )
             thinking_block.append_thinking(delta=event.delta or "")
@@ -272,20 +291,20 @@ class TranscriptProjectionAdapter:
                     iteration=event.iteration,
                 )
                 return
-            self._finalize_thinking_block(block_id=event.block_id, content=event.content)
+            self._finalize_thinking_block(block_id=thinking_key, content=event.content)
             return
 
         if event.kind == "text_delta":
             if not (event.delta or ""):
                 return  # no content — do not mount an empty block
             answer_block: AssistantStreamBlock = await self._get_or_create_assistant_block(
-                iteration=event.iteration,
+                iteration=response_key,
             )
             answer_block.append_text(delta=event.delta or "")
             return
 
         if event.kind == "text_end":
-            maybe_answer_block: AssistantStreamBlock | None = self._assistant_blocks.get(event.iteration)
+            maybe_answer_block: AssistantStreamBlock | None = self._assistant_blocks.get(response_key)
             if maybe_answer_block is not None and event.content:
                 maybe_answer_block.set_answer(content=event.content)
             return
@@ -302,22 +321,24 @@ class TranscriptProjectionAdapter:
                 # This avoids showing a generic ``tool(command=...)`` headline.
                 buffered_tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
                 if event.tool_arguments_delta:
-                    self._tool_argument_buffers[buffered_tool_call_id] = (
-                        self._tool_argument_buffers.get(buffered_tool_call_id, "")
+                    self._tool_argument_buffers[(*response_key, buffered_tool_call_id)] = (
+                        self._tool_argument_buffers.get((*response_key, buffered_tool_call_id), "")
                         + event.tool_arguments_delta
                     )
                 return
             tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
             delta_tool_block: ToolExecutionBlock = await self._get_or_create_tool_block(
                 tool_call_id=tool_call_id,
+                response_key=response_key,
                 tool_name=event.tool_name,
             )
             if event.tool_arguments_delta:
-                self._tool_argument_buffers[tool_call_id] = (
-                    self._tool_argument_buffers.get(tool_call_id, "") + event.tool_arguments_delta
+                self._tool_argument_buffers[(*response_key, tool_call_id)] = (
+                    self._tool_argument_buffers.get((*response_key, tool_call_id), "")
+                    + event.tool_arguments_delta
                 )
             parsed_input: dict[str, object] = event.tool_input or self._best_effort_parse_tool_input(
-                raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
+                raw_arguments=self._tool_argument_buffers.get((*response_key, tool_call_id), ""),
             )
             delta_tool_block.update_tool_call(
                 tool_name=event.tool_name,
@@ -326,24 +347,25 @@ class TranscriptProjectionAdapter:
             return
 
         if event.kind == "tool_call_end":
-            if not event.tool_name and event.tool_call_id not in self._tool_blocks:
+            if not event.tool_name and (*response_key, event.tool_call_id or "") not in self._tool_blocks:
                 # The call ended without a name and without a displayed
                 # block, so there is nothing to finish or show.
-                self._tool_argument_buffers.pop(event.tool_call_id or "", None)
+                self._tool_argument_buffers.pop((*response_key, event.tool_call_id or ""), None)
                 return
             tool_call_id = event.tool_call_id or event.block_id or "tool-call"
             final_tool_block: ToolExecutionBlock = await self._get_or_create_tool_block(
                 tool_call_id=tool_call_id,
+                response_key=response_key,
                 tool_name=event.tool_name,
             )
             parsed_input = event.tool_input or self._best_effort_parse_tool_input(
-                raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
+                raw_arguments=self._tool_argument_buffers.get((*response_key, tool_call_id), ""),
             )
             final_tool_block.update_tool_call(
                 tool_name=event.tool_name,
                 tool_input=parsed_input,
             )
-            self._record_tool_call(block=final_tool_block)
+            self._record_tool_call(block=final_tool_block, response_key=response_key)
             return
 
         if event.kind == "tool_output_update":
@@ -356,18 +378,18 @@ class TranscriptProjectionAdapter:
 
         if event.kind == "run_completed":
             await self._finalize_completed_run(
-                iteration=event.iteration,
+                iteration=response_key,
                 content=event.content or "",
             )
             return
 
         if event.kind == "run_aborted":
-            await self._finalize_aborted_run(iteration=event.iteration)
+            await self._finalize_aborted_run(iteration=response_key)
             return
 
         if event.kind == "run_failed":
             await self._finalize_failed_run(
-                iteration=event.iteration,
+                iteration=response_key,
                 error_message=event.content or "unknown error",
             )
             return
@@ -421,10 +443,54 @@ class TranscriptProjectionAdapter:
             )
             return
 
+    async def _project_cooperative_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Seal only the exact response and publish fixed deduplicated notices.
+
+        Requested is informational only. No blank answer is mounted for a silent
+        provider. Interrupted widgets cannot accept later completion repairs.
+        """
+        key = (event.attempt_turn_id, event.iteration)
+        notice_key = (*key, event.kind)
+        if notice_key in self._yield_notices:
+            return
+        self._yield_notices.add(notice_key)
+        if event.kind == "yield_requested":
+            return
+        if event.kind == "yield_deferred":
+            await self._host.mount_transcript_line(
+                content="Urgent input accepted; delivery deferred until running tool work is safe.",
+                classes="assistant-aborted",
+            )
+            return
+        self._interrupted.add(key)
+        block = self._assistant_blocks.get(key)
+        if block is not None:
+            block.mark_interrupted()
+        for thinking_key, thinking in self._thinking_blocks.items():
+            if thinking_key[:2] == key:
+                thinking.mark_interrupted()
+                self._open_thinking_block_ids.discard(thinking_key)
+        for tool_id in self._tool_blocks:
+            if tool_id[:2] != key:
+                continue
+            tool = self._tool_blocks.get(tool_id)
+            if tool is not None:
+                tool.mark_incomplete()
+            self._tool_argument_buffers.pop(tool_id, None)
+        if block is None:
+            await self._host.mount_transcript_line(
+                content="Response interrupted for urgent input.", classes="assistant-aborted"
+            )
+        else:
+            self._host.record_transcript_line(
+                content="Response interrupted for urgent input.", classes="assistant-aborted"
+            )
+
     async def _project_tool_output_update(self, *, event: AgentStreamEventDAO) -> None:
         """Update the tool’s existing block with output received so far, before its final result arrives."""
         tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
         block: ToolExecutionBlock = await self._get_or_create_tool_block(
+            response_key=(event.attempt_turn_id, event.iteration),
             tool_call_id=tool_call_id,
             tool_name=event.tool_name,
         )
@@ -510,7 +576,10 @@ class TranscriptProjectionAdapter:
                 before=before
             )
             thinking_block.set_thinking(content=entry.reasoning)
-            thinking_block.seal()
+            if entry.interrupted:
+                thinking_block.mark_interrupted()
+            else:
+                thinking_block.seal()
             if before is not None:
                 # Put the answer after its thinking block. Inserting both at
                 # the same position would reverse their order.
@@ -568,6 +637,10 @@ class TranscriptProjectionAdapter:
         Apply only one final state: these operations each mark the block finished.
         For a cancelled or failed answer, show its partial text before the status note.
         """
+        if entry.interrupted:
+            block.set_answer(content=entry.answer or "")
+            block.mark_interrupted()
+            return entry.answer or "", "assistant-aborted"
         if entry.terminal_note == _ABORTED_TERMINAL_NOTE:
             block.set_answer(content=entry.answer or "")
             block.mark_aborted()
@@ -613,7 +686,7 @@ class TranscriptProjectionAdapter:
     async def _get_or_create_thinking_block(
         self,
         *,
-        block_id: str,
+        block_id: tuple[str | None, int, str],
         iteration: int,
     ) -> AssistantStreamThinkingBlock:
         """Find or create the thinking widget for this block ID.
@@ -637,7 +710,9 @@ class TranscriptProjectionAdapter:
         self._open_thinking_block_ids.add(block_id)
         return block
 
-    def _finalize_thinking_block(self, *, block_id: str, content: Optional[str]) -> None:
+    def _finalize_thinking_block(
+        self, *, block_id: tuple[str | None, int, str], content: Optional[str]
+    ) -> None:
         """Replace and finish the matching open thinking block when completed text is available.
 
         Ignore unknown or finished IDs. Without text, keep the block open for a
@@ -663,7 +738,7 @@ class TranscriptProjectionAdapter:
     async def _get_or_create_assistant_block(
         self,
         *,
-        iteration: int,
+        iteration: tuple[str | None, int],
     ) -> AssistantStreamBlock:
         """Find or create the answer block for this assistant iteration and finish older blocks.
 
@@ -686,7 +761,7 @@ class TranscriptProjectionAdapter:
         self._seal_stale_assistant_blocks(except_iteration=iteration)
         return block
 
-    def _seal_stale_assistant_blocks(self, *, except_iteration: int) -> None:
+    def _seal_stale_assistant_blocks(self, *, except_iteration: tuple[str | None, int]) -> None:
         """Mark all tracked answer blocks finished except the specified iteration.
 
         Do this when a newer iteration starts and when a run ends. Finishing an
@@ -701,6 +776,7 @@ class TranscriptProjectionAdapter:
         self,
         *,
         tool_call_id: str,
+        response_key: tuple[str | None, int],
         tool_name: Optional[str],
     ) -> ToolExecutionBlock:
         """Return the mounted tool block for ``tool_call_id``.
@@ -712,20 +788,21 @@ class TranscriptProjectionAdapter:
         Returns:
             ToolExecutionBlock: Mounted or cached tool block.
         """
-        block: ToolExecutionBlock | None = self._tool_blocks.get(tool_call_id)
+        block: ToolExecutionBlock | None = self._tool_blocks.get((*response_key, tool_call_id))
         if block is not None:
             return block
         block = await self._host.mount_tool_execution_block(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
         )
-        self._tool_blocks[tool_call_id] = block
+        self._tool_blocks[(*response_key, tool_call_id)] = block
         return block
 
     async def _project_tool_result(self, *, event: AgentStreamEventDAO) -> None:
         """Update the tool’s existing block, or show a result notice when no matching block exists."""
+        response_key = (event.attempt_turn_id, event.iteration)
         tool_call_id: str | None = event.tool_call_id
-        if tool_call_id is None or tool_call_id not in self._tool_blocks:
+        if tool_call_id is None or (*response_key, tool_call_id) not in self._tool_blocks:
             await self._host.mount_transcript_line(
                 content=ToolExecutionBlockResultFormatter.format(
                     tool_name=event.tool_name,
@@ -735,12 +812,12 @@ class TranscriptProjectionAdapter:
             )
             return
 
-        block: ToolExecutionBlock = self._tool_blocks.pop(tool_call_id)
+        block: ToolExecutionBlock = self._tool_blocks.pop((*response_key, tool_call_id))
         block.update_result(
             tool_name=event.tool_name,
             output=event.content or "",
         )
-        self._record_tool_call(block=block)
+        self._record_tool_call(block=block, response_key=response_key)
         self._host.record_transcript_line(
             content=ToolExecutionBlockResultFormatter.format(
                 tool_name=event.tool_name,
@@ -748,11 +825,11 @@ class TranscriptProjectionAdapter:
             ),
             classes="tool-result",
         )
-        self._tool_argument_buffers.pop(tool_call_id, None)
+        self._tool_argument_buffers.pop((*response_key, tool_call_id), None)
 
-    def _record_tool_call(self, *, block: ToolExecutionBlock) -> None:
+    def _record_tool_call(self, *, block: ToolExecutionBlock, response_key: tuple[str | None, int]) -> None:
         """Record a tool-call text line once."""
-        if block.tool_call_id in self._recorded_tool_calls:
+        if (*response_key, block.tool_call_id) in self._recorded_tool_calls:
             return
         self._host.record_transcript_line(
             content=ToolExecutionBlockCallFormatter.format(
@@ -761,9 +838,9 @@ class TranscriptProjectionAdapter:
             ),
             classes="tool-line",
         )
-        self._recorded_tool_calls.add(block.tool_call_id)
+        self._recorded_tool_calls.add((*response_key, block.tool_call_id))
 
-    async def _finalize_completed_run(self, *, iteration: int, content: str) -> None:
+    async def _finalize_completed_run(self, *, iteration: tuple[str | None, int], content: str) -> None:
         """Show the completed answer for this iteration and finish every other answer block from the run."""
         self._seal_all_thinking_blocks()
         block: AssistantStreamBlock | None = self._assistant_blocks.get(iteration)
@@ -782,7 +859,7 @@ class TranscriptProjectionAdapter:
         self._host.record_transcript_line(content=content, classes="assistant-final")
         self._seal_stale_assistant_blocks(except_iteration=iteration)
 
-    async def _finalize_aborted_run(self, *, iteration: int) -> None:
+    async def _finalize_aborted_run(self, *, iteration: tuple[str | None, int]) -> None:
         """Mark the current answer cancelled, or show a notice if no answer exists.
 
         Finish older answer blocks too.
@@ -803,7 +880,7 @@ class TranscriptProjectionAdapter:
         )
         self._seal_stale_assistant_blocks(except_iteration=iteration)
 
-    async def _finalize_failed_run(self, *, iteration: int, error_message: str) -> None:
+    async def _finalize_failed_run(self, *, iteration: tuple[str | None, int], error_message: str) -> None:
         """Mark the current answer failed, or show an error notice if no answer exists.
 
         Finish older answer blocks too.

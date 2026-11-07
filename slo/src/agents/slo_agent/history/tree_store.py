@@ -24,7 +24,10 @@ from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryMetadataDAO,
 )
-from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+from src.agents.slo_agent.history.filesystem_store import (
+    FileCertification,
+    FilesystemSessionHistoryStore,
+)
 from src.agents.slo_agent.compaction.compacter import CompactionResult
 
 __all__ = ["TreeBasedFilesystemSessionHistoryStore"]
@@ -46,14 +49,24 @@ class TreeBasedFilesystemSessionHistoryStore:
     happened to be appended immediately before it.
     """
 
-    def __init__(self, *, root: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        *,
+        root: Optional[Path] = None,
+        file_certification: Optional[FileCertification] = None,
+    ) -> None:
         """Initialise the tree store backed by a flat FilesystemSessionHistoryStore.
 
         Args:
             root (Optional[Path]): Override history root directory.
                 Defaults to ~/.slo/sessions/history when None.
+            file_certification (Optional[FileCertification]): Forwarded to the
+                flat owner so both adapters share the same storage barrier.
         """
-        self._flat: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(root=root)
+        self._flat: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(
+            root=root,
+            file_certification=file_certification,
+        )
         self._last_entry_id: Optional[str] = None
         self._last_entry_sequence: int = 0
         self._pending_tool_calls: dict[str, str] = {}
@@ -298,6 +311,21 @@ class TreeBasedFilesystemSessionHistoryStore:
             SessionHistoryEventDAO: Flat-store proof without tree enrichment.
         """
         persisted: SessionHistoryEventDAO = await self._flat.append_message_application_once(event=event)
+        if persisted.sequence > self._last_entry_sequence:
+            self._last_entry_id = persisted.event_id
+            self._last_entry_sequence = persisted.sequence
+        return persisted
+
+    async def append_cooperative_event_once(self, *, event: SessionHistoryEventDAO) -> SessionHistoryEventDAO:
+        """Preserve cooperative bytes and advance the tree cursor only for newer events.
+
+        Args:
+            event: Validated cooperative event for the flat owner.
+
+        Returns:
+            SessionHistoryEventDAO: Flat-store proof without tree enrichment.
+        """
+        persisted: SessionHistoryEventDAO = await self._flat.append_cooperative_event_once(event=event)
         if persisted.sequence > self._last_entry_sequence:
             self._last_entry_id = persisted.event_id
             self._last_entry_sequence = persisted.sequence

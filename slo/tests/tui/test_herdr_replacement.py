@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.herdr.service import NullHerdrReporter
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -39,7 +40,11 @@ async def test_new_commit_joins_old_close(tmp_path: Path, cancel: bool) -> None:
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 assert old._herdr_closing
                 assert app._session is old
-                assert app._render_event in old._subscribers
+                # A.2 §3.5 seals and joins observation before final session close
+                # waits on the reporter. Selection still cannot roll back.
+                assert app._render_event not in old._subscribers
+                assert old._presentation_closed
+                assert all(mailbox.is_joined() for mailbox in old._presentation_mailboxes)
                 retained = app._session_replacement_task
                 assert retained is not None and not retained.done()
                 if cancel:
@@ -66,6 +71,82 @@ async def test_new_commit_joins_old_close(tmp_path: Path, cancel: bool) -> None:
             finally:
                 release.set()
                 await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(argnames="messaging", argvalues=[False, True])
+async def test_new_joins_exact_callback_owner_before_adoption(tmp_path: Path, messaging: bool) -> None:
+    """Mounted replacement joins a cancellation-suppressing predecessor despite waiter cancellation."""
+    old = SloAgentSession.build(config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history"))
+    app = SloTUI(session=old, messaging_enabled=messaging)
+    entered, cancelled, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+    observed: list[str] = []
+
+    async def observer(event: AgentStreamEventDAO) -> None:
+        """Hold the actual mailbox worker until final ownership can settle."""
+        if event.delta != "held predecessor":
+            return
+        observed.append(event.delta)
+        entered.set()
+        try:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+        finally:
+            finished.set()
+
+    async def relay_predecessor() -> None:
+        """Retain legacy awaited delivery and messaging publication through one coroutine."""
+        await old.event_relay(AgentStreamEventDAO(kind="text_delta", delta="held predecessor"))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        old.subscribe(handler=observer)
+        mailbox = next(owner for owner in old._presentation_mailboxes if owner.handler is observer)
+        delivery: asyncio.Task[None] = asyncio.create_task(coro=relay_predecessor())
+        replacement: asyncio.Task[None] | None = None
+        try:
+            async with asyncio.timeout(delay=5):
+                await entered.wait()
+            worker = mailbox._worker
+            assert worker is not None and not worker.done()
+            replacement = asyncio.create_task(coro=app._start_new_session(requested_name=None))
+            async with asyncio.timeout(delay=5):
+                await cancelled.wait()
+            retained = app._session_replacement_task
+            final_owner = old._messaging_close_task
+            assert retained is not None and not retained.done()
+            assert final_owner is not None and not final_owner.done()
+            assert mailbox._worker is worker and not worker.done()
+            assert old._presentation_closed and not mailbox.is_active()
+            assert app._session is old and not finished.is_set()
+            assert app._lease_store is not None
+            assert await app._lease_store.read(session_id=old.session_id) is None
+            for _ in range(3):
+                replacement.cancel()
+                await asyncio.sleep(delay=0)
+                assert not replacement.done() and not retained.done() and not final_owner.done()
+                assert app._session is old and mailbox._worker is worker and not worker.done()
+            release.set()
+            async with asyncio.timeout(delay=5):
+                with pytest.raises(asyncio.CancelledError):
+                    await replacement
+                await delivery
+            assert finished.is_set() and worker.done() and final_owner.done() and retained.done()
+            assert mailbox.is_joined()
+            assert all(owner.is_joined() for owner in old._presentation_mailboxes)
+            assert app._session is not old and app._session_replacement_task is None
+            lease = await app._lease_store.read(session_id=app._session.session_id)
+            assert lease is not None and lease.owner_id == app._session_owner_id
+            await old.event_relay(AgentStreamEventDAO(kind="text_delta", delta="held predecessor"))
+            assert observed == ["held predecessor"]
+        finally:
+            release.set()
+            if replacement is not None:
+                await asyncio.gather(replacement, return_exceptions=True)
+            await asyncio.gather(delivery, return_exceptions=True)
+            await old.close_messaging()
 
 
 @pytest.mark.parametrize("failure", ["preparation", "unsubscribe", "clear", "inbox"])

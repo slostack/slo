@@ -51,7 +51,7 @@ async def test_geometry_focus_recall_and_band_match_baseline(
             assert prompt.text == literal
             prompt.load_text("[literal]")
             prompt.move_cursor((0, len("[literal]")))
-            await pilot.press("ctrl+enter")
+            await pilot.press("shift+enter")
             await pilot.press("x")
             assert prompt.text == "[literal]\nx"
             await prompt.handle(command=ClearSubmissionDAO())

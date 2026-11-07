@@ -538,7 +538,7 @@ async def test_busy_enters_admit_three_distinct_durable_messages(tmp_path: Path)
             assert [identity.receipt.message_id for identity in identities] == message_ids
             assert [identity.receipt.sequence for identity in identities] == [1, 2, 3]
             # New typing, including the reserved newline shortcut, survives delivery.
-            await pilot.press("x", "ctrl+enter", "y")
+            await pilot.press("x", "shift+enter", "y")
             assert prompt.text == "x\ny"
             model.release.set()
             await _wait_until(predicate=lambda: len(model.requests) == 3 and not session.is_running)

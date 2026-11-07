@@ -165,7 +165,7 @@ class SlashCommandRegistry:
 _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     SlashCommandSpecDAO(
         name="help",
-        description="this message",
+        description="this message · Ctrl+Enter / Alt+U: Send urgently",
         aliases=["h", "?"],
         display_order=10,
     ),

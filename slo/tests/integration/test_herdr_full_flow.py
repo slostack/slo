@@ -80,6 +80,7 @@ async def test_reporting_blockers_retain_swallowed_async_lookup() -> None:
         "session_id",
         "event_id",
         "turn_id",
+        "attempt_turn_id",
         "block_id",
         "parent_turn_id",
         "entry_id",
@@ -202,6 +203,40 @@ def test_parity_normalizer_retains_every_history_payload_field(field: str) -> No
     after = before.model_copy(deep=True)
     after.payload = before.payload.model_copy(update={field: value})
     assert SemanticTrace().serialize(records=[before]) != SemanticTrace().serialize(records=[after])
+
+
+@pytest.mark.parametrize("mutation", ["rename", "missing", "all_missing", "split", "history_link", "order"])
+def test_parity_normalizer_preserves_attempt_identity_topology(mutation: str) -> None:
+    """Only consistent schema identity renaming preserves stream/history parity."""
+    before = [
+        AgentStreamEventDAO(kind="text_delta", attempt_turn_id="before-turn", delta="answer"),
+        AgentStreamEventDAO(kind="run_completed", attempt_turn_id="before-turn", content="answer"),
+    ]
+    after = [event.model_copy(update={"attempt_turn_id": "after-turn"}) for event in before]
+    if mutation == "missing":
+        after[0].attempt_turn_id = None
+    elif mutation == "all_missing":
+        for event in after:
+            event.attempt_turn_id = None
+    elif mutation == "split":
+        after[1].attempt_turn_id = "other-turn"
+    elif mutation == "order":
+        after.reverse()
+    before_history = SessionHistoryEventDAO(
+        session_id="before-session", event_id="before-event", turn_id="before-turn", kind="run_completed"
+    )
+    after_history = SessionHistoryEventDAO(
+        session_id="after-session",
+        event_id="after-event",
+        turn_id="other-turn" if mutation == "history_link" else "after-turn",
+        kind="run_completed",
+    )
+    left, right = SemanticTrace(), SemanticTrace()
+    left_value = (left.serialize(records=list(before)), left.serialize(records=[before_history]))
+    right_value = (right.serialize(records=list(after)), right.serialize(records=[after_history]))
+    assert (left_value == right_value) is (mutation == "rename")
+    assert before[0].attempt_turn_id == "before-turn"
+    assert after[0].attempt_turn_id == (None if mutation in {"missing", "all_missing"} else "after-turn")
 
 
 def test_parity_normalizer_accepts_consistent_generated_identity_renaming() -> None:

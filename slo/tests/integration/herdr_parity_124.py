@@ -133,6 +133,7 @@ class SemanticTrace:
         """Apply an explicit schema path allowlist to a fresh serialized copy."""
         value = record.model_dump(mode="json")
         if isinstance(record, AgentStreamEventDAO):
+            value["attempt_turn_id"] = self._identity(value=value["attempt_turn_id"])
             value["block_id"] = self._identity(value=value["block_id"])
             return value
         if not isinstance(record, SessionHistoryEventDAO):

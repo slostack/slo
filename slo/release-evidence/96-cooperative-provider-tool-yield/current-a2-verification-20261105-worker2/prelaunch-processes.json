@@ -1,0 +1,9918 @@
+{
+  "1": {
+    "argv": [
+      "/sbin/init",
+      "splash"
+    ],
+    "pgid": 1,
+    "pid": 1,
+    "ppid": 0,
+    "sid": 1,
+    "start": "19",
+    "state": "S"
+  },
+  "2": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 2,
+    "ppid": 0,
+    "sid": 0,
+    "start": "19",
+    "state": "S"
+  },
+  "3": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 3,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "S"
+  },
+  "4": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 4,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "5": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 5,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "6": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 6,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "7": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 7,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "8": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 8,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "11": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 11,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "13": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 13,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "14": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 14,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "S"
+  },
+  "15": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 15,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "I"
+  },
+  "16": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 16,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "S"
+  },
+  "17": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 17,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "S"
+  },
+  "18": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 18,
+    "ppid": 2,
+    "sid": 0,
+    "start": "29",
+    "state": "S"
+  },
+  "19": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 19,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "20": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 20,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "21": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 21,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "22": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 22,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "23": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 23,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "24": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 24,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "26": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 26,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "27": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 27,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "28": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 28,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "29": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 29,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "30": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 30,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "32": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 32,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "33": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 33,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "34": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 34,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "35": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 35,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "36": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 36,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "38": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 38,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "39": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 39,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "40": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 40,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "41": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 41,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "42": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 42,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "44": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 44,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "45": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 45,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "46": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 46,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "47": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 47,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "48": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 48,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "50": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 50,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "51": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 51,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "52": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 52,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "53": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 53,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "54": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 54,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "56": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 56,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "57": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 57,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "58": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 58,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "59": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 59,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "60": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 60,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "62": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 62,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "63": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 63,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "64": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 64,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "65": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 65,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "66": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 66,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "68": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 68,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "69": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 69,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "70": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 70,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "71": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 71,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "72": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 72,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "74": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 74,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "75": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 75,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "76": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 76,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "77": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 77,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "78": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 78,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "80": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 80,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "81": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 81,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "82": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 82,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "83": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 83,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "84": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 84,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "S"
+  },
+  "86": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 86,
+    "ppid": 2,
+    "sid": 0,
+    "start": "30",
+    "state": "I"
+  },
+  "87": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 87,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "88": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 88,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "89": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 89,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "90": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 90,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "92": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 92,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "I"
+  },
+  "93": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 93,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "94": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 94,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "95": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 95,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "96": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 96,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "98": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 98,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "I"
+  },
+  "99": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 99,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "100": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 100,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "101": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 101,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "102": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 102,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "104": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 104,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "I"
+  },
+  "105": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 105,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "106": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 106,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "107": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 107,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "108": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 108,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "S"
+  },
+  "110": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 110,
+    "ppid": 2,
+    "sid": 0,
+    "start": "31",
+    "state": "I"
+  },
+  "111": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 111,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "S"
+  },
+  "112": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 112,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "113": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 113,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "114": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 114,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "115": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 115,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "116": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 116,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "S"
+  },
+  "117": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 117,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "S"
+  },
+  "119": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 119,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "S"
+  },
+  "120": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 120,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "121": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 121,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "S"
+  },
+  "122": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 122,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "S"
+  },
+  "125": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 125,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "126": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 126,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "127": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 127,
+    "ppid": 2,
+    "sid": 0,
+    "start": "32",
+    "state": "I"
+  },
+  "128": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 128,
+    "ppid": 2,
+    "sid": 0,
+    "start": "35",
+    "state": "S"
+  },
+  "131": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 131,
+    "ppid": 2,
+    "sid": 0,
+    "start": "44",
+    "state": "I"
+  },
+  "132": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 132,
+    "ppid": 2,
+    "sid": 0,
+    "start": "44",
+    "state": "I"
+  },
+  "133": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 133,
+    "ppid": 2,
+    "sid": 0,
+    "start": "44",
+    "state": "I"
+  },
+  "134": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 134,
+    "ppid": 2,
+    "sid": 0,
+    "start": "44",
+    "state": "I"
+  },
+  "135": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 135,
+    "ppid": 2,
+    "sid": 0,
+    "start": "44",
+    "state": "I"
+  },
+  "136": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 136,
+    "ppid": 2,
+    "sid": 0,
+    "start": "44",
+    "state": "I"
+  },
+  "137": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 137,
+    "ppid": 2,
+    "sid": 0,
+    "start": "45",
+    "state": "S"
+  },
+  "138": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 138,
+    "ppid": 2,
+    "sid": 0,
+    "start": "46",
+    "state": "I"
+  },
+  "139": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 139,
+    "ppid": 2,
+    "sid": 0,
+    "start": "48",
+    "state": "I"
+  },
+  "141": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 141,
+    "ppid": 2,
+    "sid": 0,
+    "start": "49",
+    "state": "S"
+  },
+  "142": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 142,
+    "ppid": 2,
+    "sid": 0,
+    "start": "49",
+    "state": "S"
+  },
+  "143": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 143,
+    "ppid": 2,
+    "sid": 0,
+    "start": "50",
+    "state": "S"
+  },
+  "144": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 144,
+    "ppid": 2,
+    "sid": 0,
+    "start": "50",
+    "state": "I"
+  },
+  "146": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 146,
+    "ppid": 2,
+    "sid": 0,
+    "start": "51",
+    "state": "S"
+  },
+  "147": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 147,
+    "ppid": 2,
+    "sid": 0,
+    "start": "51",
+    "state": "S"
+  },
+  "148": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 148,
+    "ppid": 2,
+    "sid": 0,
+    "start": "51",
+    "state": "I"
+  },
+  "150": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 150,
+    "ppid": 2,
+    "sid": 0,
+    "start": "56",
+    "state": "S"
+  },
+  "151": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 151,
+    "ppid": 2,
+    "sid": 0,
+    "start": "58",
+    "state": "I"
+  },
+  "152": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 152,
+    "ppid": 2,
+    "sid": 0,
+    "start": "58",
+    "state": "I"
+  },
+  "153": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 153,
+    "ppid": 2,
+    "sid": 0,
+    "start": "58",
+    "state": "I"
+  },
+  "172": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 172,
+    "ppid": 2,
+    "sid": 0,
+    "start": "66",
+    "state": "I"
+  },
+  "173": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 173,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "174": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 174,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "I"
+  },
+  "175": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 175,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "176": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 176,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "177": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 177,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "178": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 178,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "179": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 179,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "180": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 180,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "181": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 181,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "182": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 182,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "183": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 183,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "184": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 184,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "185": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 185,
+    "ppid": 2,
+    "sid": 0,
+    "start": "67",
+    "state": "S"
+  },
+  "216": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 216,
+    "ppid": 2,
+    "sid": 0,
+    "start": "72",
+    "state": "I"
+  },
+  "219": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 219,
+    "ppid": 2,
+    "sid": 0,
+    "start": "73",
+    "state": "I"
+  },
+  "221": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 221,
+    "ppid": 2,
+    "sid": 0,
+    "start": "74",
+    "state": "I"
+  },
+  "239": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 239,
+    "ppid": 2,
+    "sid": 0,
+    "start": "75",
+    "state": "I"
+  },
+  "246": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 246,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "247": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 247,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "248": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 248,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "249": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 249,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "250": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 250,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "251": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 251,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "252": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 252,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "254": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 254,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "259": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 259,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "265": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 265,
+    "ppid": 2,
+    "sid": 0,
+    "start": "82",
+    "state": "I"
+  },
+  "382": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 382,
+    "ppid": 2,
+    "sid": 0,
+    "start": "84",
+    "state": "I"
+  },
+  "383": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 383,
+    "ppid": 2,
+    "sid": 0,
+    "start": "84",
+    "state": "I"
+  },
+  "384": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 384,
+    "ppid": 2,
+    "sid": 0,
+    "start": "84",
+    "state": "I"
+  },
+  "385": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 385,
+    "ppid": 2,
+    "sid": 0,
+    "start": "84",
+    "state": "I"
+  },
+  "478": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 478,
+    "ppid": 2,
+    "sid": 0,
+    "start": "229",
+    "state": "S"
+  },
+  "479": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 479,
+    "ppid": 2,
+    "sid": 0,
+    "start": "229",
+    "state": "I"
+  },
+  "536": {
+    "argv": [
+      "/usr/lib/systemd/systemd-journald"
+    ],
+    "pgid": 536,
+    "pid": 536,
+    "ppid": 1,
+    "sid": 536,
+    "start": "275",
+    "state": "S"
+  },
+  "574": {
+    "argv": [
+      "/usr/lib/systemd/systemd-udevd"
+    ],
+    "pgid": 574,
+    "pid": 574,
+    "ppid": 1,
+    "sid": 574,
+    "start": "279",
+    "state": "S"
+  },
+  "600": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 600,
+    "ppid": 2,
+    "sid": 0,
+    "start": "285",
+    "state": "S"
+  },
+  "750": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 750,
+    "ppid": 2,
+    "sid": 0,
+    "start": "302",
+    "state": "I"
+  },
+  "765": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 765,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "766": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 766,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "767": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 767,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "768": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 768,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "769": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 769,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "770": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 770,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "771": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 771,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "772": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 772,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "773": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 773,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "774": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 774,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "775": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 775,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "776": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 776,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "777": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 777,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "778": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 778,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "779": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 779,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "780": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 780,
+    "ppid": 2,
+    "sid": 0,
+    "start": "305",
+    "state": "S"
+  },
+  "795": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 795,
+    "ppid": 2,
+    "sid": 0,
+    "start": "315",
+    "state": "S"
+  },
+  "822": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 822,
+    "ppid": 2,
+    "sid": 0,
+    "start": "462",
+    "state": "I"
+  },
+  "836": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 836,
+    "ppid": 2,
+    "sid": 0,
+    "start": "467",
+    "state": "I"
+  },
+  "838": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 838,
+    "ppid": 2,
+    "sid": 0,
+    "start": "529",
+    "state": "I"
+  },
+  "839": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 839,
+    "ppid": 2,
+    "sid": 0,
+    "start": "529",
+    "state": "I"
+  },
+  "840": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 840,
+    "ppid": 2,
+    "sid": 0,
+    "start": "529",
+    "state": "I"
+  },
+  "841": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 841,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "842": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 842,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "843": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 843,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "844": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 844,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "845": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 845,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "846": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 846,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "847": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 847,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "848": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 848,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "S"
+  },
+  "849": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 849,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "S"
+  },
+  "850": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 850,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "S"
+  },
+  "851": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 851,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "S"
+  },
+  "852": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 852,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "853": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 853,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "854": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 854,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "855": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 855,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "856": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 856,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "857": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 857,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "858": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 858,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "859": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 859,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "860": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 860,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "861": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 861,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "862": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 862,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "863": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 863,
+    "ppid": 2,
+    "sid": 0,
+    "start": "530",
+    "state": "I"
+  },
+  "1185": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1185,
+    "ppid": 2,
+    "sid": 0,
+    "start": "563",
+    "state": "S"
+  },
+  "1186": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1186,
+    "ppid": 2,
+    "sid": 0,
+    "start": "563",
+    "state": "S"
+  },
+  "1187": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1187,
+    "ppid": 2,
+    "sid": 0,
+    "start": "563",
+    "state": "S"
+  },
+  "1188": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1188,
+    "ppid": 2,
+    "sid": 0,
+    "start": "563",
+    "state": "S"
+  },
+  "1189": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1189,
+    "ppid": 2,
+    "sid": 0,
+    "start": "610",
+    "state": "S"
+  },
+  "1190": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1190,
+    "ppid": 2,
+    "sid": 0,
+    "start": "610",
+    "state": "S"
+  },
+  "1191": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1191,
+    "ppid": 2,
+    "sid": 0,
+    "start": "610",
+    "state": "S"
+  },
+  "1192": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1192,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1193": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1193,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1194": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1194,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1195": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1195,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1196": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1196,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1197": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1197,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1198": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1198,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1199": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1199,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1200": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1200,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1201": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1201,
+    "ppid": 2,
+    "sid": 0,
+    "start": "612",
+    "state": "S"
+  },
+  "1202": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1202,
+    "ppid": 2,
+    "sid": 0,
+    "start": "620",
+    "state": "S"
+  },
+  "1203": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1203,
+    "ppid": 2,
+    "sid": 0,
+    "start": "626",
+    "state": "S"
+  },
+  "1275": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1275,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1276": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1276,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1277": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1277,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1278": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1278,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1279": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1279,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1280": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1280,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1281": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1281,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1282": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1282,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1283": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1283,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1284": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1284,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1285": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1285,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1286": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1286,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1287": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1287,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1288": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1288,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1289": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1289,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1290": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1290,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1291": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1291,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1292": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1292,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1293": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1293,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1294": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1294,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1295": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1295,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1296": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1296,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1297": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1297,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1298": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1298,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1307": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1307,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1308": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1308,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1309": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1309,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1310": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1310,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1311": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1311,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1312": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1312,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1313": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1313,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1314": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1314,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1315": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1315,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1316": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1316,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1317": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1317,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1318": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1318,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1319": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1319,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1320": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1320,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1321": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1321,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1322": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1322,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1323": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1323,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1324": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1324,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1325": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1325,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1326": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1326,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1327": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1327,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1328": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1328,
+    "ppid": 2,
+    "sid": 0,
+    "start": "633",
+    "state": "S"
+  },
+  "1345": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1345,
+    "ppid": 2,
+    "sid": 0,
+    "start": "637",
+    "state": "S"
+  },
+  "1346": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1346,
+    "ppid": 2,
+    "sid": 0,
+    "start": "637",
+    "state": "S"
+  },
+  "1347": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1347,
+    "ppid": 2,
+    "sid": 0,
+    "start": "637",
+    "state": "S"
+  },
+  "1367": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1367,
+    "ppid": 2,
+    "sid": 0,
+    "start": "643",
+    "state": "S"
+  },
+  "1368": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1368,
+    "ppid": 2,
+    "sid": 0,
+    "start": "643",
+    "state": "S"
+  },
+  "1369": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1369,
+    "ppid": 2,
+    "sid": 0,
+    "start": "643",
+    "state": "S"
+  },
+  "1370": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1370,
+    "ppid": 2,
+    "sid": 0,
+    "start": "643",
+    "state": "S"
+  },
+  "1371": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1371,
+    "ppid": 2,
+    "sid": 0,
+    "start": "643",
+    "state": "S"
+  },
+  "1372": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1372,
+    "ppid": 2,
+    "sid": 0,
+    "start": "644",
+    "state": "S"
+  },
+  "1383": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1383,
+    "ppid": 2,
+    "sid": 0,
+    "start": "650",
+    "state": "S"
+  },
+  "1384": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1384,
+    "ppid": 2,
+    "sid": 0,
+    "start": "651",
+    "state": "S"
+  },
+  "1722": {
+    "argv": [
+      "/usr/lib/systemd/systemd-oomd"
+    ],
+    "pgid": 1722,
+    "pid": 1722,
+    "ppid": 1,
+    "sid": 1722,
+    "start": "677",
+    "state": "S"
+  },
+  "1726": {
+    "argv": [
+      "/usr/lib/systemd/systemd-resolved"
+    ],
+    "pgid": 1726,
+    "pid": 1726,
+    "ppid": 1,
+    "sid": 1726,
+    "start": "678",
+    "state": "S"
+  },
+  "1856": {
+    "argv": [
+      "avahi-daemon: running [mgr-1.local]"
+    ],
+    "pgid": 1856,
+    "pid": 1856,
+    "ppid": 1,
+    "sid": 1856,
+    "start": "789",
+    "state": "S"
+  },
+  "1857": {
+    "argv": [
+      "/usr/libexec/bluetooth/bluetoothd"
+    ],
+    "pgid": 1857,
+    "pid": 1857,
+    "ppid": 1,
+    "sid": 1857,
+    "start": "789",
+    "state": "S"
+  },
+  "1858": {
+    "argv": [
+      "@dbus-daemon",
+      "--system",
+      "--address=systemd:",
+      "--nofork",
+      "--nopidfile",
+      "--systemd-activation",
+      "--syslog-only"
+    ],
+    "pgid": 1858,
+    "pid": 1858,
+    "ppid": 1,
+    "sid": 1858,
+    "start": "789",
+    "state": "S"
+  },
+  "1861": {
+    "argv": [
+      "/usr/libexec/gnome-remote-desktop-daemon",
+      "--system"
+    ],
+    "pgid": 1861,
+    "pid": 1861,
+    "ppid": 1,
+    "sid": 1861,
+    "start": "789",
+    "state": "S"
+  },
+  "1866": {
+    "argv": [
+      "/usr/bin/python3",
+      "/usr/bin/networkd-dispatcher",
+      "--run-startup-triggers"
+    ],
+    "pgid": 1866,
+    "pid": 1866,
+    "ppid": 1,
+    "sid": 1866,
+    "start": "790",
+    "state": "S"
+  },
+  "1867": {
+    "argv": [
+      "/usr/lib/polkit-1/polkitd",
+      "--no-debug"
+    ],
+    "pgid": 1867,
+    "pid": 1867,
+    "ppid": 1,
+    "sid": 1867,
+    "start": "790",
+    "state": "S"
+  },
+  "1868": {
+    "argv": [
+      "/usr/libexec/power-profiles-daemon"
+    ],
+    "pgid": 1868,
+    "pid": 1868,
+    "ppid": 1,
+    "sid": 1868,
+    "start": "790",
+    "state": "S"
+  },
+  "1874": {
+    "argv": [
+      "/snap/snapd/current/usr/lib/snapd/snapd"
+    ],
+    "pgid": 1874,
+    "pid": 1874,
+    "ppid": 1,
+    "sid": 1874,
+    "start": "790",
+    "state": "S"
+  },
+  "1880": {
+    "argv": [
+      "/usr/libexec/accounts-daemon"
+    ],
+    "pgid": 1880,
+    "pid": 1880,
+    "ppid": 1,
+    "sid": 1880,
+    "start": "791",
+    "state": "S"
+  },
+  "1883": {
+    "argv": [
+      "/usr/sbin/cron",
+      "-f",
+      "-P"
+    ],
+    "pgid": 1883,
+    "pid": 1883,
+    "ppid": 1,
+    "sid": 1883,
+    "start": "791",
+    "state": "S"
+  },
+  "1885": {
+    "argv": [
+      "/usr/libexec/switcheroo-control"
+    ],
+    "pgid": 1885,
+    "pid": 1885,
+    "ppid": 1,
+    "sid": 1885,
+    "start": "791",
+    "state": "S"
+  },
+  "1890": {
+    "argv": [
+      "/usr/lib/systemd/systemd-logind"
+    ],
+    "pgid": 1890,
+    "pid": 1890,
+    "ppid": 1,
+    "sid": 1890,
+    "start": "791",
+    "state": "S"
+  },
+  "1892": {
+    "argv": [
+      "/usr/libexec/udisks2/udisksd"
+    ],
+    "pgid": 1892,
+    "pid": 1892,
+    "ppid": 1,
+    "sid": 1892,
+    "start": "791",
+    "state": "S"
+  },
+  "1895": {
+    "argv": [
+      "zed",
+      "-F"
+    ],
+    "pgid": 1895,
+    "pid": 1895,
+    "ppid": 1,
+    "sid": 1895,
+    "start": "792",
+    "state": "S"
+  },
+  "1905": {
+    "argv": [
+      "avahi-daemon: chroot helper"
+    ],
+    "pgid": 1856,
+    "pid": 1905,
+    "ppid": 1856,
+    "sid": 1856,
+    "start": "792",
+    "state": "S"
+  },
+  "1962": {
+    "argv": [
+      "/usr/sbin/NetworkManager",
+      "--no-daemon"
+    ],
+    "pgid": 1962,
+    "pid": 1962,
+    "ppid": 1,
+    "sid": 1962,
+    "start": "794",
+    "state": "S"
+  },
+  "1968": {
+    "argv": [
+      "/usr/sbin/wpa_supplicant",
+      "-u",
+      "-s",
+      "-O",
+      "DIR=/run/wpa_supplicant GROUP=netdev"
+    ],
+    "pgid": 1968,
+    "pid": 1968,
+    "ppid": 1,
+    "sid": 1968,
+    "start": "794",
+    "state": "S"
+  },
+  "1978": {
+    "argv": [
+      "/usr/sbin/rsyslogd",
+      "-n",
+      "-iNONE"
+    ],
+    "pgid": 1978,
+    "pid": 1978,
+    "ppid": 1,
+    "sid": 1978,
+    "start": "795",
+    "state": "S"
+  },
+  "2056": {
+    "argv": [
+      "/usr/sbin/ModemManager"
+    ],
+    "pgid": 2056,
+    "pid": 2056,
+    "ppid": 1,
+    "sid": 2056,
+    "start": "800",
+    "state": "S"
+  },
+  "2058": {
+    "argv": [
+      "/usr/libexec/boltd"
+    ],
+    "pgid": 2058,
+    "pid": 2058,
+    "ppid": 1,
+    "sid": 2058,
+    "start": "801",
+    "state": "S"
+  },
+  "2267": {
+    "argv": [
+      "/usr/sbin/tailscaled",
+      "--state=/var/lib/tailscale/tailscaled.state",
+      "--socket=/run/tailscale/tailscaled.sock",
+      "--port=41641"
+    ],
+    "pgid": 2267,
+    "pid": 2267,
+    "ppid": 1,
+    "sid": 2267,
+    "start": "891",
+    "state": "S"
+  },
+  "2274": {
+    "argv": [
+      "/usr/bin/containerd"
+    ],
+    "pgid": 2274,
+    "pid": 2274,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "891",
+    "state": "S"
+  },
+  "2285": {
+    "argv": [
+      "sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups"
+    ],
+    "pgid": 2285,
+    "pid": 2285,
+    "ppid": 1,
+    "sid": 2285,
+    "start": "892",
+    "state": "S"
+  },
+  "2288": {
+    "argv": [
+      "/usr/sbin/pgbouncer",
+      "-d",
+      "/etc/pgbouncer/pgbouncer.ini"
+    ],
+    "pgid": 2286,
+    "pid": 2288,
+    "ppid": 1,
+    "sid": 2286,
+    "start": "893",
+    "state": "S"
+  },
+  "2299": {
+    "argv": [
+      "/usr/libexec/colord"
+    ],
+    "pgid": 2299,
+    "pid": 2299,
+    "ppid": 1,
+    "sid": 2299,
+    "start": "894",
+    "state": "S"
+  },
+  "2312": {
+    "argv": [
+      "/usr/sbin/chronyd",
+      "-F",
+      "1"
+    ],
+    "pgid": 2309,
+    "pid": 2312,
+    "ppid": 1,
+    "sid": 2309,
+    "start": "894",
+    "state": "S"
+  },
+  "2315": {
+    "argv": [
+      "/usr/sbin/chronyd",
+      "-F",
+      "1"
+    ],
+    "pgid": 2309,
+    "pid": 2315,
+    "ppid": 2312,
+    "sid": 2309,
+    "start": "894",
+    "state": "S"
+  },
+  "2344": {
+    "argv": [
+      "/usr/lib/postgresql/16/bin/postgres",
+      "-D",
+      "/var/lib/postgresql/16/main",
+      "-c",
+      "config_file=/etc/postgresql/16/main/postgresql.conf"
+    ],
+    "pgid": 2344,
+    "pid": 2344,
+    "ppid": 1,
+    "sid": 2344,
+    "start": "897",
+    "state": "S"
+  },
+  "2347": {
+    "argv": [
+      "/usr/sbin/gdm3"
+    ],
+    "pgid": 2347,
+    "pid": 2347,
+    "ppid": 1,
+    "sid": 2347,
+    "start": "897",
+    "state": "S"
+  },
+  "2362": {
+    "argv": [
+      "postgres: 16/main: logger ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2362,
+    "pid": 2362,
+    "ppid": 2344,
+    "sid": 2362,
+    "start": "901",
+    "state": "S"
+  },
+  "2366": {
+    "argv": [
+      "gdm-session-worker [pam/gdm-launch-environment]"
+    ],
+    "pgid": 2347,
+    "pid": 2366,
+    "ppid": 2347,
+    "sid": 2347,
+    "start": "902",
+    "state": "S"
+  },
+  "2376": {
+    "argv": [
+      "postgres: 16/main: checkpointer ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2376,
+    "pid": 2376,
+    "ppid": 2344,
+    "sid": 2376,
+    "start": "904",
+    "state": "S"
+  },
+  "2377": {
+    "argv": [
+      "postgres: 16/main: background writer ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2377,
+    "pid": 2377,
+    "ppid": 2344,
+    "sid": 2377,
+    "start": "904",
+    "state": "S"
+  },
+  "2394": {
+    "argv": [
+      "/usr/lib/systemd/systemd",
+      "--user"
+    ],
+    "pgid": 2394,
+    "pid": 2394,
+    "ppid": 1,
+    "sid": 2394,
+    "start": "907",
+    "state": "S"
+  },
+  "2396": {
+    "argv": [
+      "(sd-pam)"
+    ],
+    "pgid": 2394,
+    "pid": 2396,
+    "ppid": 2394,
+    "sid": 2394,
+    "start": "908",
+    "state": "S"
+  },
+  "2467": {
+    "argv": [
+      "/usr/bin/pipewire"
+    ],
+    "pgid": 2467,
+    "pid": 2467,
+    "ppid": 2394,
+    "sid": 2467,
+    "start": "925",
+    "state": "S"
+  },
+  "2468": {
+    "argv": [
+      "/usr/bin/pipewire",
+      "-c",
+      "filter-chain.conf"
+    ],
+    "pgid": 2468,
+    "pid": 2468,
+    "ppid": 2394,
+    "sid": 2468,
+    "start": "925",
+    "state": "S"
+  },
+  "2470": {
+    "argv": [
+      "/usr/bin/wireplumber"
+    ],
+    "pgid": 2470,
+    "pid": 2470,
+    "ppid": 2394,
+    "sid": 2470,
+    "start": "926",
+    "state": "S"
+  },
+  "2471": {
+    "argv": [
+      "/usr/bin/pipewire-pulse"
+    ],
+    "pgid": 2471,
+    "pid": 2471,
+    "ppid": 2394,
+    "sid": 2471,
+    "start": "926",
+    "state": "S"
+  },
+  "2472": {
+    "argv": [
+      "/usr/libexec/gdm-wayland-session",
+      "dbus-run-session -- gnome-session --autostart /usr/share/gdm/greeter/autostart"
+    ],
+    "pgid": 2472,
+    "pid": 2472,
+    "ppid": 2366,
+    "sid": 2472,
+    "start": "926",
+    "state": "S"
+  },
+  "2475": {
+    "argv": [
+      "/usr/bin/dbus-daemon",
+      "--session",
+      "--address=systemd:",
+      "--nofork",
+      "--nopidfile",
+      "--systemd-activation",
+      "--syslog-only"
+    ],
+    "pgid": 2475,
+    "pid": 2475,
+    "ppid": 2394,
+    "sid": 2475,
+    "start": "926",
+    "state": "S"
+  },
+  "2486": {
+    "argv": [
+      "dbus-run-session",
+      "--",
+      "gnome-session",
+      "--autostart",
+      "/usr/share/gdm/greeter/autostart"
+    ],
+    "pgid": 2472,
+    "pid": 2486,
+    "ppid": 2472,
+    "sid": 2472,
+    "start": "928",
+    "state": "S"
+  },
+  "2489": {
+    "argv": [
+      "dbus-daemon",
+      "--nofork",
+      "--print-address",
+      "4",
+      "--session"
+    ],
+    "pgid": 2472,
+    "pid": 2489,
+    "ppid": 2486,
+    "sid": 2472,
+    "start": "928",
+    "state": "S"
+  },
+  "2490": {
+    "argv": [
+      "/usr/libexec/rtkit-daemon"
+    ],
+    "pgid": 2490,
+    "pid": 2490,
+    "ppid": 1,
+    "sid": 2490,
+    "start": "928",
+    "state": "S"
+  },
+  "2493": {
+    "argv": [
+      "/usr/libexec/gnome-session-binary",
+      "--autostart",
+      "/usr/share/gdm/greeter/autostart"
+    ],
+    "pgid": 2472,
+    "pid": 2493,
+    "ppid": 2486,
+    "sid": 2472,
+    "start": "928",
+    "state": "S"
+  },
+  "2524": {
+    "argv": [
+      "/usr/libexec/xdg-document-portal"
+    ],
+    "pgid": 2524,
+    "pid": 2524,
+    "ppid": 2394,
+    "sid": 2524,
+    "start": "932",
+    "state": "S"
+  },
+  "2541": {
+    "argv": [
+      "/usr/libexec/xdg-permission-store"
+    ],
+    "pgid": 2541,
+    "pid": 2541,
+    "ppid": 2394,
+    "sid": 2541,
+    "start": "933",
+    "state": "S"
+  },
+  "2552": {
+    "argv": [
+      "fusermount3",
+      "-o",
+      "rw,nosuid,nodev,fsname=portal,auto_unmount,subtype=portal",
+      "--",
+      "/run/user/120/doc"
+    ],
+    "pgid": 2552,
+    "pid": 2552,
+    "ppid": 2524,
+    "sid": 2552,
+    "start": "934",
+    "state": "S"
+  },
+  "2559": {
+    "argv": [
+      "/usr/bin/gnome-shell"
+    ],
+    "pgid": 2472,
+    "pid": 2559,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "935",
+    "state": "S"
+  },
+  "2597": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 2597,
+    "ppid": 2,
+    "sid": 0,
+    "start": "962",
+    "state": "S"
+  },
+  "2636": {
+    "argv": [
+      "/usr/libexec/at-spi-bus-launcher"
+    ],
+    "pgid": 2472,
+    "pid": 2636,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "991",
+    "state": "S"
+  },
+  "2642": {
+    "argv": [
+      "/usr/bin/dbus-daemon",
+      "--config-file=/usr/share/defaults/at-spi2/accessibility.conf",
+      "--nofork",
+      "--print-address",
+      "11",
+      "--address=unix:path=/run/user/120/at-spi/bus"
+    ],
+    "pgid": 2472,
+    "pid": 2642,
+    "ppid": 2636,
+    "sid": 2472,
+    "start": "991",
+    "state": "S"
+  },
+  "2643": {
+    "argv": [
+      "/usr/bin/Xwayland",
+      ":1024",
+      "-rootless",
+      "-noreset",
+      "-accessx",
+      "-core",
+      "-auth",
+      "/run/user/120/.mutter-Xwaylandauth.31ERX3",
+      "-listenfd",
+      "4",
+      "-listenfd",
+      "5",
+      "-displayfd",
+      "6",
+      "-initfd",
+      "7",
+      "-byteswappedclients"
+    ],
+    "pgid": 2472,
+    "pid": 2643,
+    "ppid": 2559,
+    "sid": 2472,
+    "start": "992",
+    "state": "S"
+  },
+  "2652": {
+    "argv": [
+      "/usr/libexec/at-spi2-registryd",
+      "--use-gnome-session"
+    ],
+    "pgid": 2472,
+    "pid": 2652,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "999",
+    "state": "S"
+  },
+  "2673": {
+    "argv": [
+      "/usr/libexec/xdg-permission-store"
+    ],
+    "pgid": 2472,
+    "pid": 2673,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1025",
+    "state": "S"
+  },
+  "2683": {
+    "argv": [
+      "/usr/bin/gjs",
+      "-m",
+      "/usr/share/gnome-shell/org.gnome.Shell.Notifications"
+    ],
+    "pgid": 2472,
+    "pid": 2683,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1027",
+    "state": "S"
+  },
+  "2685": {
+    "argv": [
+      "/usr/libexec/gsd-sharing"
+    ],
+    "pgid": 2472,
+    "pid": 2685,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2694": {
+    "argv": [
+      "/usr/libexec/gsd-wacom"
+    ],
+    "pgid": 2472,
+    "pid": 2694,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2696": {
+    "argv": [
+      "/usr/libexec/gsd-color"
+    ],
+    "pgid": 2472,
+    "pid": 2696,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2697": {
+    "argv": [
+      "/usr/libexec/gsd-keyboard"
+    ],
+    "pgid": 2472,
+    "pid": 2697,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2698": {
+    "argv": [
+      "/usr/libexec/upowerd"
+    ],
+    "pgid": 2698,
+    "pid": 2698,
+    "ppid": 1,
+    "sid": 2698,
+    "start": "1028",
+    "state": "S"
+  },
+  "2699": {
+    "argv": [
+      "/usr/libexec/gsd-print-notifications"
+    ],
+    "pgid": 2472,
+    "pid": 2699,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2702": {
+    "argv": [
+      "/usr/libexec/gsd-rfkill"
+    ],
+    "pgid": 2472,
+    "pid": 2702,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2709": {
+    "argv": [
+      "/usr/libexec/gsd-smartcard"
+    ],
+    "pgid": 2472,
+    "pid": 2709,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1028",
+    "state": "S"
+  },
+  "2717": {
+    "argv": [
+      "/usr/libexec/gsd-datetime"
+    ],
+    "pgid": 2472,
+    "pid": 2717,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2729": {
+    "argv": [
+      "/usr/libexec/gsd-media-keys"
+    ],
+    "pgid": 2472,
+    "pid": 2729,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2738": {
+    "argv": [
+      "/usr/libexec/gsd-screensaver-proxy"
+    ],
+    "pgid": 2472,
+    "pid": 2738,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2744": {
+    "argv": [
+      "/usr/libexec/gsd-sound"
+    ],
+    "pgid": 2472,
+    "pid": 2744,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2748": {
+    "argv": [
+      "/usr/libexec/gsd-a11y-settings"
+    ],
+    "pgid": 2472,
+    "pid": 2748,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2756": {
+    "argv": [
+      "/usr/libexec/gsd-housekeeping"
+    ],
+    "pgid": 2472,
+    "pid": 2756,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2763": {
+    "argv": [
+      "/usr/libexec/gsd-power"
+    ],
+    "pgid": 2472,
+    "pid": 2763,
+    "ppid": 2493,
+    "sid": 2472,
+    "start": "1029",
+    "state": "S"
+  },
+  "2927": {
+    "argv": [
+      "/usr/libexec/dconf-service"
+    ],
+    "pgid": 2472,
+    "pid": 2927,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1046",
+    "state": "S"
+  },
+  "2950": {
+    "argv": [
+      "/usr/bin/gjs",
+      "-m",
+      "/usr/share/gnome-shell/org.gnome.ScreenSaver"
+    ],
+    "pgid": 2472,
+    "pid": 2950,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1049",
+    "state": "S"
+  },
+  "2956": {
+    "argv": [
+      "/usr/libexec/mutter-x11-frames"
+    ],
+    "pgid": 2472,
+    "pid": 2956,
+    "ppid": 2559,
+    "sid": 2472,
+    "start": "1049",
+    "state": "S"
+  },
+  "2971": {
+    "argv": [
+      "ibus-daemon",
+      "--panel",
+      "disable",
+      "-r",
+      "--xim"
+    ],
+    "pgid": 2971,
+    "pid": 2971,
+    "ppid": 2559,
+    "sid": 2472,
+    "start": "1050",
+    "state": "S"
+  },
+  "2979": {
+    "argv": [
+      "/usr/libexec/ibus-memconf"
+    ],
+    "pgid": 2971,
+    "pid": 2979,
+    "ppid": 2971,
+    "sid": 2472,
+    "start": "1052",
+    "state": "S"
+  },
+  "2981": {
+    "argv": [
+      "/usr/libexec/ibus-x11",
+      "--kill-daemon"
+    ],
+    "pgid": 2971,
+    "pid": 2981,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1052",
+    "state": "S"
+  },
+  "2984": {
+    "argv": [
+      "/usr/libexec/ibus-portal"
+    ],
+    "pgid": 2472,
+    "pid": 2984,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1052",
+    "state": "S"
+  },
+  "2993": {
+    "argv": [
+      "/usr/libexec/ibus-engine-simple"
+    ],
+    "pgid": 2971,
+    "pid": 2993,
+    "ppid": 2971,
+    "sid": 2472,
+    "start": "1055",
+    "state": "S"
+  },
+  "3023": {
+    "argv": [
+      "/usr/libexec/gsd-printer"
+    ],
+    "pgid": 2472,
+    "pid": 3023,
+    "ppid": 1,
+    "sid": 2472,
+    "start": "1131",
+    "state": "S"
+  },
+  "3049": {
+    "argv": [
+      "/bin/sh",
+      "/snap/lxd/40958/commands/daemon.start"
+    ],
+    "pgid": 3049,
+    "pid": 3049,
+    "ppid": 1,
+    "sid": 3049,
+    "start": "1240",
+    "state": "S"
+  },
+  "3391": {
+    "argv": [
+      "lxcfs",
+      "--enable-pidfd",
+      "/var/snap/lxd/common/var/lib/lxcfs",
+      "-p",
+      "/var/snap/lxd/common/lxcfs.pid"
+    ],
+    "pgid": 3049,
+    "pid": 3391,
+    "ppid": 1,
+    "sid": 3049,
+    "start": "1345",
+    "state": "S"
+  },
+  "3394": {
+    "argv": [
+      "postgres: 16/main: walwriter ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 3394,
+    "pid": 3394,
+    "ppid": 2344,
+    "sid": 3394,
+    "start": "1377",
+    "state": "S"
+  },
+  "3395": {
+    "argv": [
+      "postgres: 16/main: autovacuum launcher ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 3395,
+    "pid": 3395,
+    "ppid": 2344,
+    "sid": 3395,
+    "start": "1377",
+    "state": "S"
+  },
+  "3396": {
+    "argv": [
+      "postgres: 16/main: logical replication launcher ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 3396,
+    "pid": 3396,
+    "ppid": 2344,
+    "sid": 3396,
+    "start": "1377",
+    "state": "S"
+  },
+  "3440": {
+    "argv": [
+      "lxd",
+      "--logfile",
+      "/var/snap/lxd/common/lxd/logs/lxd.log",
+      "--group",
+      "lxd"
+    ],
+    "pgid": 3049,
+    "pid": 3440,
+    "ppid": 3049,
+    "sid": 3049,
+    "start": "1449",
+    "state": "S"
+  },
+  "3457": {
+    "argv": [
+      "/usr/local/bin/etcd"
+    ],
+    "pgid": 3457,
+    "pid": 3457,
+    "ppid": 1,
+    "sid": 3457,
+    "start": "1460",
+    "state": "S"
+  },
+  "3458": {
+    "argv": [
+      "/usr/local/bin/atlasd",
+      "-config",
+      "/var/lib/slo-atlas/atlasd.toml"
+    ],
+    "pgid": 3458,
+    "pid": 3458,
+    "ppid": 1,
+    "sid": 3458,
+    "start": "1462",
+    "state": "S"
+  },
+  "3461": {
+    "argv": [
+      "/usr/bin/dockerd",
+      "-H",
+      "fd://",
+      "--containerd=/run/containerd/containerd.sock"
+    ],
+    "pgid": 3461,
+    "pid": 3461,
+    "ppid": 1,
+    "sid": 3461,
+    "start": "1462",
+    "state": "S"
+  },
+  "3465": {
+    "argv": [
+      "/usr/sbin/kerneloops",
+      "--test"
+    ],
+    "pgid": 3465,
+    "pid": 3465,
+    "ppid": 1,
+    "sid": 3465,
+    "start": "1463",
+    "state": "S"
+  },
+  "3468": {
+    "argv": [
+      "/usr/sbin/kerneloops"
+    ],
+    "pgid": 3468,
+    "pid": 3468,
+    "ppid": 1,
+    "sid": 3468,
+    "start": "1464",
+    "state": "S"
+  },
+  "4043": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 4043,
+    "ppid": 2,
+    "sid": 0,
+    "start": "1620",
+    "state": "I"
+  },
+  "4287": {
+    "argv": [
+      "dnsmasq",
+      "--keep-in-foreground",
+      "--strict-order",
+      "--bind-interfaces",
+      "--except-interface=lo",
+      "--pid-file=",
+      "--no-ping",
+      "--interface=lxdbr0",
+      "--dhcp-rapid-commit",
+      "--no-negcache",
+      "--quiet-dhcp",
+      "--quiet-dhcp6",
+      "--quiet-ra",
+      "--dhcp-ignore-clid",
+      "--listen-address=10.80.0.1",
+      "--dhcp-no-override",
+      "--dhcp-authoritative",
+      "--dhcp-leasefile=/var/snap/lxd/common/lxd/networks/lxdbr0/dnsmasq.leases",
+      "--dhcp-hostsfile=/var/snap/lxd/common/lxd/networks/lxdbr0/dnsmasq.hosts",
+      "--dhcp-range",
+      "10.80.0.2,10.80.0.254,1h",
+      "-s",
+      "lxd",
+      "--interface-name",
+      "_gateway.lxd,lxdbr0",
+      "-S",
+      "/lxd/",
+      "--conf-file=/var/snap/lxd/common/lxd/networks/lxdbr0/dnsmasq.raw",
+      "-u",
+      "lxd",
+      "-g",
+      "lxd"
+    ],
+    "pgid": 4287,
+    "pid": 4287,
+    "ppid": 3440,
+    "sid": 4287,
+    "start": "1787",
+    "state": "S"
+  },
+  "4454": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "e4e813dd35681262bd74344cdaf37d8cb77ca466a0357b0cb5541fa067f43414",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 4454,
+    "pid": 4454,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "2246",
+    "state": "S"
+  },
+  "4518": {
+    "argv": [
+      "minio",
+      "server",
+      "/data",
+      "--console-address",
+      ":9001"
+    ],
+    "pgid": 4518,
+    "pid": 4518,
+    "ppid": 4454,
+    "sid": 4518,
+    "start": "2248",
+    "state": "S"
+  },
+  "4659": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "9000",
+      "-container-ip",
+      "172.18.0.3",
+      "-container-port",
+      "9000",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 4659,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "2262",
+    "state": "S"
+  },
+  "4666": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "::",
+      "-host-port",
+      "9000",
+      "-container-ip",
+      "172.18.0.3",
+      "-container-port",
+      "9000",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 4666,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "2263",
+    "state": "S"
+  },
+  "4682": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "9001",
+      "-container-ip",
+      "172.18.0.3",
+      "-container-port",
+      "9001",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 4682,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "2263",
+    "state": "S"
+  },
+  "4689": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "::",
+      "-host-port",
+      "9001",
+      "-container-ip",
+      "172.18.0.3",
+      "-container-port",
+      "9001",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 4689,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "2264",
+    "state": "S"
+  },
+  "4763": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "82be158842134b1c3ed3fc7c28b3dacf6a833a611df6415ef11ac30dc7b10313",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 4763,
+    "pid": 4763,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "2275",
+    "state": "S"
+  },
+  "4782": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "39fcb918a92dbace1d2de27cadc26c24151f25f3b03f19db31520347a779d05b",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 4782,
+    "pid": 4782,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "2276",
+    "state": "S"
+  },
+  "4820": {
+    "argv": [
+      "./agent"
+    ],
+    "pgid": 4820,
+    "pid": 4820,
+    "ppid": 4763,
+    "sid": 4820,
+    "start": "2278",
+    "state": "S"
+  },
+  "4827": {
+    "argv": [
+      "/portainer",
+      "--tlsskipverify",
+      "-H",
+      "tcp://tasks.agent:9001",
+      "--data",
+      "/data/portainer"
+    ],
+    "pgid": 4827,
+    "pid": 4827,
+    "ppid": 4782,
+    "sid": 4827,
+    "start": "2278",
+    "state": "S"
+  },
+  "4884": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "9443",
+      "-container-ip",
+      "172.18.0.5",
+      "-container-port",
+      "9443",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 4884,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "2294",
+    "state": "S"
+  },
+  "4892": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "::",
+      "-host-port",
+      "9443",
+      "-container-ip",
+      "172.18.0.5",
+      "-container-port",
+      "9443",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 4892,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "2294",
+    "state": "S"
+  },
+  "4905": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 4905,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2295",
+    "state": "I"
+  },
+  "5035": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 5035,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2779",
+    "state": "I"
+  },
+  "5075": {
+    "argv": [
+      "/usr/lib/systemd/systemd",
+      "--user"
+    ],
+    "pgid": 5075,
+    "pid": 5075,
+    "ppid": 1,
+    "sid": 5075,
+    "start": "2966",
+    "state": "S"
+  },
+  "5081": {
+    "argv": [
+      "(sd-pam)"
+    ],
+    "pgid": 5075,
+    "pid": 5081,
+    "ppid": 5075,
+    "sid": 5075,
+    "start": "2966",
+    "state": "S"
+  },
+  "5094": {
+    "argv": [
+      "/snap/snapd-desktop-integration/391/usr/bin/user-session-helper",
+      "/snap/snapd-desktop-integration/391/usr/bin/snapd-desktop-integration"
+    ],
+    "pgid": 5094,
+    "pid": 5094,
+    "ppid": 5075,
+    "sid": 5094,
+    "start": "2984",
+    "state": "S"
+  },
+  "5244": {
+    "argv": [
+      "/usr/bin/dbus-daemon",
+      "--session",
+      "--address=systemd:",
+      "--nofork",
+      "--nopidfile",
+      "--systemd-activation",
+      "--syslog-only"
+    ],
+    "pgid": 5244,
+    "pid": 5244,
+    "ppid": 5075,
+    "sid": 5244,
+    "start": "2990",
+    "state": "S"
+  },
+  "5245": {
+    "argv": [
+      "/usr/libexec/xdg-document-portal"
+    ],
+    "pgid": 5245,
+    "pid": 5245,
+    "ppid": 5075,
+    "sid": 5245,
+    "start": "2991",
+    "state": "S"
+  },
+  "5249": {
+    "argv": [
+      "/usr/libexec/xdg-permission-store"
+    ],
+    "pgid": 5249,
+    "pid": 5249,
+    "ppid": 5075,
+    "sid": 5249,
+    "start": "2992",
+    "state": "S"
+  },
+  "5256": {
+    "argv": [
+      "fusermount3",
+      "-o",
+      "rw,nosuid,nodev,fsname=portal,auto_unmount,subtype=portal",
+      "--",
+      "/run/user/0/doc"
+    ],
+    "pgid": 5256,
+    "pid": 5256,
+    "ppid": 5245,
+    "sid": 5256,
+    "start": "2992",
+    "state": "S"
+  },
+  "5643": {
+    "argv": [
+      "/root/.vscode-server/code-2a59476c9bfcb90b3ddc372c36762471b7dfad1c",
+      "--cli-data-dir",
+      "/root/.vscode-server/cli",
+      "agent",
+      "host"
+    ],
+    "pgid": 5643,
+    "pid": 5643,
+    "ppid": 1,
+    "sid": 5643,
+    "start": "3111",
+    "state": "S"
+  },
+  "6385": {
+    "argv": [
+      "sh",
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/bin/code-server",
+      "--socket-path",
+      "/tmp/code-35e9d706-1e90-4f0a-9a29-5ede3546ef2a",
+      "--agent-host-path",
+      "/tmp/code-2bbd859b-937e-4189-9fcf-7766ebadcdb0",
+      "--start-server",
+      "--accept-server-license-terms",
+      "--enable-remote-auto-shutdown",
+      "--without-connection-token"
+    ],
+    "pgid": 5643,
+    "pid": 6385,
+    "ppid": 5643,
+    "sid": 5643,
+    "start": "3333",
+    "state": "S"
+  },
+  "6390": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/node",
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/out/server-main.js",
+      "--socket-path",
+      "/tmp/code-35e9d706-1e90-4f0a-9a29-5ede3546ef2a",
+      "--agent-host-path",
+      "/tmp/code-2bbd859b-937e-4189-9fcf-7766ebadcdb0",
+      "--start-server",
+      "--accept-server-license-terms",
+      "--enable-remote-auto-shutdown",
+      "--without-connection-token"
+    ],
+    "pgid": 5643,
+    "pid": 6390,
+    "ppid": 6385,
+    "sid": 5643,
+    "start": "3333",
+    "state": "S"
+  },
+  "6637": {
+    "argv": [
+      "codex",
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--listen",
+      "unix://"
+    ],
+    "pgid": 6427,
+    "pid": 6637,
+    "ppid": 1,
+    "sid": 6427,
+    "start": "3370",
+    "state": "S"
+  },
+  "6700": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/node",
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/out/bootstrap-fork",
+      "--type=agentHost",
+      "--logsPath",
+      "/root/.vscode-server/data/logs/20261017T110552",
+      "--user-data-dir",
+      "/root/.vscode-server/data",
+      "--telemetry-level",
+      "all"
+    ],
+    "pgid": 5643,
+    "pid": 6700,
+    "ppid": 6390,
+    "sid": 5643,
+    "start": "3375",
+    "state": "S"
+  },
+  "18660": {
+    "argv": [
+      "/root/.local/bin/herdr",
+      "server"
+    ],
+    "pgid": 18660,
+    "pid": 18660,
+    "ppid": 1,
+    "sid": 18660,
+    "start": "12398",
+    "state": "S"
+  },
+  "18746": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 18746,
+    "pid": 18746,
+    "ppid": 18660,
+    "sid": 18746,
+    "start": "12416",
+    "state": "S"
+  },
+  "18754": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 18754,
+    "pid": 18754,
+    "ppid": 18660,
+    "sid": 18754,
+    "start": "12416",
+    "state": "S"
+  },
+  "18932": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 18932,
+    "pid": 18932,
+    "ppid": 18660,
+    "sid": 18932,
+    "start": "12418",
+    "state": "S"
+  },
+  "22661": {
+    "argv": [
+      "/usr/bin/gnome-keyring-daemon",
+      "--start",
+      "--foreground",
+      "--components=secrets"
+    ],
+    "pgid": 5244,
+    "pid": 22661,
+    "ppid": 5075,
+    "sid": 5244,
+    "start": "12556",
+    "state": "S"
+  },
+  "22662": {
+    "argv": [
+      "/usr/bin/gnome-keyring-daemon",
+      "--foreground",
+      "--components=pkcs11,secrets",
+      "--control-directory=/run/user/0/keyring"
+    ],
+    "pgid": 22662,
+    "pid": 22662,
+    "ppid": 5075,
+    "sid": 22662,
+    "start": "12557",
+    "state": "S"
+  },
+  "63179": {
+    "argv": [
+      "/usr/libexec/fwupd/fwupd"
+    ],
+    "pgid": 63179,
+    "pid": 63179,
+    "ppid": 1,
+    "sid": 63179,
+    "start": "154534",
+    "state": "S"
+  },
+  "83737": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 83737,
+    "ppid": 2,
+    "sid": 0,
+    "start": "191472",
+    "state": "I"
+  },
+  "118206": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 118206,
+    "pid": 118206,
+    "ppid": 18660,
+    "sid": 118206,
+    "start": "102873929",
+    "state": "S"
+  },
+  "126306": {
+    "argv": [
+      "/usr/libexec/at-spi-bus-launcher"
+    ],
+    "pgid": 126306,
+    "pid": 126306,
+    "ppid": 5075,
+    "sid": 126306,
+    "start": "261979",
+    "state": "S"
+  },
+  "247829": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "--dns-result-order=ipv4first",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=extensionHost",
+      "--transformURIs",
+      "--useHostProxy=false"
+    ],
+    "pgid": 2952232,
+    "pid": 247829,
+    "ppid": 2954950,
+    "sid": 2952232,
+    "start": "163273234",
+    "state": "S"
+  },
+  "247865": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=fileWatcher"
+    ],
+    "pgid": 2952232,
+    "pid": 247865,
+    "ppid": 2954950,
+    "sid": 2952232,
+    "start": "163273259",
+    "state": "S"
+  },
+  "248290": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/ckolkman.vscode-postgres-1.4.3/out/language/server.js",
+      "--node-ipc",
+      "--clientProcessId=247829"
+    ],
+    "pgid": 2952232,
+    "pid": 248290,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163273746",
+    "state": "S"
+  },
+  "248296": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/extensions/markdown-language-features/dist/serverWorkerMain",
+      "--node-ipc",
+      "--clientProcessId=247829"
+    ],
+    "pgid": 2952232,
+    "pid": 248296,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163273747",
+    "state": "S"
+  },
+  "248608": {
+    "argv": [
+      "/root/.vscode-server/extensions/ms-python.vscode-python-envs-1.42.0-linux-x64/python-env-tools/bin/pet",
+      "server"
+    ],
+    "pgid": 2952232,
+    "pid": 248608,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163273827",
+    "state": "S"
+  },
+  "249639": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 249639,
+    "pid": 249639,
+    "ppid": 2955340,
+    "sid": 249639,
+    "start": "163274031",
+    "state": "S"
+  },
+  "251028": {
+    "argv": [
+      "/root/.vscode-server/extensions/openai.chatgpt-26.1021.22027-linux-x64/bin/linux-x86_64/codex",
+      "-c",
+      "features.code_mode_host=true",
+      "-c",
+      "features.windows_sandbox_service=true",
+      "app-server",
+      "--analytics-default-enabled"
+    ],
+    "pgid": 2952232,
+    "pid": 251028,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163274991",
+    "state": "S"
+  },
+  "251102": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/dbaeumer.vscode-eslint-3.0.34/server/out/eslintServer.js",
+      "--node-ipc",
+      "--clientProcessId=247829"
+    ],
+    "pgid": 2952232,
+    "pid": 251102,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163275000",
+    "state": "S"
+  },
+  "253992": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "--use-system-ca",
+      "/root/.vscode-server/extensions/gitlab.gitlab-workflow-7.3.5/assets/language-server/main-bundle-node.js",
+      "--stdio",
+      "--clientProcessId=247829"
+    ],
+    "pgid": 2952232,
+    "pid": 253992,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163275103",
+    "state": "S"
+  },
+  "257466": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 257466,
+    "pid": 257466,
+    "ppid": 2955340,
+    "sid": 257466,
+    "start": "163275311",
+    "state": "S"
+  },
+  "257974": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 257974,
+    "pid": 257974,
+    "ppid": 2955340,
+    "sid": 257974,
+    "start": "163275449",
+    "state": "S"
+  },
+  "258286": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/ms-python.vscode-pylance-2026.4.1/dist/server.bundle.js",
+      "--cancellationReceive=file:7e8db5127dba31efd155bbc0aa7babbb60f6704951",
+      "--node-ipc",
+      "--clientProcessId=247829"
+    ],
+    "pgid": 2952232,
+    "pid": 258286,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163275477",
+    "state": "S"
+  },
+  "258301": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/github.vscode-github-actions-0.32.3/dist/server-node.js",
+      "--node-ipc",
+      "--clientProcessId=247829"
+    ],
+    "pgid": 2952232,
+    "pid": 258301,
+    "ppid": 247829,
+    "sid": 2952232,
+    "start": "163275482",
+    "state": "S"
+  },
+  "274710": {
+    "argv": [
+      "ssh: /tmp/hssh-0/ecc2eef0a87cf2f83666cc73-6bb0232333ba2ae5854a7d1eeefd17c3cf856301 [mux]",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 274710,
+    "pid": 274710,
+    "ppid": 1,
+    "sid": 274710,
+    "start": "163299695",
+    "state": "S"
+  },
+  "348147": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "2b7549361259590b98f0ca62b5c1f8012b060a3365d064cc41ec76faa7d15a09",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 348147,
+    "pid": 348147,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "67922124",
+    "state": "S"
+  },
+  "348171": {
+    "argv": [
+      "postgres",
+      "-c",
+      "config_file=/etc/postgresql/dev-testing.conf"
+    ],
+    "pgid": 348171,
+    "pid": 348171,
+    "ppid": 348147,
+    "sid": 348171,
+    "start": "67922126",
+    "state": "S"
+  },
+  "348229": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "5437",
+      "-container-ip",
+      "172.20.0.4",
+      "-container-port",
+      "5432",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 348229,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "67922133",
+    "state": "S"
+  },
+  "348284": {
+    "argv": [
+      "postgres: logger ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 348284,
+    "pid": 348284,
+    "ppid": 348171,
+    "sid": 348284,
+    "start": "67922160",
+    "state": "S"
+  },
+  "348285": {
+    "argv": [
+      "postgres: checkpointer ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 348285,
+    "pid": 348285,
+    "ppid": 348171,
+    "sid": 348285,
+    "start": "67922162",
+    "state": "S"
+  },
+  "348286": {
+    "argv": [
+      "postgres: background writer ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 348286,
+    "pid": 348286,
+    "ppid": 348171,
+    "sid": 348286,
+    "start": "67922162",
+    "state": "S"
+  },
+  "348892": {
+    "argv": [
+      "postgres: walwriter ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 348892,
+    "pid": 348892,
+    "ppid": 348171,
+    "sid": 348892,
+    "start": "67922620",
+    "state": "S"
+  },
+  "348893": {
+    "argv": [
+      "postgres: autovacuum launcher ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 348893,
+    "pid": 348893,
+    "ppid": 348171,
+    "sid": 348893,
+    "start": "67922620",
+    "state": "S"
+  },
+  "348894": {
+    "argv": [
+      "postgres: logical replication launcher ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 348894,
+    "pid": 348894,
+    "ppid": 348171,
+    "sid": 348894,
+    "start": "67922620",
+    "state": "S"
+  },
+  "349033": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "dd5c3b3f3ab94fb5ed5d683d3df43cbe368869b4660415f9099180e2e7a22181",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 349033,
+    "pid": 349033,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "67922791",
+    "state": "S"
+  },
+  "349056": {
+    "argv": [
+      "minio",
+      "server",
+      "/data",
+      "--address",
+      ":19000",
+      "--console-address",
+      ":19001"
+    ],
+    "pgid": 349056,
+    "pid": 349056,
+    "ppid": 349033,
+    "sid": 349056,
+    "start": "67922794",
+    "state": "S"
+  },
+  "349114": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "19000",
+      "-container-ip",
+      "172.20.0.5",
+      "-container-port",
+      "19000",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 349114,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "67922800",
+    "state": "S"
+  },
+  "349128": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "19001",
+      "-container-ip",
+      "172.20.0.5",
+      "-container-port",
+      "19001",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 349128,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "67922801",
+    "state": "S"
+  },
+  "372947": {
+    "argv": [
+      "claude",
+      "."
+    ],
+    "pgid": 372947,
+    "pid": 372947,
+    "ppid": 18754,
+    "sid": 18754,
+    "start": "67957988",
+    "state": "S"
+  },
+  "406978": {
+    "argv": [
+      "/usr/sbin/nmbd",
+      "--foreground",
+      "--no-process-group"
+    ],
+    "pgid": 406978,
+    "pid": 406978,
+    "ppid": 1,
+    "sid": 406978,
+    "start": "723715",
+    "state": "S"
+  },
+  "425678": {
+    "argv": [
+      "/usr/sbin/smbd",
+      "--foreground",
+      "--no-process-group"
+    ],
+    "pgid": 425678,
+    "pid": 425678,
+    "ppid": 1,
+    "sid": 425678,
+    "start": "751944",
+    "state": "S"
+  },
+  "425682": {
+    "argv": [
+      "smbd: notifyd",
+      ".",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 425678,
+    "pid": 425682,
+    "ppid": 425678,
+    "sid": 425678,
+    "start": "751946",
+    "state": "S"
+  },
+  "425683": {
+    "argv": [
+      "smbd: cleanupd ",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 425678,
+    "pid": 425683,
+    "ppid": 425678,
+    "sid": 425678,
+    "start": "751947",
+    "state": "S"
+  },
+  "602832": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 602832,
+    "pid": 602832,
+    "ppid": 18660,
+    "sid": 602832,
+    "start": "157529703",
+    "state": "S"
+  },
+  "603378": {
+    "argv": [
+      "claude"
+    ],
+    "pgid": 603378,
+    "pid": 603378,
+    "ppid": 602832,
+    "sid": 602832,
+    "start": "157529978",
+    "state": "S"
+  },
+  "647105": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 647105,
+    "pid": 647105,
+    "ppid": 18660,
+    "sid": 647105,
+    "start": "157582578",
+    "state": "S"
+  },
+  "700375": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "/root/.local/share/pipx/venvs/slo/bin/slo-entry",
+      "."
+    ],
+    "pgid": 700375,
+    "pid": 700375,
+    "ppid": 4102220,
+    "sid": 4102220,
+    "start": "157648827",
+    "state": "S"
+  },
+  "709017": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 709017,
+    "pid": 709017,
+    "ppid": 2955340,
+    "sid": 709017,
+    "start": "157657059",
+    "state": "S"
+  },
+  "709045": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 709045,
+    "pid": 709045,
+    "ppid": 2955340,
+    "sid": 709045,
+    "start": "157657062",
+    "state": "S"
+  },
+  "709730": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 709730,
+    "pid": 709730,
+    "ppid": 2955340,
+    "sid": 709730,
+    "start": "157657196",
+    "state": "S"
+  },
+  "845273": {
+    "argv": [
+      "ssh",
+      "root@10.80.0.181"
+    ],
+    "pgid": 845273,
+    "pid": 845273,
+    "ppid": 2782062,
+    "sid": 2782062,
+    "start": "122186549",
+    "state": "S"
+  },
+  "919176": {
+    "argv": [
+      "sshd: root@pts/19",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 919176,
+    "pid": 919176,
+    "ppid": 2285,
+    "sid": 919176,
+    "start": "164202176",
+    "state": "S"
+  },
+  "919259": {
+    "argv": [
+      "-bash"
+    ],
+    "pgid": 919259,
+    "pid": 919259,
+    "ppid": 919176,
+    "sid": 919259,
+    "start": "164202264",
+    "state": "S"
+  },
+  "919631": {
+    "argv": [
+      "bash"
+    ],
+    "pgid": 919631,
+    "pid": 919631,
+    "ppid": 919259,
+    "sid": 919259,
+    "start": "164202494",
+    "state": "S"
+  },
+  "919886": {
+    "argv": [
+      "herdr"
+    ],
+    "pgid": 919886,
+    "pid": 919886,
+    "ppid": 919631,
+    "sid": 919259,
+    "start": "164202607",
+    "state": "S"
+  },
+  "919932": {
+    "argv": [
+      "ssh",
+      "-C",
+      "-F",
+      "/tmp/herdr-ssh-919886-0/config",
+      "-S",
+      "/tmp/hssh-0/ecc2eef0a87cf2f83666cc73-%C",
+      "-o",
+      "ControlMaster=auto",
+      "-o",
+      "ControlPersist=600",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "NumberOfPasswordPrompts=0",
+      "-o",
+      "StrictHostKeyChecking=yes",
+      "-o",
+      "ConnectTimeout=10",
+      "-o",
+      "ConnectionAttempts=1",
+      "-o",
+      "ServerAliveInterval=15",
+      "-o",
+      "ServerAliveCountMax=4",
+      "-T",
+      "mac-01",
+      "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec /opt/homebrew/bin/herdr remote-client-bridge --idle-timeout-v1"
+    ],
+    "pgid": 919886,
+    "pid": 919932,
+    "ppid": 919886,
+    "sid": 919259,
+    "start": "164202646",
+    "state": "S"
+  },
+  "959875": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "/root/.local/share/pipx/venvs/slo/bin/slo-entry",
+      "--resume",
+      "c884f51d-1568-4e69-9259-e5d00959ce81"
+    ],
+    "pgid": 959875,
+    "pid": 959875,
+    "ppid": 1950847,
+    "sid": 1950847,
+    "start": "164262180",
+    "state": "S"
+  },
+  "1017136": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 1017136,
+    "pid": 1017136,
+    "ppid": 2285,
+    "sid": 1017136,
+    "start": "152753678",
+    "state": "S"
+  },
+  "1017233": {
+    "argv": [
+      "/usr/lib/openssh/sftp-server"
+    ],
+    "pgid": 1017233,
+    "pid": 1017233,
+    "ppid": 1017136,
+    "sid": 1017233,
+    "start": "152753723",
+    "state": "S"
+  },
+  "1018431": {
+    "argv": [
+      "/root/.claude/remote/srv/b3081b512da230f24d74a2082a678246a89685ee/server",
+      "--serve",
+      "--socket",
+      "/root/.claude/remote/run/98d84fd3/rpc.sock",
+      "--token-file",
+      "/root/.claude/remote/run/98d84fd3/token.35f18e46b22181bb"
+    ],
+    "pgid": 1018431,
+    "pid": 1018431,
+    "ppid": 1,
+    "sid": 1018431,
+    "start": "152755210",
+    "state": "S"
+  },
+  "1018528": {
+    "argv": [
+      "/root/.claude/remote/srv/b3081b512da230f24d74a2082a678246a89685ee/server",
+      "--bridge",
+      "--socket",
+      "/root/.claude/remote/run/98d84fd3/rpc.sock"
+    ],
+    "pgid": 1018528,
+    "pid": 1018528,
+    "ppid": 1017136,
+    "sid": 1018528,
+    "start": "152755218",
+    "state": "S"
+  },
+  "1234286": {
+    "argv": [
+      "/root/.codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex-code-mode-host"
+    ],
+    "pgid": 1234286,
+    "pid": 1234286,
+    "ppid": 6637,
+    "sid": 6427,
+    "start": "69162943",
+    "state": "S"
+  },
+  "1254279": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1254279,
+    "pid": 1254279,
+    "ppid": 18660,
+    "sid": 1254279,
+    "start": "69188177",
+    "state": "S"
+  },
+  "1255870": {
+    "argv": [
+      "claude",
+      "."
+    ],
+    "pgid": 1255870,
+    "pid": 1255870,
+    "ppid": 1254279,
+    "sid": 1254279,
+    "start": "69189497",
+    "state": "S"
+  },
+  "1261413": {
+    "argv": [
+      "/root/.pyenv/versions/slo-harness/bin/python",
+      "/root/.pyenv/versions/slo-harness/bin/pytest",
+      "-m",
+      "not e2e"
+    ],
+    "pgid": 1261401,
+    "pid": 1261413,
+    "ppid": 1,
+    "sid": 1261401,
+    "start": "29862206",
+    "state": "S"
+  },
+  "1261498": {
+    "argv": [
+      "/root/.pyenv/versions/slo-harness/bin/python",
+      "-c",
+      "from multiprocessing.resource_tracker import main;main(10)"
+    ],
+    "pgid": 1261401,
+    "pid": 1261498,
+    "ppid": 1261413,
+    "sid": 1261401,
+    "start": "29862786",
+    "state": "S"
+  },
+  "1278586": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1278586,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2172709",
+    "state": "S"
+  },
+  "1278587": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1278587,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2172709",
+    "state": "S"
+  },
+  "1278588": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1278588,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2172709",
+    "state": "S"
+  },
+  "1278589": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1278589,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2172709",
+    "state": "S"
+  },
+  "1278590": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1278590,
+    "ppid": 2,
+    "sid": 0,
+    "start": "2172709",
+    "state": "S"
+  },
+  "1305812": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 1305812,
+    "pid": 1305812,
+    "ppid": 2285,
+    "sid": 1305812,
+    "start": "164722551",
+    "state": "S"
+  },
+  "1306021": {
+    "argv": [
+      "-bash"
+    ],
+    "pgid": 1306021,
+    "pid": 1306021,
+    "ppid": 1305812,
+    "sid": 1306021,
+    "start": "164722747",
+    "state": "S"
+  },
+  "1306149": {
+    "argv": [
+      "sh"
+    ],
+    "pgid": 1306021,
+    "pid": 1306149,
+    "ppid": 1306021,
+    "sid": 1306021,
+    "start": "164722797",
+    "state": "S"
+  },
+  "1306167": {
+    "argv": [
+      "/root/.vscode-server/code-2c33b50b16c472efe58357d1d2a8a5414bc23fbf",
+      "command-shell",
+      "--cli-data-dir",
+      "/root/.vscode-server/cli",
+      "--parent-process-id",
+      "1306149",
+      "--on-host=127.0.0.1",
+      "--on-port"
+    ],
+    "pgid": 1306021,
+    "pid": 1306167,
+    "ppid": 1306149,
+    "sid": 1306021,
+    "start": "164722823",
+    "state": "S"
+  },
+  "1393814": {
+    "argv": [
+      "/root/.pyenv/versions/slo-harness/bin/python",
+      "/root/.vscode-server/extensions/ms-python.black-formatter-2026.6.0/bundled/tool/lsp_server.py"
+    ],
+    "pgid": 2952232,
+    "pid": 1393814,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "147965199",
+    "state": "S"
+  },
+  "1396153": {
+    "argv": [
+      "claude",
+      "."
+    ],
+    "pgid": 1396153,
+    "pid": 1396153,
+    "ppid": 118206,
+    "sid": 118206,
+    "start": "114493907",
+    "state": "S"
+  },
+  "1436671": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "/root/.local/share/pipx/venvs/slo/bin/slo-entry"
+    ],
+    "pgid": 1436671,
+    "pid": 1436671,
+    "ppid": 3052598,
+    "sid": 3052598,
+    "start": "148014197",
+    "state": "S"
+  },
+  "1445403": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1445403,
+    "pid": 1445403,
+    "ppid": 18660,
+    "sid": 1445403,
+    "start": "69445086",
+    "state": "S"
+  },
+  "1448681": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1448681,
+    "ppid": 2,
+    "sid": 0,
+    "start": "164939328",
+    "state": "I"
+  },
+  "1486344": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1486344,
+    "pid": 1486344,
+    "ppid": 18660,
+    "sid": 1486344,
+    "start": "148052916",
+    "state": "S"
+  },
+  "1511445": {
+    "argv": [
+      "/usr/bin/gnome-keyring-daemon",
+      "--foreground",
+      "--components=pkcs11,secrets",
+      "--control-directory=/run/user/120/keyring"
+    ],
+    "pgid": 1511445,
+    "pid": 1511445,
+    "ppid": 2394,
+    "sid": 1511445,
+    "start": "114641659",
+    "state": "S"
+  },
+  "1511669": {
+    "argv": [
+      "/snap/lxd/40958/bin/virtiofsd",
+      "--fd=3",
+      "--shared-dir",
+      "/var/snap/lxd/common/lxd/devices/gitlab-runner/config.mount",
+      "--cache",
+      "auto",
+      "--allow-direct-io",
+      "--thread-pool-size",
+      "0",
+      "--xattr"
+    ],
+    "pgid": 1511669,
+    "pid": 1511669,
+    "ppid": 3440,
+    "sid": 1511669,
+    "start": "114641748",
+    "state": "S"
+  },
+  "1511675": {
+    "argv": [
+      "/snap/lxd/40958/bin/virtiofsd",
+      "--fd=3",
+      "--shared-dir",
+      "/var/snap/lxd/common/lxd/devices/gitlab-runner/config.mount",
+      "--cache",
+      "auto",
+      "--allow-direct-io",
+      "--thread-pool-size",
+      "0",
+      "--xattr"
+    ],
+    "pgid": 1511669,
+    "pid": 1511675,
+    "ppid": 1511669,
+    "sid": 1511669,
+    "start": "114641748",
+    "state": "S"
+  },
+  "1511698": {
+    "argv": [
+      "/snap/lxd/40958/bin/qemu-system-x86_64",
+      "-S",
+      "-name",
+      "gitlab-runner",
+      "-uuid",
+      "72a790e9-7420-4619-b260-b7fbc2bccc99",
+      "-daemonize",
+      "-cpu",
+      "host,hv_passthrough",
+      "-nographic",
+      "-serial",
+      "chardev:console",
+      "-nodefaults",
+      "-no-user-config",
+      "-sandbox",
+      "on,obsolete=deny,elevateprivileges=allow,spawn=allow,resourcecontrol=deny",
+      "-readconfig",
+      "/var/snap/lxd/common/lxd/logs/gitlab-runner/qemu.conf",
+      "-spice",
+      "unix=on,disable-ticketing=on,addr=/var/snap/lxd/common/lxd/logs/gitlab-runner/qemu.spice",
+      "-pidfile",
+      "/var/snap/lxd/common/lxd/logs/gitlab-runner/qemu.pid",
+      "-D",
+      "/var/snap/lxd/common/lxd/logs/gitlab-runner/qemu.log",
+      "-smbios",
+      "type=2,manufacturer=Canonical Ltd.,product=LXD",
+      "-runas",
+      "lxd"
+    ],
+    "pgid": 1511696,
+    "pid": 1511698,
+    "ppid": 1,
+    "sid": 1511696,
+    "start": "114641754",
+    "state": "R"
+  },
+  "1511704": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1511704,
+    "ppid": 2,
+    "sid": 0,
+    "start": "114641757",
+    "state": "S"
+  },
+  "1549614": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1549614,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165088064",
+    "state": "I"
+  },
+  "1570851": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1570851,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165119754",
+    "state": "I"
+  },
+  "1613487": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1613487,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165175960",
+    "state": "S"
+  },
+  "1614498": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1614498,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165177459",
+    "state": "I"
+  },
+  "1695474": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1695474,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165288889",
+    "state": "I"
+  },
+  "1734255": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1734255,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165335817",
+    "state": "I"
+  },
+  "1742684": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1742684,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165347018",
+    "state": "I"
+  },
+  "1748431": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/node_modules/@github/copilot-sdk-linux-x64/prebuilds/linux-x64/copilot-runtime",
+      "--headless",
+      "--no-auto-update",
+      "--log-level",
+      "info",
+      "--stdio",
+      "--auth-token-env",
+      "COPILOT_SDK_AUTH_TOKEN",
+      "--no-auto-login"
+    ],
+    "pgid": 5643,
+    "pid": 1748431,
+    "ppid": 6700,
+    "sid": 5643,
+    "start": "148312607",
+    "state": "S"
+  },
+  "1758323": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 1758323,
+    "pid": 1758323,
+    "ppid": 2955340,
+    "sid": 1758323,
+    "start": "148315223",
+    "state": "S"
+  },
+  "1776586": {
+    "argv": [
+      "postgres: litellm litellm 172.21.0.3(33918) idle"
+    ],
+    "pgid": 1776586,
+    "pid": 1776586,
+    "ppid": 2868486,
+    "sid": 1776586,
+    "start": "165383548",
+    "state": "S"
+  },
+  "1777417": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1777417,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165384643",
+    "state": "I"
+  },
+  "1788415": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1788415,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165392486",
+    "state": "I"
+  },
+  "1801965": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1801965,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165397231",
+    "state": "S"
+  },
+  "1808020": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1808020,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165399296",
+    "state": "I"
+  },
+  "1809315": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1809315,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165400601",
+    "state": "I"
+  },
+  "1810789": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1810789,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165401766",
+    "state": "I"
+  },
+  "1827889": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1827889,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412051",
+    "state": "S"
+  },
+  "1828079": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1828079,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412180",
+    "state": "S"
+  },
+  "1828610": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1828610,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412585",
+    "state": "S"
+  },
+  "1828755": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1828755,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412690",
+    "state": "S"
+  },
+  "1828756": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1828756,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412690",
+    "state": "S"
+  },
+  "1828758": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1828758,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412690",
+    "state": "S"
+  },
+  "1828759": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1828759,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165412690",
+    "state": "S"
+  },
+  "1835402": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "/root/.local/share/pipx/venvs/slo/bin/slo-entry"
+    ],
+    "pgid": 1835402,
+    "pid": 1835402,
+    "ppid": 647105,
+    "sid": 647105,
+    "start": "165417211",
+    "state": "S"
+  },
+  "1836796": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1836796,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165418328",
+    "state": "S"
+  },
+  "1836797": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1836797,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165418328",
+    "state": "S"
+  },
+  "1836798": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1836798,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165418328",
+    "state": "S"
+  },
+  "1841945": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1841945,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165422930",
+    "state": "I"
+  },
+  "1848331": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1848331,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165429921",
+    "state": "I"
+  },
+  "1849977": {
+    "argv": [
+      "postgres: litellm litellm 172.21.0.3(53734) idle"
+    ],
+    "pgid": 1849977,
+    "pid": 1849977,
+    "ppid": 2868486,
+    "sid": 1849977,
+    "start": "165431548",
+    "state": "S"
+  },
+  "1852492": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1852492,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165433500",
+    "state": "I"
+  },
+  "1856598": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1856598,
+    "pid": 1856598,
+    "ppid": 18660,
+    "sid": 1856598,
+    "start": "63260099",
+    "state": "S"
+  },
+  "1862374": {
+    "argv": [
+      "postgres: litellm litellm 172.21.0.3(48250) idle"
+    ],
+    "pgid": 1862374,
+    "pid": 1862374,
+    "ppid": 2868486,
+    "sid": 1862374,
+    "start": "165446548",
+    "state": "S"
+  },
+  "1865553": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1865553,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165450130",
+    "state": "I"
+  },
+  "1868061": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1868061,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165453529",
+    "state": "I"
+  },
+  "1874063": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.9(49518) idle"
+    ],
+    "pgid": 1874063,
+    "pid": 1874063,
+    "ppid": 348171,
+    "sid": 1874063,
+    "start": "165456235",
+    "state": "S"
+  },
+  "1877190": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1877190,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165458183",
+    "state": "I"
+  },
+  "1893391": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.8(58602) idle"
+    ],
+    "pgid": 1893391,
+    "pid": 1893391,
+    "ppid": 348171,
+    "sid": 1893391,
+    "start": "165469637",
+    "state": "S"
+  },
+  "1893860": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1893860,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165470155",
+    "state": "I"
+  },
+  "1905761": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1905761,
+    "pid": 1905761,
+    "ppid": 18660,
+    "sid": 1905761,
+    "start": "165480560",
+    "state": "S"
+  },
+  "1906175": {
+    "argv": [
+      "nvim",
+      "."
+    ],
+    "pgid": 1906175,
+    "pid": 1906175,
+    "ppid": 1905761,
+    "sid": 1905761,
+    "start": "165480737",
+    "state": "S"
+  },
+  "1906176": {
+    "argv": [
+      "nvim",
+      "--embed",
+      "."
+    ],
+    "pgid": 1906176,
+    "pid": 1906176,
+    "ppid": 1906175,
+    "sid": 1906176,
+    "start": "165480737",
+    "state": "S"
+  },
+  "1906750": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1906750,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165481301",
+    "state": "S"
+  },
+  "1907469": {
+    "argv": [
+      "node",
+      "/root/.local/share/nvim/mason/bin/pyright-langserver",
+      "--stdio"
+    ],
+    "pgid": 1907469,
+    "pid": 1907469,
+    "ppid": 1906176,
+    "sid": 1907469,
+    "start": "165481804",
+    "state": "S"
+  },
+  "1907470": {
+    "argv": [
+      "ruff",
+      "server"
+    ],
+    "pgid": 1907470,
+    "pid": 1907470,
+    "ppid": 1906176,
+    "sid": 1907470,
+    "start": "165481804",
+    "state": "S"
+  },
+  "1915347": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1915347,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165490901",
+    "state": "I"
+  },
+  "1916158": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1916158,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165492090",
+    "state": "I"
+  },
+  "1918919": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1918919,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165495936",
+    "state": "I"
+  },
+  "1921830": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1921830,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165499963",
+    "state": "I"
+  },
+  "1922675": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.9(60756) idle"
+    ],
+    "pgid": 1922675,
+    "pid": 1922675,
+    "ppid": 348171,
+    "sid": 1922675,
+    "start": "165501330",
+    "state": "S"
+  },
+  "1922711": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1922711,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165501392",
+    "state": "I"
+  },
+  "1922803": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.9(60768) idle"
+    ],
+    "pgid": 1922803,
+    "pid": 1922803,
+    "ppid": 348171,
+    "sid": 1922803,
+    "start": "165501466",
+    "state": "S"
+  },
+  "1922909": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.8(43314) idle"
+    ],
+    "pgid": 1922909,
+    "pid": 1922909,
+    "ppid": 348171,
+    "sid": 1922909,
+    "start": "165501583",
+    "state": "S"
+  },
+  "1922938": {
+    "argv": [
+      "su",
+      "sidravic"
+    ],
+    "pgid": 1922938,
+    "pid": 1922938,
+    "ppid": 18932,
+    "sid": 18932,
+    "start": "44777604",
+    "state": "S"
+  },
+  "1922939": {
+    "argv": [
+      "zsh"
+    ],
+    "pgid": 1922939,
+    "pid": 1922939,
+    "ppid": 1922938,
+    "sid": 18932,
+    "start": "44777605",
+    "state": "S"
+  },
+  "1923287": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1923287,
+    "pid": 1923287,
+    "ppid": 18660,
+    "sid": 1923287,
+    "start": "44778796",
+    "state": "S"
+  },
+  "1923343": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.8(43326) idle"
+    ],
+    "pgid": 1923343,
+    "pid": 1923343,
+    "ppid": 348171,
+    "sid": 1923343,
+    "start": "165502130",
+    "state": "S"
+  },
+  "1923617": {
+    "argv": [
+      "su",
+      "sidravic"
+    ],
+    "pgid": 1923617,
+    "pid": 1923617,
+    "ppid": 1923287,
+    "sid": 1923287,
+    "start": "44779062",
+    "state": "S"
+  },
+  "1923618": {
+    "argv": [
+      "zsh"
+    ],
+    "pgid": 1923618,
+    "pid": 1923618,
+    "ppid": 1923617,
+    "sid": 1923287,
+    "start": "44779063",
+    "state": "S"
+  },
+  "1923750": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.10(34206) idle"
+    ],
+    "pgid": 1923750,
+    "pid": 1923750,
+    "ppid": 348171,
+    "sid": 1923750,
+    "start": "165502732",
+    "state": "S"
+  },
+  "1923837": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.10(34222) idle"
+    ],
+    "pgid": 1923837,
+    "pid": 1923837,
+    "ppid": 348171,
+    "sid": 1923837,
+    "start": "165502865",
+    "state": "S"
+  },
+  "1925390": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1925390,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165504995",
+    "state": "I"
+  },
+  "1926164": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1926164,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165506089",
+    "state": "I"
+  },
+  "1928100": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1928100,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165508866",
+    "state": "I"
+  },
+  "1929405": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1929405,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165510532",
+    "state": "I"
+  },
+  "1930167": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1930167,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165511539",
+    "state": "I"
+  },
+  "1930557": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1930557,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165512040",
+    "state": "I"
+  },
+  "1938282": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1938282,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165521601",
+    "state": "I"
+  },
+  "1938583": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1938583,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165522035",
+    "state": "S"
+  },
+  "1939109": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1939109,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165522709",
+    "state": "S"
+  },
+  "1939884": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1939884,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165523750",
+    "state": "I"
+  },
+  "1941739": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1941739,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165526131",
+    "state": "S"
+  },
+  "1943054": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1943054,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165527923",
+    "state": "I"
+  },
+  "1944346": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1944346,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165529653",
+    "state": "I"
+  },
+  "1948316": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1948316,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165535103",
+    "state": "I"
+  },
+  "1949919": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1949919,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165537200",
+    "state": "I"
+  },
+  "1950847": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1950847,
+    "pid": 1950847,
+    "ppid": 18660,
+    "sid": 1950847,
+    "start": "137516576",
+    "state": "S"
+  },
+  "1951071": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1951071,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165538800",
+    "state": "S"
+  },
+  "1953087": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1953087,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165541226",
+    "state": "I"
+  },
+  "1954221": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1954221,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165542652",
+    "state": "I"
+  },
+  "1954735": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1954735,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165543238",
+    "state": "I"
+  },
+  "1954736": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1954736,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165543239",
+    "state": "I"
+  },
+  "1955846": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1955846,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165544748",
+    "state": "I"
+  },
+  "1956469": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1956469,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165545687",
+    "state": "I"
+  },
+  "1956631": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1956631,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165545754",
+    "state": "I"
+  },
+  "1959625": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1959625,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165549734",
+    "state": "I"
+  },
+  "1960010": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1960010,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165550195",
+    "state": "S"
+  },
+  "1960894": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1960894,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165551220",
+    "state": "S"
+  },
+  "1961265": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1961265,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165551731",
+    "state": "S"
+  },
+  "1961452": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1961452,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165551792",
+    "state": "I"
+  },
+  "1963419": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1963419,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165554291",
+    "state": "S"
+  },
+  "1964253": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-B",
+      "/root/.local/share/pipx/venvs/slo/lib/python3.11/site-packages/src/agents/slo_agent/orchestrator/capture_writer.py"
+    ],
+    "pgid": 1964253,
+    "pid": 1964253,
+    "ppid": 700375,
+    "sid": 1964253,
+    "start": "165555335",
+    "state": "S"
+  },
+  "1964256": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-B",
+      "/root/.local/share/pipx/venvs/slo/lib/python3.11/site-packages/src/agents/slo_agent/orchestrator/capture_writer.py"
+    ],
+    "pgid": 1964256,
+    "pid": 1964256,
+    "ppid": 700375,
+    "sid": 1964256,
+    "start": "165555338",
+    "state": "S"
+  },
+  "1964258": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-m",
+      "src.cli",
+      "run",
+      "--orchestrator",
+      "--json",
+      "--enable-history",
+      "-p",
+      "User authorizes immediate bounded fix and push: 'Don\u2019t wait forever the goal is identify if the problem exists and where the problem exists. The fix it and push to remote again.' Continue sleep-recovery MR155 https://gitlab.com/core-27/slo/-/merge_requests/155, repo /root/Code/sleep-recovery/slo root parent, branch sleep-recovery HEAD5b2152749bf24fe5298786095eb3a4c28ba166b5. Original authorizations include commit, push, MR, merge ONLY after green CI, then pull main in /root/Code/slo; for this repair stop after push/report fresh CI unless quickly green and required verification complete. Never merge failed/pending CI. Current MR pipeline3030628108 failed exit137 after stall97%; do not claim cause of137 without evidence.\nCONFIRMED local diagnosis: full pytest-n6 non-e2e stalled near97%, bounded25min ended11890passed1failed. Focused tests/agents/slo_agent/test_session_rate_limits.py::TestSessionRateLimitResilience::test_preflight_local_rate_wait_yields_retrying_status also hung until30sec external interruption. Test constructs session BEFORE patching asyncio.sleep and time.monotonic(return1.0). New session constructor captures asyncio.sleep into self._recovery_wait; changed rate-preflight path at service.py~5203 now awaits self._recovery_wait(decision.wait_seconds) instead of existing asyncio.sleep. Captured original sleep bypasses patched sleep while frozen monotonic prevents completion. Likely minimal fix restore ordinary rate-preflight wait to original owner, keeping recovery-specific clock/wait only for recovery; inspect exact source and tests, use failing test as RED, don't weaken tests or merely extend timeout. Built-in faulthandler showed eventloop select. Logs /tmp/slo103-ci-reproduction-hs9eBX/{pytest.log,focused.log}. Other local failure tests/cli/test_release_automation.py::TestReleaseAutomation::test_repo_local_release_evidence_template_is_explicitly_non_evidence expects release-evidence/README.md deleted by explicit user request. Reconcile that obsolete repository-location contract with authorized external KB docs, without restoring forbidden folder or weakening real release proof contracts.\nUSER requires NO files under release-evidence in codebase. Previous cleanup moved40 receipts to /root/Code/KnowledgeBase/KB/slo/features/sleep-recovery-103-receipts; manifest there. Further record /root/Code/KnowledgeBase/KB/slo/features/sleep-recovery/dispatch6-final.md. Remaining closed receipts under repo release-evidence may now be migrated to KB safely (verify no active writers), remove all folder contents and tracked README/template deletion in authorized cleanup commit; preserve meaningful docs in KB, remove generated binaries. Do not put any new evidence under release-evidence. Tests should not require this external absolute KB path in portable CI. Inspect references and migrate appropriate guidance, avoid broad unrelated release redesign.\nRun required code-test-review workflow from active SLO_SKILL_DIR/SLO_SKILLS_DIR, read engineering routing/testing and overarching solution-design/coding-rules/naming-and-clarity/test-verification-policy and applicable Python instructions. Test-first tell-dont-ask declarative no-regression named args type hints mandatory. Independent review required before repair commit. Use gpt-6.1-sol medium Code+Test; gpt-6-astra medium review/orchestrator/completion. Delegate phases directly, no nested detached workflow. Test commands bounded: isolated reproduction 15-30s, related tests reasonable2-3min, full suite12-15min hard bound with safe owned-process cleanup and built-in faulthandler180s; no faulty diagnostic plugin writing during filesystem-guard tests. Full CI normally progresses97% about12min. If full run stalls identify unfinished test using verbose stdout and safe diagnostics, no endless reruns. Unrelated running processes must not be killed. Prior verification disposable interpreter /tmp/slo103-verification-AYBfh5/venv/bin/python and sanitized HOME/TMPDIR under same temp root can be reused after validating. Match CI six workers non-e2e and env per ../.gitlab-ci.yml plus Makefile; avoid credentials or global environment changes. E2E live credential/network Docker tests not required by CI and not silently claimed. No arbitrary exclusions. Prior static failures known parent-baseline4mypy errors2files and13Black files, no unrelated cleanup.\nExisting known semantic gap Linux BOOTTIME counts suspend against300sec budget, conflicting later user24h-sleep pause requirement. This task fixes hang/cleanup not redesign; report gap without scope expansion. Preserve worktree unrelated changes. Verify staged scope, scan secrets, commit detailed repair and push origin sleep-recovery (authorized), update MR description with actual verification results and limitations. No force push. Keep concise evidence in KB. Existing feature workflow turn1 partial3/20 before later6-dispatch commit-verification task; prior repair loop continuation must preserve counters; new user-requested repair turn2 maximum20dispatches, overall max60turns. Retry failed agents max3 with original identities, never retry aborted agents. Report exact changed files, root cause demonstrated, test results/time bounds, commit hash, push and new CI URL/status. User prioritizes identifying and fixing, not indefinite waiting.",
+      "--session-id",
+      "919a3181-1255-4caa-a729-308acde59ae2",
+      "--notify-session",
+      "56e6ce24-2878-4eee-96e4-27537496ee9e",
+      "--cwd",
+      "/root/Code/sleep-recovery/slo",
+      "--model",
+      "gpt-6-astra",
+      "--reasoning",
+      "medium"
+    ],
+    "pgid": 1964258,
+    "pid": 1964258,
+    "ppid": 700375,
+    "sid": 1964258,
+    "start": "165555340",
+    "state": "S"
+  },
+  "1964429": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-B",
+      "/root/.local/share/pipx/venvs/slo/lib/python3.11/site-packages/src/agents/slo_agent/orchestrator/capture_writer.py"
+    ],
+    "pgid": 1964429,
+    "pid": 1964429,
+    "ppid": 959875,
+    "sid": 1964429,
+    "start": "165555568",
+    "state": "S"
+  },
+  "1964431": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-B",
+      "/root/.local/share/pipx/venvs/slo/lib/python3.11/site-packages/src/agents/slo_agent/orchestrator/capture_writer.py"
+    ],
+    "pgid": 1964431,
+    "pid": 1964431,
+    "ppid": 959875,
+    "sid": 1964431,
+    "start": "165555571",
+    "state": "S"
+  },
+  "1964433": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-m",
+      "src.cli",
+      "run",
+      "--orchestrator",
+      "--json",
+      "--enable-history",
+      "-p",
+      "User says 'You may try now': retry authorized scoped verification of CURRENT A.2 worktree in /root/Code/slo-message-queue/slo. Run full applicable pytest suite excluding ONLY already-authorized pipx/installer-level tests. Previous attempt wf-8591 launched NO tests due concurrent pytest in /root/Code/sleep-recovery/slo PID982870 six workers and historical1261413. Recheck current process identity/activity, do not assume old PIDs alive or signal unrelated processes. User requires only ONE test cycle at a time across machine unless clarified otherwise. If conflicting cycle still genuinely active, report it; do not launch concurrently or terminate it. Do not treat merely stale metadata as active. If clear, proceed promptly to actual tests.\nPrepared exact command/inventory: release-evidence/96-cooperative-provider-tool-yield/full-suite-verification-20261105T042944Z-1005245/{inventory.md,proposed-command.txt}; previous attempt receipt release-evidence/96-cooperative-provider-tool-yield/ad-hoc-verification-20261105T050625Z-1171727/ including proposed-command-NOT-EXECUTED.txt. Existing authorized exclusions12 installer modules +24 narrow class/case nodes, project default not-e2e selection unchanged. Read prepared inventory and current project Makefile/test policy, don't invent broad extra exclusions. Report full applicable suite WITH exact approved exclusions, not unexcluded full suite. Prior preflight verified /root/.pyenv/versions/slo-harness/bin/python Python3.11.7 pytest9.0.3 xdist3.8.0; confirm and use existing approved interpreter/project safe test env and one invocation with6workers. No real provider/publishing/package install. Model orchestrator gpt-6.1-sol high, execution worker gpt-6.1-sol medium.\nEXECUTABLE PERMISSION RESOLVED: user authorized existing runtime fixtures in shared tests/conftest.py,tests/scheduling/,tests/tui/,tests/integration/ to create/chmod/rename/replace/link fake executables ONLY in verified disposable pytest-owned temporary roots. Original specific fake curl test also authorized but installer tests excluded this run. NEVER modify core system utilities, installed binaries, shared env, or links targeting real writable system executables. Preserve existing containment guards. Don't reopen known temporary-fixture blocker. Inspect actual remaining safety only as needed; ordinary contained fixture data chmod and child execution not blockers.\nVerification ONLY: do not fix code/tests,format,change assertions,install anything,commit/push,or overwrite previous reports. Keep unrelated user SLO/docs/source edits and existing A.2 state. No independent review ceremony needed for pytest reporting. Execute via spawn_sub_agents, no nested detached workflows; this is explicitly renewed ad-hoc verification with max6calls (prior attempt used1 no retries, carry if same ad-hoc continuation:1/6 consumed,5remaining; original earlier consent-blocked attempt count separately documented). Failed test outcomes are results, not reason for automatic rerun. Recoverable execution failures initial+3 within remaining cap; never retry aborted task. Don't modify A.2 historical turn counters or invent revision turn.\nTrack all launched pytest/child processes/tasks/containers; one test cycle at a time; cleanup on finish/failure/cancel/timeout and verify no test-owned orphans. Do not terminate unrelated resources. No containers unless necessary. Durable stdout/stderr/log and exact exit receipt; enough normal timeout to complete previous suite ~10min without premature cutoff, bounded dispatch well under3h parent watchdog. Before/after coreutils integrity check if available, plus source/test preservation checks. Persist uniquely named verification report/logs under release-evidence/96-cooperative-provider-tool-yield/. Final return actual passed/failed/errors/skips/deselections/warnings,duration,exit,exact command/exclusions,interpreter,evidence path,cleanup and utilities status. If cannot run give precise live blocker not hypothetical safety concerns. Prior full checks never executed current A.2 suite, so no reuse of previous-feature counts as current result.",
+      "--session-id",
+      "f1dc1ec5-8e03-4f2e-9b54-23c6441b0b9d",
+      "--notify-session",
+      "c884f51d-1568-4e69-9259-e5d00959ce81",
+      "--cwd",
+      "/root/Code/slo-message-queue/slo",
+      "--model",
+      "gpt-6.1-sol",
+      "--reasoning",
+      "high"
+    ],
+    "pgid": 1964433,
+    "pid": 1964433,
+    "ppid": 959875,
+    "sid": 1964433,
+    "start": "165555574",
+    "state": "S"
+  },
+  "1964859": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 1964859,
+    "pid": 1964859,
+    "ppid": 18660,
+    "sid": 1964859,
+    "start": "165555803",
+    "state": "S"
+  },
+  "1965271": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "/root/.local/share/pipx/venvs/slo/bin/slo-entry",
+      "visualize",
+      "--session",
+      "f1dc1ec5-8e03-4f2e-9b54-23c6441b0b9d",
+      "--follow"
+    ],
+    "pgid": 1965271,
+    "pid": 1965271,
+    "ppid": 1964859,
+    "sid": 1964859,
+    "start": "165555856",
+    "state": "S"
+  },
+  "1965965": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.10(40890) idle"
+    ],
+    "pgid": 1965965,
+    "pid": 1965965,
+    "ppid": 348171,
+    "sid": 1965965,
+    "start": "165556747",
+    "state": "S"
+  },
+  "1966693": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1966693,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165557595",
+    "state": "I"
+  },
+  "1967762": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1967762,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165558954",
+    "state": "I"
+  },
+  "1969258": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1969258,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165560848",
+    "state": "I"
+  },
+  "1970091": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-m",
+      "src.cli",
+      "run",
+      "--json",
+      "-p",
+      "Implement bounded repair MR155 on sleep-recovery HEAD 5b2152749bf24fe5298786095eb3a4c28ba166b5. No commit/push yet. Turn2 dispatch1/20 overall60; no nested agents. Read active $SLO_SKILL_DIR INDEX and applicable project instructions (AGENTS/docs RESEARCH absent from initial find; inspect other instructions), engineering ownership/routing/testing, coding solution-design/coding-rules/naming-and-clarity/test-verification-policy/code-test-loop, languages/python/python-conventions and named-arguments-and-type-hints/declarative-method-structure/method-docstrings, relevant agent build/test recipes. Routing: Python3.11 asyncio session service, pytest/xdist behavior tests; Markdown release guidance and portable repository-contract tests. Root git /root/Code/sleep-recovery; app slo/. Follow tell-dont-ask, typed named args, declarative minimal fix, test-first, real files and injected stubs for new tests. No unrelated refactoring.\nAcceptance R1 demonstrate existing hang RED with 15-30s external bound: tests/agents/slo_agent/test_session_rate_limits.py::TestSessionRateLimitResilience::test_preflight_local_rate_wait_yields_retrying_status. Diagnosis: session constructed before patches asyncio.sleep and monotonic=1; constructor captures original sleep as _recovery_wait; ordinary rate preflight ~5203 awaits captured _recovery_wait, bypasses patched sleep while clock frozen. Inspect and minimally restore ordinary rate-preflight sleep ownership, keeping recovery waits for recovery. Don't weaken test/change timeout to hide problem. Existing logs /tmp/slo103-ci-reproduction-hs9eBX/{pytest.log,focused.log}; exit137 CI cause unproven. R2 remove ALL release-evidence files/folder from codebase per user. Current dirty deletions README/template authorized; untracked 103-logs and preflight receipt remain. Verify no active writers before migrating meaningful closed receipts/docs to /root/Code/KnowledgeBase/KB/slo/features/sleep-recovery-103-receipts (existing manifest; preserve and extend safely), discard generated binaries. Read /root/Code/KnowledgeBase/KB/slo/features/sleep-recovery/dispatch6-final.md. Repair obsolete tests/cli/test_release_automation.py test_repo_local_release_evidence_template_is_explicitly_non_evidence contract: portable CI must not require external absolute KB path, preserve real release-proof contracts, inspect/migrate guidance references minimally, do not restore forbidden folder. Preserve unrelated dirty changes. R3 tests: validate reusable /tmp/slo103-verification-AYBfh5/venv/bin/python and sanitized HOME/TMPDIR, no real credentials/global changes. Match ../.gitlab-ci.yml plus Makefile env (SLO_ENV=test, root/app cwd, APP_NAME=slo LOG_FORMAT=text DEFAULT_MODEL_NAME=gpt-5.4 AUTO_VISUALIZE=0 HERDR_DISABLED=1 ANTHROPIC_API_KEY placeholder COLUMNS120 LINES40 TEST_SELECTION_OBSERVER1). Focused bounds30s, related2-3min. Do NOT run full suite yet: return runnable slice + focused results for early independent advisory review, then orchestrator will dispatch acceptance verification. No custom diagnostics plugin; built-in faulthandler only. Known parent baseline mypy4 errors2files / black13files do not unrelated cleanup. E2E live network/Docker not CI and not claimed. Known Linux BOOTTIME300sec versus24h-suspend pause gap explicitly out of repair scope; report. Write compact handoff with exact changed files, acceptance/evidence, commands/results and routing at /root/Code/KnowledgeBase/KB/slo/features/sleep-recovery/repair-turn2-code.md. Return READY for runnable advisory checkpoint or precise blocker.",
+      "--session-id",
+      "c55ea231-3bf4-4bfc-a8a8-c587e04f6e22",
+      "--enable-history",
+      "--model",
+      "gpt-6.1-sol",
+      "--cwd",
+      "/root/Code/sleep-recovery/slo",
+      "--reasoning",
+      "medium"
+    ],
+    "pgid": 1964258,
+    "pid": 1970091,
+    "ppid": 1964258,
+    "sid": 1964258,
+    "start": "165561596",
+    "state": "S"
+  },
+  "1971204": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1971204,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165562860",
+    "state": "I"
+  },
+  "1971295": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "-m",
+      "src.cli",
+      "run",
+      "--json",
+      "-p",
+      "Perform verification ONLY of CURRENT A.2 worktree /root/Code/slo-message-queue/slo. User explicitly renewed authorization to run the full applicable pytest suite excluding ONLY prepared pipx/installer-level exclusions. No independent review required. You are execution worker, not orchestrator: do not spawn agents or detached workflows.\n\nRead exact prepared inventory and command:\nrelease-evidence/96-cooperative-provider-tool-yield/full-suite-verification-20261105T042944Z-1005245/inventory.md\nrelease-evidence/96-cooperative-provider-tool-yield/full-suite-verification-20261105T042944Z-1005245/proposed-command.txt\nPrevious no-execution receipt: release-evidence/96-cooperative-provider-tool-yield/ad-hoc-verification-20261105T050625Z-1171727/ including proposed-command-NOT-EXECUTED.txt.\nRead CURRENT Makefile test/test-env policy and pyproject pytest config. Existing exact approval is 12 --ignore installer modules +24 narrow --deselect class/case nodes, preserving -m 'not e2e'. Do not add exclusions, broad ignores, change assertions, fix anything, format, install, commit/push, or overwrite earlier reports. Preserve unrelated SLO/docs/source edits and current A.2 state. No real providers, publishing, package install, or system/shared-env executable mutation.\n\nEXECUTABLE FIXTURE PERMISSION IS RESOLVED. User authorizes existing runtime fixtures in tests/conftest.py, tests/scheduling/, tests/tui/, tests/integration/ to create/chmod/rename/replace/link fake executables ONLY in verified disposable pytest-owned temporary roots, preserving existing containment guards. Existing original fake curl fixture is consented but installer tests are excluded. Ordinary contained fixture data chmod and child execution are NOT blockers. NEVER modify core system utilities, installed binaries, shared environments, or links targeting real writable system executables. Do not reopen prior temporary-fixture consent issue or demand generic certification; inspect remaining actual safety as needed.\n\nOnly ONE test cycle at a time across entire machine. Do fresh /proc/ps activity/identity preflight; do not assume old PIDs alive or signal unrelated processes. Orchestrator preflight at 2026-11-05 about14:58 UTC found PID982870 gone, and only pytest candidate1261413: PPID1 PGID1261401 started Oct20 22:02:20; command /root/.pyenv/versions/slo-harness/bin/python /root/.pyenv/versions/slo-harness/bin/pytest -m not e2e; cwd /root/Code/slo-94-herdr-integration/slo (deleted); 0.0 CPU. A historical fake-herdr PID3382468 exists since Oct19 in /tmp/pytest-of-root/pytest-2466, also orphaned, unrelated. Ignore orchestrator/worker command text containing pytest as false positives. Recheck live process identity/activity (children, thread waits, CPU/I/O samples, output fds etc as appropriate) to distinguish genuinely active cycle from inert stale historical state. Do NOT treat merely stale metadata as active. Do NOT terminate either unrelated historical process. If genuine active conflict remains, report precise live blocker and launch no tests. If clear proceed promptly, without additional ceremonial checks or collection invocations. One pytest invocation only with6workers, no separate collection/smoke/full retry.\n\nConfirm approved existing interpreter /root/.pyenv/versions/slo-harness/bin/python (prior Python3.11.7 pytest9.0.3 xdist3.8.0). Use approved safe test env in prepared command and reconcile Makefile policy without exposing real secrets. The prepared explicit fallback exports are authorized. Preserve default not-e2e selection, PYTHONPATH=$PWD, PYTHONDONTWRITEBYTECODE=1, -B, -p no:cacheprovider, -n6. Run exactly approved selection from prepared command, no extra deselections. Durable evidence additions (e.g. JUnit report option) are fine if do not affect selection. Run one actual test invocation with ample normal timeout (~10min previous suite; allow at least1800sec or longer reasonably, bounded well under3h parent watchdog). Failed test outcomes are results, NOT reason to rerun. No automatic retries of test failures. No containers unless necessary.\n\nBefore/after snapshot coreutils integrity if available (real target identity, hash/mode for utilities), source/tests preservation checks (git status/diff plus content digest manifest covering existing tracked/untracked source/tests/docs/SLO config as reasonable; evidence directory excluded from change comparison). Record HEAD and current worktree identity; don't revert any changes. Persist unique new report directory under release-evidence/96-cooperative-provider-tool-yield/; never overwrite previous reports. Persist exact command/env (no secrets), approved exclusions list, stdout/stderr full logs, exact process/exit receipt, timestamps, count/duration summary. Track all test-launched descendants with start identities / process group/session and ensure cleanup on finish/failure/cancel/timeout, verify no test-owned orphans; only signal positively owned test resources, never unrelated resources. Historical unrelated orphan processes are not this run's responsibility and must be distinguished in receipt. Make supervision simple and robust (own process group plus descendant tracking); do not leave tests running after tool completion.\n\nReturn actual passed/failed/errors/skips/deselections/warnings, duration, exit code, exact command/exclusion list reference, interpreter, evidence path, source preservation, cleanup and utilities integrity status. If impossible to execute, precise current live blocker, not hypothetical safety concern. Prior full checks never executed CURRENT A.2; don't reuse earlier-feature counts.\n\nAccounting: ad-hoc continuation has max6 dispatch calls, 1 prior consumed plus this call=2 consumed/4 remaining. No A.2 historical workflow counters or revision turns modified. Recoverable execution failure max3 retries within remaining cap handled by parent; never retry aborted task. Do not self-retry suite after assertion failure. Report COMPLETE only if actual requested verification and receipts done, else BLOCKED/INCOMPLETE with facts.",
+      "--session-id",
+      "a8b9952a-df19-466b-8657-800c0473feef",
+      "--enable-history",
+      "--model",
+      "gpt-6.1-sol",
+      "--cwd",
+      "/root/Code/slo-message-queue/slo",
+      "--reasoning",
+      "medium"
+    ],
+    "pgid": 1964433,
+    "pid": 1971295,
+    "ppid": 1964433,
+    "sid": 1964433,
+    "start": "165563013",
+    "state": "S"
+  },
+  "1972993": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1972993,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165565043",
+    "state": "S"
+  },
+  "1975086": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1975086,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165567779",
+    "state": "S"
+  },
+  "1975088": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1975088,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165567779",
+    "state": "S"
+  },
+  "1975089": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1975089,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165567779",
+    "state": "S"
+  },
+  "1975092": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1975092,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165567779",
+    "state": "S"
+  },
+  "1975093": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1975093,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165567779",
+    "state": "S"
+  },
+  "1975095": {
+    "argv": [
+      "/root/.pyenv/versions/3.11.7/envs/slo-harness/bin/python",
+      "-m",
+      "src.cli",
+      "--resume",
+      "afd8127e-a22c-43c0-b7c0-ef125f5c3bc4"
+    ],
+    "pgid": 1975095,
+    "pid": 1975095,
+    "ppid": 1486344,
+    "sid": 1486344,
+    "start": "165567787",
+    "state": "S"
+  },
+  "1975419": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1975419,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165568115",
+    "state": "S"
+  },
+  "1976030": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1976030,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165568803",
+    "state": "S"
+  },
+  "1976044": {
+    "argv": [
+      "sleep",
+      "180"
+    ],
+    "pgid": 1306021,
+    "pid": 1976044,
+    "ppid": 1306149,
+    "sid": 1306021,
+    "start": "165568835",
+    "state": "S"
+  },
+  "1976184": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1976184,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165568897",
+    "state": "I"
+  },
+  "1976380": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1976380,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165569139",
+    "state": "S"
+  },
+  "1976381": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1976381,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165569139",
+    "state": "S"
+  },
+  "1976382": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1976382,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165569139",
+    "state": "S"
+  },
+  "1976383": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1976383,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165569139",
+    "state": "S"
+  },
+  "1977472": {
+    "argv": [
+      "sleep",
+      "180"
+    ],
+    "pgid": 2952232,
+    "pid": 1977472,
+    "ppid": 2952358,
+    "sid": 2952232,
+    "start": "165570596",
+    "state": "S"
+  },
+  "1977917": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1977917,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165571187",
+    "state": "S"
+  },
+  "1977918": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1977918,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165571187",
+    "state": "S"
+  },
+  "1977919": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1977919,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165571187",
+    "state": "S"
+  },
+  "1978285": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1978285,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165571699",
+    "state": "S"
+  },
+  "1978287": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1978287,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165571699",
+    "state": "S"
+  },
+  "1980409": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1980409,
+    "ppid": 2,
+    "sid": 0,
+    "start": "36032026",
+    "state": "S"
+  },
+  "1980703": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1980703,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574001",
+    "state": "I"
+  },
+  "1980796": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1980796,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574140",
+    "state": "I"
+  },
+  "1981237": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981237,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981238": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981238,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981239": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981239,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981240": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981240,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981241": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981241,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981242": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981242,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981243": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981243,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165574771",
+    "state": "S"
+  },
+  "1981820": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 1981820,
+    "ppid": 2,
+    "sid": 0,
+    "start": "165575435",
+    "state": "I"
+  },
+  "1982066": {
+    "argv": [
+      "/root/.pyenv/versions/slo-harness/bin/python",
+      "-B",
+      "release-evidence/96-cooperative-provider-tool-yield/current-a2-verification-20261105-worker2/supervise.py"
+    ],
+    "pgid": 1982066,
+    "pid": 1982066,
+    "ppid": 1971295,
+    "sid": 1982066,
+    "start": "165575855",
+    "state": "R"
+  },
+  "2085963": {
+    "argv": [
+      "/root/.local/bin/claude",
+      "daemon",
+      "run",
+      "--json-path",
+      "/root/.claude/daemon.json",
+      "--log-file",
+      "/root/.claude/daemon.log",
+      "--origin",
+      "transient",
+      "--spawned-by",
+      "{\"label\":\"claude\",\"cwd\":\"/root/Code/slo/slo\",\"pid\":2849148}"
+    ],
+    "pgid": 2085963,
+    "pid": 2085963,
+    "ppid": 1,
+    "sid": 2085963,
+    "start": "154213808",
+    "state": "S"
+  },
+  "2085993": {
+    "argv": [
+      "claude bg-pty-host",
+      "--bg-pty-host",
+      "/tmp/cc-daemon-0/addcfb49/spare/9d166f7d.pty.sock",
+      "200",
+      "50",
+      "--",
+      "/root/.local/share/claude/versions/2.1.318",
+      "--bg-spare",
+      "/tmp/cc-daemon-0/addcfb49/spare/9d166f7d.claim.sock"
+    ],
+    "pgid": 2085993,
+    "pid": 2085993,
+    "ppid": 2085963,
+    "sid": 2085993,
+    "start": "154213820",
+    "state": "S"
+  },
+  "2085999": {
+    "argv": [
+      "claude bg-spare",
+      "--bg-spare",
+      "/tmp/cc-daemon-0/addcfb49/spare/9d166f7d.claim.sock"
+    ],
+    "pgid": 2085993,
+    "pid": 2085999,
+    "ppid": 2085993,
+    "sid": 2085993,
+    "start": "154213825",
+    "state": "S"
+  },
+  "2087112": {
+    "argv": [
+      "claude bg-pty-host",
+      "--bg-pty-host",
+      "/tmp/cc-daemon-0/addcfb49/pty/5559b613.sock",
+      "209",
+      "54",
+      "--",
+      "/root/.local/share/claude/versions/2.1.318",
+      "--resume",
+      "/root/.claude/projects/-root-Code-slo-slo/5559b613-b2ae-4e10-8ce6-90e2cce7604d.jsonl",
+      "--permission-mode",
+      "auto",
+      "--model",
+      "opus"
+    ],
+    "pgid": 2087112,
+    "pid": 2087112,
+    "ppid": 2085963,
+    "sid": 2087112,
+    "start": "154215332",
+    "state": "S"
+  },
+  "2087118": {
+    "argv": [
+      "/root/.local/share/claude/versions/2.1.318",
+      "--resume",
+      "/root/.claude/projects/-root-Code-slo-slo/5559b613-b2ae-4e10-8ce6-90e2cce7604d.jsonl",
+      "--permission-mode",
+      "auto",
+      "--model",
+      "opus"
+    ],
+    "pgid": 2087118,
+    "pid": 2087118,
+    "ppid": 2087112,
+    "sid": 2087118,
+    "start": "154215336",
+    "state": "S"
+  },
+  "2212060": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2212060,
+    "pid": 2212060,
+    "ppid": 2955340,
+    "sid": 2212060,
+    "start": "148815716",
+    "state": "S"
+  },
+  "2212493": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2212493,
+    "pid": 2212493,
+    "ppid": 2955340,
+    "sid": 2212493,
+    "start": "148815904",
+    "state": "S"
+  },
+  "2227035": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2227035,
+    "pid": 2227035,
+    "ppid": 2285,
+    "sid": 2227035,
+    "start": "120505221",
+    "state": "S"
+  },
+  "2227209": {
+    "argv": [
+      "/root/.local/bin/herdr",
+      "--session",
+      "default",
+      "remote-client-bridge",
+      "--idle-timeout-v1"
+    ],
+    "pgid": 2227209,
+    "pid": 2227209,
+    "ppid": 2227035,
+    "sid": 2227209,
+    "start": "120505255",
+    "state": "S"
+  },
+  "2227412": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2227412,
+    "pid": 2227412,
+    "ppid": 2285,
+    "sid": 2227412,
+    "start": "120505283",
+    "state": "S"
+  },
+  "2227415": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2227415,
+    "pid": 2227415,
+    "ppid": 2285,
+    "sid": 2227415,
+    "start": "120505283",
+    "state": "S"
+  },
+  "2227573": {
+    "argv": [
+      "/bin/sh",
+      "-s"
+    ],
+    "pgid": 2227573,
+    "pid": 2227573,
+    "ppid": 2227415,
+    "sid": 2227573,
+    "start": "120505337",
+    "state": "S"
+  },
+  "2227574": {
+    "argv": [
+      "/bin/sh",
+      "-s"
+    ],
+    "pgid": 2227574,
+    "pid": 2227574,
+    "ppid": 2227412,
+    "sid": 2227574,
+    "start": "120505337",
+    "state": "S"
+  },
+  "2228671": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2228671,
+    "pid": 2228671,
+    "ppid": 2285,
+    "sid": 2228671,
+    "start": "120505638",
+    "state": "S"
+  },
+  "2228897": {
+    "argv": [
+      "codex",
+      "app-server",
+      "proxy"
+    ],
+    "pgid": 2228897,
+    "pid": 2228897,
+    "ppid": 2228671,
+    "sid": 2228897,
+    "start": "120505678",
+    "state": "S"
+  },
+  "2267408": {
+    "argv": [],
+    "pgid": 0,
+    "pid": 2267408,
+    "ppid": 2,
+    "sid": 0,
+    "start": "159963032",
+    "state": "S"
+  },
+  "2314690": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 2314690,
+    "pid": 2314690,
+    "ppid": 18660,
+    "sid": 2314690,
+    "start": "148944193",
+    "state": "S"
+  },
+  "2402126": {
+    "argv": [
+      "/usr/sbin/cupsd",
+      "-l"
+    ],
+    "pgid": 2402126,
+    "pid": 2402126,
+    "ppid": 1,
+    "sid": 2402126,
+    "start": "160168517",
+    "state": "S"
+  },
+  "2402131": {
+    "argv": [
+      "/usr/sbin/cups-browsed"
+    ],
+    "pgid": 2402131,
+    "pid": 2402131,
+    "ppid": 1,
+    "sid": 2402131,
+    "start": "160168520",
+    "state": "S"
+  },
+  "2402337": {
+    "argv": [
+      "/usr/lib/cups/notifier/dbus",
+      "dbus://",
+      ""
+    ],
+    "pgid": 2402337,
+    "pid": 2402337,
+    "ppid": 2402126,
+    "sid": 2402126,
+    "start": "160168803",
+    "state": "S"
+  },
+  "2402338": {
+    "argv": [
+      "/usr/lib/cups/notifier/dbus",
+      "dbus://",
+      ""
+    ],
+    "pgid": 2402338,
+    "pid": 2402338,
+    "ppid": 2402126,
+    "sid": 2402126,
+    "start": "160168804",
+    "state": "S"
+  },
+  "2683656": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "--dns-result-order=ipv4first",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=extensionHost",
+      "--transformURIs",
+      "--useHostProxy=false"
+    ],
+    "pgid": 2952232,
+    "pid": 2683656,
+    "ppid": 2954950,
+    "sid": 2952232,
+    "start": "132392389",
+    "state": "S"
+  },
+  "2683668": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=fileWatcher"
+    ],
+    "pgid": 2952232,
+    "pid": 2683668,
+    "ppid": 2954950,
+    "sid": 2952232,
+    "start": "132392402",
+    "state": "S"
+  },
+  "2683763": {
+    "argv": [
+      "/bin/sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2683763,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "132392557",
+    "state": "S"
+  },
+  "2684008": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/ckolkman.vscode-postgres-1.4.3/out/language/server.js",
+      "--node-ipc",
+      "--clientProcessId=2683656"
+    ],
+    "pgid": 2952232,
+    "pid": 2684008,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132392697",
+    "state": "S"
+  },
+  "2684014": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/extensions/markdown-language-features/dist/serverWorkerMain",
+      "--node-ipc",
+      "--clientProcessId=2683656"
+    ],
+    "pgid": 2952232,
+    "pid": 2684014,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132392698",
+    "state": "S"
+  },
+  "2684369": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2684369,
+    "pid": 2684369,
+    "ppid": 2955340,
+    "sid": 2684369,
+    "start": "132392747",
+    "state": "S"
+  },
+  "2684405": {
+    "argv": [
+      "/root/.vscode-server/extensions/ms-python.vscode-python-envs-1.40.0-linux-x64/python-env-tools/bin/pet",
+      "server"
+    ],
+    "pgid": 2952232,
+    "pid": 2684405,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132392748",
+    "state": "S"
+  },
+  "2685148": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2685148,
+    "pid": 2685148,
+    "ppid": 2955340,
+    "sid": 2685148,
+    "start": "132392902",
+    "state": "S"
+  },
+  "2685245": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/github.vscode-github-actions-0.32.3/dist/server-node.js",
+      "--node-ipc",
+      "--clientProcessId=2683656"
+    ],
+    "pgid": 2952232,
+    "pid": 2685245,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132392909",
+    "state": "S"
+  },
+  "2685963": {
+    "argv": [
+      "/root/.vscode-server/extensions/openai.chatgpt-26.1021.22027-linux-x64/bin/linux-x86_64/codex",
+      "-c",
+      "features.code_mode_host=true",
+      "-c",
+      "features.windows_sandbox_service=true",
+      "app-server",
+      "--analytics-default-enabled"
+    ],
+    "pgid": 2952232,
+    "pid": 2685963,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132393139",
+    "state": "S"
+  },
+  "2686044": {
+    "argv": [
+      "/root/.pyenv/versions/slo-harness/bin/python",
+      "/root/.vscode-server/extensions/ms-python.autopep8-2026.4.0/bundled/tool/lsp_server.py"
+    ],
+    "pgid": 2952232,
+    "pid": 2686044,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132393146",
+    "state": "S"
+  },
+  "2686109": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "--use-system-ca",
+      "/root/.vscode-server/extensions/gitlab.gitlab-workflow-7.3.5/assets/language-server/main-bundle-node.js",
+      "--stdio",
+      "--clientProcessId=2683656"
+    ],
+    "pgid": 2952232,
+    "pid": 2686109,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132393182",
+    "state": "S"
+  },
+  "2686343": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2686343,
+    "pid": 2686343,
+    "ppid": 2955340,
+    "sid": 2686343,
+    "start": "132393308",
+    "state": "S"
+  },
+  "2686743": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2686743,
+    "pid": 2686743,
+    "ppid": 2955340,
+    "sid": 2686743,
+    "start": "132393373",
+    "state": "S"
+  },
+  "2687756": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/ms-python.vscode-pylance-2026.4.1/dist/server.bundle.js",
+      "--cancellationReceive=file:9a98256b7d8df90d4d3fc5c0b3b2ce0b7aaa633a77",
+      "--node-ipc",
+      "--clientProcessId=2683656"
+    ],
+    "pgid": 2952232,
+    "pid": 2687756,
+    "ppid": 2683656,
+    "sid": 2952232,
+    "start": "132394201",
+    "state": "S"
+  },
+  "2763212": {
+    "argv": [
+      "/root/.local/share/pipx/venvs/slo/bin/python",
+      "-I",
+      "/root/.local/share/pipx/venvs/slo/bin/slo-entry",
+      "--resume",
+      "83184632-ca51-4067-aa90-0693f412898e"
+    ],
+    "pgid": 2763212,
+    "pid": 2763212,
+    "ppid": 1856598,
+    "sid": 1856598,
+    "start": "120834577",
+    "state": "S"
+  },
+  "2774094": {
+    "argv": [
+      "smbd: scavenger",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 425678,
+    "pid": 2774094,
+    "ppid": 425678,
+    "sid": 425678,
+    "start": "38014682",
+    "state": "S"
+  },
+  "2776635": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 2776635,
+    "pid": 2776635,
+    "ppid": 18660,
+    "sid": 2776635,
+    "start": "138551074",
+    "state": "S"
+  },
+  "2781789": {
+    "argv": [
+      "hcloud",
+      "context",
+      "create",
+      "staging"
+    ],
+    "pgid": 2781789,
+    "pid": 2781789,
+    "ppid": 2776635,
+    "sid": 2776635,
+    "start": "138556962",
+    "state": "S"
+  },
+  "2782062": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 2782062,
+    "pid": 2782062,
+    "ppid": 18660,
+    "sid": 2782062,
+    "start": "4535325",
+    "state": "S"
+  },
+  "2843276": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 2843276,
+    "pid": 2843276,
+    "ppid": 18660,
+    "sid": 2843276,
+    "start": "132591701",
+    "state": "S"
+  },
+  "2845592": {
+    "argv": [
+      "pi",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2845592,
+    "pid": 2845592,
+    "ppid": 2843276,
+    "sid": 2843276,
+    "start": "132594202",
+    "state": "S"
+  },
+  "2868461": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "1f7004ed73a326da7550c51c20265e4afc78cea2bb743c5cefb2a98484fcf36e",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 2868461,
+    "pid": 2868461,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "132627322",
+    "state": "S"
+  },
+  "2868486": {
+    "argv": [
+      "postgres"
+    ],
+    "pgid": 2868486,
+    "pid": 2868486,
+    "ppid": 2868461,
+    "sid": 2868486,
+    "start": "132627324",
+    "state": "S"
+  },
+  "2868654": {
+    "argv": [
+      "postgres: checkpointer "
+    ],
+    "pgid": 2868654,
+    "pid": 2868654,
+    "ppid": 2868486,
+    "sid": 2868654,
+    "start": "132627430",
+    "state": "S"
+  },
+  "2868655": {
+    "argv": [
+      "postgres: background writer "
+    ],
+    "pgid": 2868655,
+    "pid": 2868655,
+    "ppid": 2868486,
+    "sid": 2868655,
+    "start": "132627430",
+    "state": "S"
+  },
+  "2868657": {
+    "argv": [
+      "postgres: walwriter "
+    ],
+    "pgid": 2868657,
+    "pid": 2868657,
+    "ppid": 2868486,
+    "sid": 2868657,
+    "start": "132627430",
+    "state": "S"
+  },
+  "2868658": {
+    "argv": [
+      "postgres: autovacuum launcher "
+    ],
+    "pgid": 2868658,
+    "pid": 2868658,
+    "ppid": 2868486,
+    "sid": 2868658,
+    "start": "132627430",
+    "state": "S"
+  },
+  "2868659": {
+    "argv": [
+      "postgres: logical replication launcher "
+    ],
+    "pgid": 2868659,
+    "pid": 2868659,
+    "ppid": 2868486,
+    "sid": 2868659,
+    "start": "132627430",
+    "state": "S"
+  },
+  "2868957": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "77844b305f970d1a625aa2a527da6108f46e5e50b9968c94b75ef05391ce23c7",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 2868957,
+    "pid": 2868957,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "132627840",
+    "state": "S"
+  },
+  "2868980": {
+    "argv": [
+      "/app/.venv/bin/python3",
+      "/app/.venv/bin/litellm",
+      "--config",
+      "/app/config.yaml",
+      "--port",
+      "4000"
+    ],
+    "pgid": 2868980,
+    "pid": 2868980,
+    "ppid": 2868957,
+    "sid": 2868980,
+    "start": "132627842",
+    "state": "S"
+  },
+  "2869038": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "4000",
+      "-container-ip",
+      "172.21.0.3",
+      "-container-port",
+      "4000",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 2869038,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "132627848",
+    "state": "S"
+  },
+  "2869949": {
+    "argv": [],
+    "pgid": 2869949,
+    "pid": 2869949,
+    "ppid": 2868980,
+    "sid": 2869949,
+    "start": "132629056",
+    "state": "Z"
+  },
+  "2870079": {
+    "argv": [],
+    "pgid": 2870079,
+    "pid": 2870079,
+    "ppid": 2868980,
+    "sid": 2870079,
+    "start": "132629158",
+    "state": "Z"
+  },
+  "2870129": {
+    "argv": [
+      "/opt/prisma/binaries/node_modules/prisma/query-engine-debian-openssl-3.0.x",
+      "-p",
+      "47169",
+      "--enable-metrics",
+      "--enable-raw-queries"
+    ],
+    "pgid": 2868980,
+    "pid": 2870129,
+    "ppid": 2868980,
+    "sid": 2868980,
+    "start": "132629175",
+    "state": "S"
+  },
+  "2926928": {
+    "argv": [
+      "/usr/bin/cloudflared",
+      "--no-autoupdate",
+      "--config",
+      "/etc/cloudflared/config.yml",
+      "tunnel",
+      "run"
+    ],
+    "pgid": 2926928,
+    "pid": 2926928,
+    "ppid": 1,
+    "sid": 2926928,
+    "start": "120925712",
+    "state": "S"
+  },
+  "2952188": {
+    "argv": [
+      "sshd: root@notty",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "pgid": 2952188,
+    "pid": 2952188,
+    "ppid": 2285,
+    "sid": 2952188,
+    "start": "123504123",
+    "state": "S"
+  },
+  "2952232": {
+    "argv": [
+      "-bash"
+    ],
+    "pgid": 2952232,
+    "pid": 2952232,
+    "ppid": 2952188,
+    "sid": 2952232,
+    "start": "123504140",
+    "state": "S"
+  },
+  "2952358": {
+    "argv": [
+      "sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2952358,
+    "ppid": 2952232,
+    "sid": 2952232,
+    "start": "123504158",
+    "state": "S"
+  },
+  "2952576": {
+    "argv": [
+      "/root/.vscode-server/code-2c33b50b16c472efe58357d1d2a8a5414bc23fbf",
+      "command-shell",
+      "--cli-data-dir",
+      "/root/.vscode-server/cli",
+      "--parent-process-id",
+      "2952358",
+      "--on-host=127.0.0.1",
+      "--on-port"
+    ],
+    "pgid": 2952232,
+    "pid": 2952576,
+    "ppid": 2952358,
+    "sid": 2952232,
+    "start": "123504312",
+    "state": "S"
+  },
+  "2954724": {
+    "argv": [],
+    "pgid": 2952232,
+    "pid": 2954724,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123505627",
+    "state": "Z"
+  },
+  "2954941": {
+    "argv": [
+      "sh",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/bin/code-server",
+      "--connection-token=remotessh",
+      "--accept-server-license-terms",
+      "--agent-host-bridge-port=12635",
+      "--agent-host-bridge-host=127.0.0.1",
+      "--start-server",
+      "--enable-remote-auto-shutdown",
+      "--socket-path=/tmp/code-5644d400-970c-4e37-b7bc-b59ccc4dacf0"
+    ],
+    "pgid": 2952232,
+    "pid": 2954941,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123505692",
+    "state": "S"
+  },
+  "2954945": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/server-main.js",
+      "--connection-token=remotessh",
+      "--accept-server-license-terms",
+      "--agent-host-bridge-port=12635",
+      "--agent-host-bridge-host=127.0.0.1",
+      "--start-server",
+      "--enable-remote-auto-shutdown",
+      "--socket-path=/tmp/code-5644d400-970c-4e37-b7bc-b59ccc4dacf0"
+    ],
+    "pgid": 2952232,
+    "pid": 2954945,
+    "ppid": 2954941,
+    "sid": 2952232,
+    "start": "123505692",
+    "state": "S"
+  },
+  "2954946": {
+    "argv": [
+      "sh",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/bin/code-server",
+      "--connection-token=remotessh",
+      "--accept-server-license-terms",
+      "--agent-host-bridge-port=12635",
+      "--agent-host-bridge-host=127.0.0.1",
+      "--start-server",
+      "--enable-remote-auto-shutdown",
+      "--socket-path=/tmp/code-9c149edf-fb65-4589-886d-d6d8733c25bc"
+    ],
+    "pgid": 2952232,
+    "pid": 2954946,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123505692",
+    "state": "S"
+  },
+  "2954950": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/server-main.js",
+      "--connection-token=remotessh",
+      "--accept-server-license-terms",
+      "--agent-host-bridge-port=12635",
+      "--agent-host-bridge-host=127.0.0.1",
+      "--start-server",
+      "--enable-remote-auto-shutdown",
+      "--socket-path=/tmp/code-9c149edf-fb65-4589-886d-d6d8733c25bc"
+    ],
+    "pgid": 2952232,
+    "pid": 2954950,
+    "ppid": 2954946,
+    "sid": 2952232,
+    "start": "123505692",
+    "state": "S"
+  },
+  "2955340": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=ptyHost",
+      "--logsPath",
+      "/root/.vscode-server/data/logs/20261031T180935"
+    ],
+    "pgid": 2952232,
+    "pid": 2955340,
+    "ppid": 2954950,
+    "sid": 2952232,
+    "start": "123505745",
+    "state": "S"
+  },
+  "2955341": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=ptyHost",
+      "--logsPath",
+      "/root/.vscode-server/data/logs/20261031T180935"
+    ],
+    "pgid": 2952232,
+    "pid": 2955341,
+    "ppid": 2954945,
+    "sid": 2952232,
+    "start": "123505746",
+    "state": "S"
+  },
+  "2955363": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "--dns-result-order=ipv4first",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=extensionHost",
+      "--transformURIs",
+      "--useHostProxy=false"
+    ],
+    "pgid": 2952232,
+    "pid": 2955363,
+    "ppid": 2954945,
+    "sid": 2952232,
+    "start": "123505749",
+    "state": "S"
+  },
+  "2955389": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/bootstrap-fork",
+      "--type=fileWatcher"
+    ],
+    "pgid": 2952232,
+    "pid": 2955389,
+    "ppid": 2954945,
+    "sid": 2952232,
+    "start": "123505757",
+    "state": "S"
+  },
+  "2956542": {
+    "argv": [
+      "/bin/sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2956542,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123506347",
+    "state": "S"
+  },
+  "2957383": {
+    "argv": [
+      "/bin/sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2957383,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123506433",
+    "state": "S"
+  },
+  "2957628": {
+    "argv": [
+      "/bin/sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2957628,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123506444",
+    "state": "S"
+  },
+  "2957767": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/ckolkman.vscode-postgres-1.4.3/out/language/server.js",
+      "--node-ipc",
+      "--clientProcessId=2955363"
+    ],
+    "pgid": 2952232,
+    "pid": 2957767,
+    "ppid": 2955363,
+    "sid": 2952232,
+    "start": "123506456",
+    "state": "S"
+  },
+  "2957796": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/extensions/markdown-language-features/dist/serverWorkerMain",
+      "--node-ipc",
+      "--clientProcessId=2955363"
+    ],
+    "pgid": 2952232,
+    "pid": 2957796,
+    "ppid": 2955363,
+    "sid": 2952232,
+    "start": "123506461",
+    "state": "S"
+  },
+  "2963691": {
+    "argv": [
+      "/root/.vscode-server/extensions/openai.chatgpt-26.1021.22027-linux-x64/bin/linux-x86_64/codex",
+      "-c",
+      "features.code_mode_host=true",
+      "-c",
+      "features.windows_sandbox_service=true",
+      "app-server",
+      "--analytics-default-enabled"
+    ],
+    "pgid": 2952232,
+    "pid": 2963691,
+    "ppid": 2955363,
+    "sid": 2952232,
+    "start": "123507201",
+    "state": "S"
+  },
+  "2963778": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "/root/.vscode-server/extensions/dbaeumer.vscode-eslint-3.0.34/server/out/eslintServer.js",
+      "--node-ipc",
+      "--clientProcessId=2955363"
+    ],
+    "pgid": 2952232,
+    "pid": 2963778,
+    "ppid": 2955363,
+    "sid": 2952232,
+    "start": "123507206",
+    "state": "S"
+  },
+  "2965876": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/node",
+      "--use-system-ca",
+      "/root/.vscode-server/extensions/gitlab.gitlab-workflow-7.3.5/assets/language-server/main-bundle-node.js",
+      "--stdio",
+      "--clientProcessId=2955363"
+    ],
+    "pgid": 2952232,
+    "pid": 2965876,
+    "ppid": 2955363,
+    "sid": 2952232,
+    "start": "123507389",
+    "state": "S"
+  },
+  "2965922": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2965922,
+    "pid": 2965922,
+    "ppid": 2955341,
+    "sid": 2965922,
+    "start": "123507419",
+    "state": "S"
+  },
+  "2967063": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2967063,
+    "pid": 2967063,
+    "ppid": 2955341,
+    "sid": 2967063,
+    "start": "123507605",
+    "state": "S"
+  },
+  "2967685": {
+    "argv": [
+      "/bin/bash",
+      "--init-file",
+      "/root/.vscode-server/cli/servers/Stable-2c33b50b16c472efe58357d1d2a8a5414bc23fbf/server/out/vs/workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
+    ],
+    "pgid": 2967685,
+    "pid": 2967685,
+    "ppid": 2955341,
+    "sid": 2967685,
+    "start": "123507677",
+    "state": "S"
+  },
+  "2991236": {
+    "argv": [
+      "/bin/sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2991236,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123521676",
+    "state": "S"
+  },
+  "2996015": {
+    "argv": [
+      "/bin/sh"
+    ],
+    "pgid": 2952232,
+    "pid": 2996015,
+    "ppid": 2952576,
+    "sid": 2952232,
+    "start": "123523959",
+    "state": "S"
+  },
+  "2996646": {
+    "argv": [
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/node",
+      "/root/.vscode-server/cli/servers/Stable-6d62b1d5dace93a33b3a6d3eca1317bd5e15bcb1/server/out/bootstrap-fork",
+      "--type=fileWatcher"
+    ],
+    "pgid": 5643,
+    "pid": 2996646,
+    "ppid": 6700,
+    "sid": 5643,
+    "start": "123524135",
+    "state": "S"
+  },
+  "3052598": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 3052598,
+    "pid": 3052598,
+    "ppid": 18660,
+    "sid": 3052598,
+    "start": "132880557",
+    "state": "S"
+  },
+  "3382468": {
+    "argv": [
+      "/root/.pyenv/versions/3.11.7/bin/python3.11",
+      "/tmp/pytest-of-root/pytest-2466/test_multiple_registered_viewe0/fake-herdr",
+      "pane",
+      "split",
+      "--pane",
+      "synthetic-pane",
+      "--direction",
+      "right",
+      "--no-focus"
+    ],
+    "pgid": 3382468,
+    "pid": 3382468,
+    "ppid": 1,
+    "sid": 3382468,
+    "start": "16348928",
+    "state": "S"
+  },
+  "3721165": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "ad24c5fb70380beadcdbff9a92f037907c4bed3dbb2901b2b0aa2da46bf97bbd",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3721165,
+    "pid": 3721165,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121389785",
+    "state": "S"
+  },
+  "3721190": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "15e43735b817bc629b18ceb3e4535587385432c0fb651c1501939222a94b62cf",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3721190,
+    "pid": 3721190,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121389786",
+    "state": "S"
+  },
+  "3721222": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "d8d895f2af9f4cd5c97f7a4a24cdd552b866234cf641a9fd4b90fa1240e79988",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3721222,
+    "pid": 3721222,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121389786",
+    "state": "S"
+  },
+  "3721253": {
+    "argv": [
+      "/app/.venv/bin/python",
+      "/app/.venv/bin/uvicorn",
+      "src.main:app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8000"
+    ],
+    "pgid": 3721253,
+    "pid": 3721253,
+    "ppid": 3721165,
+    "sid": 3721253,
+    "start": "121389787",
+    "state": "S"
+  },
+  "3721262": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "64684bf872afe80e22917e14b6a8cf448a8f1c56ac90e8ec122222b7f09a5a72",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3721262,
+    "pid": 3721262,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121389787",
+    "state": "S"
+  },
+  "3721287": {
+    "argv": [
+      "/app/.venv/bin/python",
+      "/app/.venv/bin/uvicorn",
+      "src.apps.medask_doctors_backend.main:app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8002"
+    ],
+    "pgid": 3721287,
+    "pid": 3721287,
+    "ppid": 3721190,
+    "sid": 3721287,
+    "start": "121389787",
+    "state": "S"
+  },
+  "3721305": {
+    "argv": [
+      "/app/.venv/bin/python",
+      "/app/.venv/bin/uvicorn",
+      "src.apps.medask_admin_backend.main:app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8003"
+    ],
+    "pgid": 3721305,
+    "pid": 3721305,
+    "ppid": 3721222,
+    "sid": 3721305,
+    "start": "121389788",
+    "state": "S"
+  },
+  "3721312": {
+    "argv": [
+      "/app/.venv/bin/python",
+      "/app/.venv/bin/uvicorn",
+      "src.agents.a2a.pubmed_a2agent:starlette_app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "9901"
+    ],
+    "pgid": 3721312,
+    "pid": 3721312,
+    "ppid": 3721262,
+    "sid": 3721312,
+    "start": "121389788",
+    "state": "S"
+  },
+  "3721391": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "18000",
+      "-container-ip",
+      "172.20.0.2",
+      "-container-port",
+      "8000",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 3721391,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "121389794",
+    "state": "S"
+  },
+  "3721420": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "18002",
+      "-container-ip",
+      "172.20.0.3",
+      "-container-port",
+      "8002",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 3721420,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "121389796",
+    "state": "S"
+  },
+  "3721440": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "18003",
+      "-container-ip",
+      "172.20.0.6",
+      "-container-port",
+      "8003",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 3721440,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "121389798",
+    "state": "S"
+  },
+  "3721460": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "19901",
+      "-container-ip",
+      "172.20.0.7",
+      "-container-port",
+      "9901",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 3721460,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "121389800",
+    "state": "S"
+  },
+  "3722245": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "a2a73fbaee1c947065df888f5d3d8b18191bef69468ead7d3c8d6bdd54e9f752",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3722245,
+    "pid": 3722245,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121390364",
+    "state": "S"
+  },
+  "3722274": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "ee62be66e27c49d56158fe4ebbaee7264a3d50156195177f85fe348ee5bb158c",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3722274,
+    "pid": 3722274,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121390365",
+    "state": "S"
+  },
+  "3722295": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "67e9276495e76b49c3bb95d61b873e3c01ae69c699a1fd1b83d19d963ca34f15",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3722295,
+    "pid": 3722295,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121390365",
+    "state": "S"
+  },
+  "3722328": {
+    "argv": [
+      "python",
+      "-m",
+      "src.tasks.document_persist_worker"
+    ],
+    "pgid": 3722328,
+    "pid": 3722328,
+    "ppid": 3722245,
+    "sid": 3722328,
+    "start": "121390367",
+    "state": "S"
+  },
+  "3722336": {
+    "argv": [
+      "python",
+      "-m",
+      "src.tasks.message_persist_worker"
+    ],
+    "pgid": 3722336,
+    "pid": 3722336,
+    "ppid": 3722295,
+    "sid": 3722336,
+    "start": "121390367",
+    "state": "S"
+  },
+  "3722343": {
+    "argv": [
+      "python",
+      "-m",
+      "src.tasks.reference_document_index_worker"
+    ],
+    "pgid": 3722343,
+    "pid": 3722343,
+    "ppid": 3722274,
+    "sid": 3722343,
+    "start": "121390367",
+    "state": "S"
+  },
+  "3722553": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.9(55012) idle"
+    ],
+    "pgid": 3722553,
+    "pid": 3722553,
+    "ppid": 348171,
+    "sid": 3722553,
+    "start": "121390606",
+    "state": "S"
+  },
+  "3723108": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.8(34530) idle"
+    ],
+    "pgid": 3723108,
+    "pid": 3723108,
+    "ppid": 348171,
+    "sid": 3723108,
+    "start": "121390717",
+    "state": "S"
+  },
+  "3723472": {
+    "argv": [
+      "postgres: dev_testing_bootstrap dev_testing_lattice_dbos 172.20.0.10(44760) idle"
+    ],
+    "pgid": 3723472,
+    "pid": 3723472,
+    "ppid": 348171,
+    "sid": 3723472,
+    "start": "121390999",
+    "state": "S"
+  },
+  "3724365": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "0dff49322bde673263bc6b7ca2a0f18cca22b50272bd103389eaa6c3a6b13679",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3724365,
+    "pid": 3724365,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121391544",
+    "state": "S"
+  },
+  "3724389": {
+    "argv": [
+      "nginx: master process nginx -g daemon off;"
+    ],
+    "pgid": 3724389,
+    "pid": 3724389,
+    "ppid": 3724365,
+    "sid": 3724389,
+    "start": "121391546",
+    "state": "S"
+  },
+  "3724448": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "15173",
+      "-container-ip",
+      "172.20.0.11",
+      "-container-port",
+      "5173",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 3724448,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "121391552",
+    "state": "S"
+  },
+  "3724462": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724462,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724463": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724463,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724464": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724464,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724465": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724465,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724466": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724466,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724467": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724467,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724468": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724468,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724469": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724469,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724470": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724470,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724471": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724471,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724472": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724472,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724473": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724473,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724474": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724474,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724475": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724475,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724476": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724476,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3724477": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3724389,
+    "pid": 3724477,
+    "ppid": 3724389,
+    "sid": 3724389,
+    "start": "121391558",
+    "state": "S"
+  },
+  "3725416": {
+    "argv": [
+      "/usr/bin/containerd-shim-runc-v2",
+      "-namespace",
+      "moby",
+      "-id",
+      "211b6124d08f265e36f002180854314e1b24cd016fe48739217005f334c32e0b",
+      "-address",
+      "/run/containerd/containerd.sock"
+    ],
+    "pgid": 3725416,
+    "pid": 3725416,
+    "ppid": 1,
+    "sid": 2274,
+    "start": "121392109",
+    "state": "S"
+  },
+  "3725440": {
+    "argv": [
+      "nginx: master process nginx -g daemon off;"
+    ],
+    "pgid": 3725440,
+    "pid": 3725440,
+    "ppid": 3725416,
+    "sid": 3725440,
+    "start": "121392111",
+    "state": "S"
+  },
+  "3725497": {
+    "argv": [
+      "/usr/bin/docker-proxy",
+      "-proto",
+      "tcp",
+      "-host-ip",
+      "0.0.0.0",
+      "-host-port",
+      "15174",
+      "-container-ip",
+      "172.20.0.12",
+      "-container-port",
+      "5173",
+      "-use-listen-fd"
+    ],
+    "pgid": 3461,
+    "pid": 3725497,
+    "ppid": 3461,
+    "sid": 3461,
+    "start": "121392117",
+    "state": "S"
+  },
+  "3725511": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725511,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725512": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725512,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725513": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725513,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725514": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725514,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725515": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725515,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725516": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725516,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725517": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725517,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725518": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725518,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725519": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725519,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725520": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725520,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725521": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725521,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725522": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725522,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725523": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725523,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725524": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725524,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725525": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725525,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3725526": {
+    "argv": [
+      "nginx: worker process"
+    ],
+    "pgid": 3725440,
+    "pid": 3725526,
+    "ppid": 3725440,
+    "sid": 3725440,
+    "start": "121392121",
+    "state": "S"
+  },
+  "3765756": {
+    "argv": [
+      "postgres: dev_testing_bootstrap lattice_medask_local 172.20.0.6(46182) idle"
+    ],
+    "pgid": 3765756,
+    "pid": 3765756,
+    "ppid": 348171,
+    "sid": 3765756,
+    "start": "121416004",
+    "state": "S"
+  },
+  "3766682": {
+    "argv": [
+      "postgres: dev_testing_bootstrap lattice_medask_local 172.20.0.6(39582) idle"
+    ],
+    "pgid": 3766682,
+    "pid": 3766682,
+    "ppid": 348171,
+    "sid": 3766682,
+    "start": "121416623",
+    "state": "S"
+  },
+  "3778049": {
+    "argv": [
+      "postgres: dev_testing_bootstrap lattice_medask_local 172.20.0.3(37840) idle"
+    ],
+    "pgid": 3778049,
+    "pid": 3778049,
+    "ppid": 348171,
+    "sid": 3778049,
+    "start": "121423307",
+    "state": "S"
+  },
+  "3778163": {
+    "argv": [
+      "postgres: dev_testing_bootstrap lattice_medask_local 172.20.0.3(37856) idle"
+    ],
+    "pgid": 3778163,
+    "pid": 3778163,
+    "ppid": 348171,
+    "sid": 3778163,
+    "start": "121423508",
+    "state": "S"
+  },
+  "3778164": {
+    "argv": [
+      "postgres: dev_testing_bootstrap lattice_medask_local 172.20.0.3(37862) idle"
+    ],
+    "pgid": 3778164,
+    "pid": 3778164,
+    "ppid": 348171,
+    "sid": 3778164,
+    "start": "121423508",
+    "state": "S"
+  },
+  "3923165": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 3923165,
+    "pid": 3923165,
+    "ppid": 18660,
+    "sid": 3923165,
+    "start": "146090243",
+    "state": "S"
+  },
+  "4102220": {
+    "argv": [
+      "/bin/bash"
+    ],
+    "pgid": 4102220,
+    "pid": 4102220,
+    "ppid": 18660,
+    "sid": 4102220,
+    "start": "156703751",
+    "state": "S"
+  }
+}

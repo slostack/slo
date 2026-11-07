@@ -1,0 +1,99 @@
+{
+  "actions": [
+    {
+      "pid": 1982080,
+      "signal": 15,
+      "start": "165575874"
+    },
+    {
+      "pid": 1982100,
+      "signal": 15,
+      "start": "165575911"
+    },
+    {
+      "pid": 1982103,
+      "signal": 15,
+      "start": "165575914"
+    },
+    {
+      "pid": 1982113,
+      "signal": 15,
+      "start": "165575917"
+    },
+    {
+      "pid": 1982120,
+      "signal": 15,
+      "start": "165575920"
+    },
+    {
+      "pid": 1982127,
+      "signal": 15,
+      "start": "165575923"
+    },
+    {
+      "pid": 1982130,
+      "signal": 15,
+      "start": "165575926"
+    },
+    {
+      "pid": 1982856,
+      "signal": 15,
+      "start": "165576719"
+    },
+    {
+      "pid": 1988250,
+      "signal": 15,
+      "start": "165578963"
+    }
+  ],
+  "historical_unrelated": {
+    "1261413": {
+      "argv": [
+        "/root/.pyenv/versions/slo-harness/bin/python",
+        "/root/.pyenv/versions/slo-harness/bin/pytest",
+        "-m",
+        "not e2e"
+      ],
+      "pgid": 1261401,
+      "pid": 1261413,
+      "ppid": 1,
+      "sid": 1261401,
+      "start": "29862206",
+      "state": "S"
+    },
+    "1261498": {
+      "argv": [
+        "/root/.pyenv/versions/slo-harness/bin/python",
+        "-c",
+        "from multiprocessing.resource_tracker import main;main(10)"
+      ],
+      "pgid": 1261401,
+      "pid": 1261498,
+      "ppid": 1261413,
+      "sid": 1261401,
+      "start": "29862786",
+      "state": "S"
+    },
+    "3382468": {
+      "argv": [
+        "/root/.pyenv/versions/3.11.7/bin/python3.11",
+        "/tmp/pytest-of-root/pytest-2466/test_multiple_registered_viewe0/fake-herdr",
+        "pane",
+        "split",
+        "--pane",
+        "synthetic-pane",
+        "--direction",
+        "right",
+        "--no-focus"
+      ],
+      "pgid": 3382468,
+      "pid": 3382468,
+      "ppid": 1,
+      "sid": 3382468,
+      "start": "16348928",
+      "state": "S"
+    }
+  },
+  "remaining_owned": [],
+  "tracked_identities": 417
+}

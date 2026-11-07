@@ -99,6 +99,17 @@ class PluginDispatcher:
         for registration, handler in self._registry.handlers_for(event_kind=event.kind):
             await self._invoke_observer(registration=registration, handler=handler, event=event)
 
+    async def emit_for_session(self, event: AgentStreamEventDAO) -> None:
+        """Surface optional observer failure to its mailbox retirement owner only.
+
+        Legacy emit continues isolating siblings. This session-only adapter never
+        changes decision-bearing interceptors or exposes exception details.
+        """
+        for registration, handler in self._registry.handlers_for(event_kind=event.kind):
+            succeeded = await self._invoke_observer(registration=registration, handler=handler, event=event)
+            if not succeeded:
+                raise RuntimeError("presentation_replay_gap") from None
+
     async def run_before_tool_call(
         self, *, tool_name: str, tool_call_id: str, tool_input: dict[str, Any]
     ) -> BeforeToolCallDecisionDAO:
@@ -246,8 +257,8 @@ class PluginDispatcher:
 
     async def _invoke_observer(
         self, *, registration: PluginRegistrationDAO, handler: Callable[..., Any], event: AgentStreamEventDAO
-    ) -> None:
-        """Invoke one observer with exception isolation.
+    ) -> bool:
+        """Invoke one observer and report isolated success to its lifetime owner.
 
         Args:
             registration (PluginRegistrationDAO): Health owner.
@@ -258,8 +269,10 @@ class PluginDispatcher:
             outcome: object = handler(event)
             if inspect.isawaitable(outcome):
                 await outcome
+            return True
         except Exception as exc:  # noqa: BLE001 -- extensions cannot break runs
             self._record_failure(registration=registration, error=exc)
+            return False
 
     async def _invoke_interceptor(
         self, *, owner: str, handler: Callable[..., Any], arguments: tuple[object, ...]

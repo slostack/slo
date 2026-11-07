@@ -1,0 +1,10 @@
+ 982866  974229  982866  982866 Ss         39:37 bash release-evidence/103-logs/dispatch2/run.sh current full -m pytest -n 6 -m not e2e -q --junitxml=/root/Code/sleep-recovery/slo/release-evidence/103-logs/dispatch2/full.xml
+ 982870  982866  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -m pytest -n 6 -m not e2e -q --junitxml=/root/Code/sleep-recovery/slo/release-evidence/103-logs/dispatch2/full.xml
+ 982984  982870  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))
+ 982987  982870  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))
+ 982990  982870  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))
+ 983001  982870  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))
+ 983012  982870  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))
+ 983016  982870  982866  982866 Sl         39:37 /tmp/slo103-verification-AYBfh5/venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))
+1261413       1 1261401 1261401 Sl   15-14:04:50 /root/.pyenv/versions/slo-harness/bin/python /root/.pyenv/versions/slo-harness/bin/pytest -m not e2e
+3382468       1 3382468 3382468 Ss   17-03:37:03 /root/.pyenv/versions/3.11.7/bin/python3.11 /tmp/pytest-of-root/pytest-2466/test_multiple_registered_viewe0/fake-herdr pane split --pane synthetic-pane --direction right --no-focus

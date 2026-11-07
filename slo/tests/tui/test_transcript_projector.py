@@ -762,11 +762,13 @@ class TestTranscriptProjectionAdapter:
         """Reset clears run-scoped assistant, thinking, and tool state between prompts."""
         host = FakeHost()
         projector = TranscriptProjectionAdapter.register(host=host)
-        projector._assistant_blocks = {0: FakeAssistantBlock()}  # type: ignore[attr-defined]
-        projector._tool_blocks = {"call_1": FakeToolBlock(tool_call_id="call_1", tool_name="read")}  # type: ignore[attr-defined]
-        projector._thinking_blocks = {"thinking:0:0": FakeThinkingBlock()}
-        projector._thinking_block_iterations = {"thinking:0:0": 0}
-        projector._open_thinking_block_ids = {"thinking:0:0"}
+        projector._assistant_blocks = {(None, 0): FakeAssistantBlock()}  # type: ignore[attr-defined]
+        projector._tool_blocks = {
+            (None, 0, "call_1"): ToolExecutionBlock(tool_call_id="call_1", tool_name="read")
+        }
+        projector._thinking_blocks = {(None, 0, "thinking:0:0"): FakeThinkingBlock()}
+        projector._thinking_block_iterations = {(None, 0, "thinking:0:0"): 0}
+        projector._open_thinking_block_ids = {(None, 0, "thinking:0:0")}
 
         await projector.reset()
 
@@ -796,7 +798,7 @@ class TestTranscriptProjectionAdapter:
             event=AgentStreamEventDAO(kind="text_delta", delta="c", iteration=2),
         )
 
-        projector._seal_stale_assistant_blocks(except_iteration=2)  # type: ignore[attr-defined]
+        projector._seal_stale_assistant_blocks(except_iteration=(None, 2))  # type: ignore[attr-defined]
 
         assert host.blocks[0].sealed is True
         assert host.blocks[1].sealed is True
@@ -814,7 +816,7 @@ class TestTranscriptProjectionAdapter:
             event=AgentStreamEventDAO(kind="text_delta", delta="a", iteration=0),
         )
 
-        projector._seal_stale_assistant_blocks(except_iteration=0)  # type: ignore[attr-defined]
+        projector._seal_stale_assistant_blocks(except_iteration=(None, 0))  # type: ignore[attr-defined]
 
         assert host.blocks[0].sealed is False
 

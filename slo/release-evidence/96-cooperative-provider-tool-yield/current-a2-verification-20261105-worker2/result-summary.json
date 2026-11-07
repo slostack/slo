@@ -1,0 +1,23 @@
+{
+  "status": "INCOMPLETE",
+  "reason": "Single pytest invocation exceeded authorized bounded 2400s supervision limit; terminated owned resources; no retry.",
+  "observed_progress_symbols": {
+    ".": 12132,
+    "F": 54,
+    "s": 0,
+    "x": 0,
+    "X": 0,
+    "E": 0
+  },
+  "progress_symbol_count": 12186,
+  "final_pytest_counts": null,
+  "deselected_count": null,
+  "warnings_count": null,
+  "pytest_exit_code": null,
+  "termination": "SIGTERM sent to identity-matched pytest PID1982080 and eight remaining owned descendants; all 417 observed identities absent after cleanup. Final wait status was not persisted by supervisor; do not infer exit code from signal.",
+  "duration_seconds": 2400.1070378879085,
+  "source_unchanged": true,
+  "utilities_unchanged": true,
+  "junit_written": false,
+  "clock_note": "Host UTC receipts 08:01\u201308:41 differ from approximate 14:58 UTC in supplied historical preflight; fresh /proc identity/activity used, not historical timestamps."
+}

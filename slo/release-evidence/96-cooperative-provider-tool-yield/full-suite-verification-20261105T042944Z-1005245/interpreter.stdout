@@ -1,0 +1,6 @@
+sys.executable=/root/.pyenv/versions/slo-harness/bin/python
+sys.prefix=/root/.pyenv/versions/slo-harness
+sys.base_prefix=/root/.pyenv/versions/3.11.7
+python=3.11.7 (main, Sep  6 2026, 18:25:07) [GCC 13.3.0]
+pytest=9.0.3
+pytest-xdist=3.8.0

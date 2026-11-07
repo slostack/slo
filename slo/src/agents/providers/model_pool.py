@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import (
     Any,
@@ -352,6 +353,7 @@ class ModelPool(BaseChatModel):
                     **merged_kwargs,
                 )
             except Exception as exc:
+                self._require_uncancelled_request()
                 if not self._should_switch_after(entry=entry, exc=exc):
                     raise
                 continue
@@ -400,11 +402,27 @@ class ModelPool(BaseChatModel):
                     yield chunk
                 return
             except Exception as exc:
+                self._require_uncancelled_request()
                 if first_chunk_seen:
                     raise
                 if not self._should_switch_after(entry=entry, exc=exc):
                     raise
                 continue
+
+    @staticmethod
+    def _require_uncancelled_request() -> None:
+        """Prevent fallback after the request owner has requested cancellation.
+
+        A provider may replace CancelledError with an ordinary transport error
+        during cleanup. The retained task's cancellation count still carries
+        owner authority; routing must not turn that failure into a new request.
+
+        Raises:
+            Exception: The active cleanup exception, without cooling a member.
+        """
+        task: Optional[asyncio.Task[Any]] = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
 
     # ------------------------------------------------------------------
     # Pool routing helpers

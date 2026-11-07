@@ -42,9 +42,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal, Optional, TYPE_CHECKING
 
+from src.agents.slo_agent.tool_execution.yield_policy import ToolExecutionControl, ToolYieldPolicy
 from src.agents.slo_agent.messaging.client import LocalSessionMessagingClient
 from src.agents.slo_agent.messaging.dao import LegacyInboxAdmissionDAO
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
@@ -132,7 +133,10 @@ from src.agents.slo_agent.messaging.ownership import SessionExecutionOwnership
 from src.agents.slo_agent.messaging.delivery import MessageRunState
 from src.agents.slo_agent.messaging.queue import BoundaryClaimsDAO, FiniteCutoffDAO, SessionMessageQueue
 from src.agents.slo_agent.messaging.store import MessageStore
+from src.agents.slo_agent.history.message_contract_reconciler import CooperativeYieldSettlementError
+
 from src.agents.slo_agent.history.dao import (
+    CooperativeYieldMetadataDAO,
     MessageHistoryEvidenceDAO,
     MessageCompactionSelectionDAO,
     SessionHistoryEventDAO,
@@ -147,6 +151,10 @@ from src.agents.slo_agent.history.filesystem_store import (
 from src.agents.slo_agent.history.store_protocol import SessionHistoryStoreProtocol
 from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
+from src.agents.slo_agent.history.message_contract_reconciler import (
+    UnsettledToolGroupError,
+    is_settlement_failure,
+)
 from src.agents.slo_agent.compaction.compaction_checker import CompactionChecker
 from src.agents.slo_agent.compaction.compacter import Compacter, CompactionResult
 from src.agents.slo_agent.compaction.context_window import (
@@ -675,10 +683,12 @@ class SloAgentSession:
         messaging_clock: Optional[Callable[[], datetime]] = None,
         recovery_clock: Optional[Callable[[], float]] = None,
         recovery_wait: Optional[Callable[[float], Awaitable[None]]] = None,
+        tool_yield_policy: Optional[ToolYieldPolicy] = None,
     ) -> None:
         """Compose a session around a config (lazy) or a pre-built agent.
 
         Args:
+            tool_yield_policy: Trusted cancellation capabilities, never model/plugin metadata.
             messaging_clock: Optional aware UTC consent clock; defaults to utcnow.
             messaging_agent_factory: Optional trusted construction seam for a real
                 agent bound to this session's source with an injected external model.
@@ -784,7 +794,11 @@ class SloAgentSession:
         self._plugin_registry: Optional["PluginRegistry"] = None
         self._plugin_dispatcher: Optional["PluginDispatcher"] = None
         self._plugin_trust_store: Optional["PluginTrustStore"] = None
-        self._subscribers: list[AgentEventSubscriber] = []
+        from src.agents.slo_agent.sessions.presentation import PresentationMailbox
+
+        self._presentation_mailboxes: list[PresentationMailbox] = []
+        self._presentation_dispatcher: Optional[PresentationMailbox] = None
+        self._presentation_closed = False
         self._is_running: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
         # Activation is explicit; unstarted callers retain the legacy execution path.
@@ -815,6 +829,8 @@ class SloAgentSession:
         self._message_queue: Optional[SessionMessageQueue] = None
         self._messaging_calls: set[asyncio.Task[MessageReceiptDAO | MessageErrorDAO]] = set()
         self._history_barrier: asyncio.Lock = asyncio.Lock()
+        self._tool_execution_control: Optional[ToolExecutionControl] = None
+        self._tool_yield_policy = tool_yield_policy or ToolYieldPolicy()
         self._message_run: Optional[MessageRunState] = None
         self._messaging_scheduler: Optional[asyncio.Task[None]] = None
         self._messaging_note_task: Optional[asyncio.Task[None]] = None
@@ -845,9 +861,7 @@ class SloAgentSession:
         # Register the internal history subscriber for sub-agent lifecycle
         # events when history is enabled. This subscriber runs alongside
         # external TUI/test subscribers and persists parent↔child links.
-        self._subscribers.append(self._on_herdr_event)
-        if self._enable_history:
-            self._subscribers.append(self._on_stream_event_for_history)
+
         self._sub_agent_pool: Optional["SubAgentPool"] = None
         self._history_store: Optional[SessionHistoryStoreProtocol] = history_store
         if self._enable_history and self._history_store is None:
@@ -1005,6 +1019,7 @@ class SloAgentSession:
                     self._messaging_scheduler = asyncio.create_task(coro=self._run_message_scheduler())
                     self._messaging_note_task = asyncio.create_task(coro=self._run_idle_message_notes())
             except BaseException:
+                await self._close_presentation_publication()
                 await self._release_messaging_resources()
                 raise
 
@@ -1048,6 +1063,11 @@ class SloAgentSession:
                         continue
                     self._message_run = MessageRunState(run_id=str(uuid4()))
                     self._message_run_terminal = None
+                    self._tool_execution_control = ToolExecutionControl(
+                        source=self,
+                        on_deferred=self._publish_deferred_notice,
+                        on_requested=self._publish_requested_notice,
+                    )
                     try:
                         async for _event in self._invoke_submission(text=""):
                             if _event.kind in ("run_completed", "run_failed", "run_aborted"):
@@ -1079,6 +1099,14 @@ class SloAgentSession:
                             self._messaging_paused = True
                             self._messaging_resumed.clear()
                             self._fail_unassigned_observers(code="recovery_required")
+                        if self._tool_execution_control is not None:
+                            if self._agent is not None:
+                                self._agent.release_tool_execution(
+                                    tool_execution_control=self._tool_execution_control
+                                )
+                            self._tool_execution_control.close()
+                            self._tool_yield_policy.release_run(control=self._tool_execution_control)
+                            self._tool_execution_control = None
                         self._message_run = None
                         self._notify_messaging_settlement()
         except Exception as error:
@@ -1316,6 +1344,9 @@ class SloAgentSession:
         Applied identities require raw proof; an applying journal is appended once,
         projected successfully and only then acknowledged. Accepted input is retained.
         """
+        # Assemble every raw page under this barrier and settle marked tool groups
+        # before compaction, SQLite transitions or replay projection.
+        await self._require_settled_raw_tool_groups()
         await self._reconcile_message_compactions(store=store)
         # Validate all raw pages before any SQLite state transition or replay healing.
         await self._find_message_evidence(event_id=None)
@@ -1473,6 +1504,39 @@ class SloAgentSession:
                     found = True
                 after_sequence = identities[-1].receipt.sequence
                 await asyncio.sleep(delay=0)
+
+    async def _require_settled_raw_tool_groups(self) -> None:
+        """Validate all marked tool groups over fully assembled raw history.
+
+        WHAT: Reads every ``application_evidence`` page, carries groups across
+            page boundaries and invokes the projector's raw validator exactly
+            once before readiness.
+        WHO: ``_reconcile_message_applications`` under the ownership/history barrier.
+        WHEN: Startup, before compaction reconciliation, SQLite transitions or
+            replay projection; unresolved groups in excluded turns still block.
+        NOT: It never validates one page in isolation, heals legacy history,
+            infers a no-start from absence or mutates the durable log.
+
+        Raises:
+            MessageStoreError: History is enabled without a readable store.
+            UnsettledToolGroupError: Any marked group is malformed or unresolved.
+        """
+        if not self._enable_history:
+            return
+        if self._history_store is None:
+            raise MessageStoreError()
+        events: list[SessionHistoryEventDAO] = []
+        after_sequence: int = 0
+        while True:
+            page: MessageHistoryEvidenceDAO = await self._history_store.application_evidence(
+                session_id=self._session_id, after_sequence=after_sequence
+            )
+            events.extend(page.events)
+            if page.next_sequence is None:
+                break
+            after_sequence = page.next_sequence
+            await asyncio.sleep(delay=0)
+        self._history_projector.validate_tool_groups(events=events)
 
     async def _find_message_evidence(self, *, event_id: Optional[str]) -> Optional[SessionHistoryEventDAO]:
         """Scan bounded raw pages, never using projector healing as durability proof."""
@@ -2477,6 +2541,7 @@ class SloAgentSession:
             self._legacy_inbox_clients.clear()
             self._legacy_inbox_principals.clear()
             self._messaging_accepting = False
+            await self._close_presentation_publication()
             await self._release_messaging_resources()
 
     async def _release_messaging_resources(self) -> None:
@@ -2950,6 +3015,9 @@ class SloAgentSession:
         WHO: The slash-command router calls it.
         WHEN: After plugin source files or trust decisions change.
         """
+        if self._presentation_dispatcher is not None:
+            await self._presentation_dispatcher.join()
+            self._presentation_dispatcher = None
         self._load_plugins()
 
     async def trust_project_plugins(self) -> None:
@@ -2962,7 +3030,7 @@ class SloAgentSession:
         if self._plugin_trust_store is None:
             return
         self._plugin_trust_store.trust(project_dir=self._workdir)
-        self._load_plugins()
+        await self.reload_plugins()
 
     def _resolve_workspace_file_for_agent(self) -> Optional[Path]:
         """Return the workspace file to use for the lazy-built agent.
@@ -3595,7 +3663,19 @@ class SloAgentSession:
         events, history_result = await self._read_manual_compaction_history()
         if history_result is not None:
             return history_result
-        if not events or not Compacter.has_viable_cut_point(events=events):
+        if not events:
+            return ManualCompactionResultDAO(status="nothing_to_compact")
+        # Raw evidence is validated before any viability selection so an
+        # unresolved group is a refused compaction, never a summary request.
+        try:
+            SessionHistoryProjector.validate_tool_groups(events=events)
+        except UnsettledToolGroupError:
+            log_error(msg="manual_compaction_unresolved_tool_group", session_id=self._session_id[:8])
+            return ManualCompactionResultDAO(
+                status="failed",
+                detail="session history has an unresolved tool group; nothing was compacted",
+            )
+        if not Compacter.has_viable_cut_point(events=events):
             return ManualCompactionResultDAO(status="nothing_to_compact")
         await self._ensure_history_session()
         readiness_result: Optional[ManualCompactionResultDAO] = (
@@ -3991,16 +4071,57 @@ class SloAgentSession:
         }
         return self._workflow_message_ids_seen
 
+    @property
+    def _subscribers(self) -> tuple[AgentEventSubscriber, ...]:
+        """Expose a non-retaining compatibility snapshot, never a parallel handler registry.
+
+        Legacy lifecycle tests inspect this private name. Trusted history remains
+        synchronous and is included only when enabled; retired optional observers
+        disappear immediately while their mailbox still owns any pending join.
+        """
+        trusted = (self._on_stream_event_for_history,) if self._enable_history else ()
+        return trusted + tuple(
+            mailbox.handler for mailbox in self._presentation_mailboxes if mailbox.is_active()
+        )
+
     def subscribe(self, *, handler: AgentEventSubscriber) -> None:
         """Register an async event handler."""
-        self._subscribers.append(handler)
+        from src.agents.slo_agent.sessions.presentation import PresentationMailbox
+
+        if self._presentation_closed:
+            raise ValueError("presentation_closed")
+        self._presentation_mailboxes = [
+            mailbox for mailbox in self._presentation_mailboxes if not mailbox.is_joined()
+        ]
+        if len(self._presentation_mailboxes) >= 64:
+            raise ValueError("presentation_capacity_exceeded")
+        mailbox = PresentationMailbox(handler=handler)
+        self._presentation_mailboxes.append(mailbox)
+        if self._messaging_scheduler is None:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        mailbox.start()
 
     def unsubscribe(self, *, handler: AgentEventSubscriber) -> None:
         """Remove a previously-registered handler. No-op if absent."""
-        try:
-            self._subscribers.remove(handler)
-        except ValueError:
-            pass
+        for mailbox in self._presentation_mailboxes:
+            if mailbox.handler == handler:
+                mailbox.retire()
+
+    async def join_unsubscribed(self, *, handler: AgentEventSubscriber) -> None:
+        """Seal and join a subscriber's exact retained workers after sync unsubscribe.
+
+        Client/host observation teardown calls this before releasing its binding.
+        Invocation settlement never waits here. A suppressing callback retains
+        observation ownership until its actual termination.
+        """
+        self.unsubscribe(handler=handler)
+        for mailbox in tuple(self._presentation_mailboxes):
+            if mailbox.handler == handler:
+                await mailbox.join()
 
     @property
     def event_relay(self) -> AgentEventSubscriber:
@@ -4403,7 +4524,11 @@ class SloAgentSession:
             self._herdr_close_uncertain = True
 
     async def close_external_reporting(self) -> HerdrReporterCloseOutcomeDAO:
-        """Revoke reporting authority, drain every current owner, and join cleanup.
+        """Revoke reporting authority and join its integration-only cleanup.
+
+        Generic presentation subscriptions and session delivery remain open;
+        owning teardown joins them through ``close_messaging`` even for a
+        legacy session that never activated messaging.
 
         WHAT: Synchronously revokes viewer admission via
             ``begin_external_reporting_close``, then runs one retained close
@@ -4449,7 +4574,7 @@ class SloAgentSession:
         return outcome
 
     async def _close_herdr_once(self) -> HerdrReporterCloseOutcomeDAO:
-        """Drain all current owners despite ordinary optional cleanup failures."""
+        """Drain only Herdr owners without retiring the mounted session's observers."""
         if self._herdr_start_task is not None:
             await HerdrTaskJoin.wait(task=self._herdr_start_task)
             try:
@@ -4504,12 +4629,15 @@ class SloAgentSession:
             asyncio.CancelledError: After reporting and candidate pool cleanup join.
         """
         try:
-            await self.close_external_reporting()
+            await self.close_messaging()
         finally:
             try:
-                await self._drain_unmounted_pool()
+                await self.close_external_reporting()
             finally:
-                await self.finish_retired_reporting_cleanup()
+                try:
+                    await self._drain_unmounted_pool()
+                finally:
+                    await self.finish_retired_reporting_cleanup()
 
     async def _drain_unmounted_pool(self) -> None:
         """Retain and join the candidate's existing pool drain exactly once."""
@@ -5450,9 +5578,9 @@ class SloAgentSession:
             observer.changed.set()
 
     def _fail_unassigned_observers(self, *, code: Literal["completing", "recovery_required"]) -> None:
-        """Wake publishers whose accepted work cannot reach an assignment in this lifetime."""
+        """Fail unsettled publishers without overwriting an already reported refusal."""
         for observer in tuple(self._invocation_observers.values()):
-            if observer.run_id is None and not observer.detached:
+            if observer.run_id is None and not observer.detached and observer.error is None:
                 observer.error = MessageAdmissionError(error=MessageErrorDAO(code=code))
                 observer.changed.set()
 
@@ -5811,17 +5939,17 @@ class SloAgentSession:
 
         The handler maps runtime agent trace events (assistant deltas, tool
         calls, tool results, etc.) into canonical ``SessionHistoryEventDAO``
-        records and appends them to the store. It is only needed when history
-        persistence is enabled.
+        records and appends them to the store. Controlled history-disabled
+        attempts retain exact transient groups through the same handler.
 
         Args:
             turn_id (str): Turn id for the current attempt.
 
         Returns:
             Optional[AgentRuntimeHandler]: The runtime trace handler when
-                history is enabled, otherwise ``None``.
+                history or controlled transient settlement is enabled, otherwise ``None``.
         """
-        if not self._enable_history:
+        if not self._enable_history and self._tool_execution_control is None:
             return None
         return self._runtime_handler_for_turn(
             turn_id=turn_id,
@@ -5911,6 +6039,7 @@ class SloAgentSession:
                     policy=prepared.policy,
                     tracker=tracker,
                     plan=prepared.plan,
+                    attempt_turn_id=prepared.turn_id,
                 ):
                     self._record_attempt_stream_event(
                         tracker=tracker,
@@ -6416,6 +6545,10 @@ class SloAgentSession:
             Optional[PromptAttemptPlanDAO]: Retry plan when overflow recovery
                 should continue, otherwise ``None``.
         """
+        # A settlement failure is terminal before every generic attempt planner.
+        # No reconnect, continuation or compaction retry may follow it.
+        if result.error is not None and is_settlement_failure(exc=result.error):
+            return None
         stream_reconnect_plan: Optional[PromptAttemptPlanDAO] = (
             await self._derive_stream_reconnect_attempt_plan(
                 plan=plan,
@@ -6941,6 +7074,7 @@ class SloAgentSession:
         policy: ModelRateLimitPolicyDAO,
         tracker: PromptAttemptTrackerDAO,
         plan: PromptAttemptPlanDAO,
+        attempt_turn_id: Optional[str] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Run the prompt with local rate governance and bounded retries.
 
@@ -6989,6 +7123,7 @@ class SloAgentSession:
             iteration_retry_policy=iteration_retry_policy,
             iteration_recovery_policy=iteration_recovery_policy,
             message_run=self._message_run,
+            attempt_turn_id=attempt_turn_id,
         )
         try:
             while True:
@@ -7002,6 +7137,11 @@ class SloAgentSession:
                         "main agent stream produced no events for "
                         f"{stream_timeout_seconds:.0f}s; treated as hung"
                     ) from exc
+                if event.attempt_turn_id not in (None, attempt_turn_id):
+                    raise CooperativeYieldSettlementError()
+                event = AgentStreamEventDAO.model_validate(
+                    {**event.model_dump(), "attempt_turn_id": attempt_turn_id}
+                )
                 self._sync_usage_snapshot_commit()
                 self._mirror_retry_cooldown(event=event)
                 await self._dispatch_event(event=event)
@@ -7438,17 +7578,27 @@ class SloAgentSession:
                 ensures ``self._agent`` exists before returning.
         """
         if self._agent is not None:
+            self._bind_run_execution()
             return
         if not self._agent_is_injected:
             self._validate_configured_backend_eligibility()
             await self._refresh_oauth_credential_if_needed()
         with CredentialResolver.bind_build_credential(credential=self._admitted_openrouter_credential):
             self._agent = self._build_agent()
+        self._bind_run_execution()
         self._agent_catalog_snapshot = self.catalog_snapshot
         credential = self._admitted_openrouter_credential
         self._agent_openrouter_fingerprint = (
             credential_fingerprint(access_token=credential.access_token) if credential is not None else None
         )
+
+    def _bind_run_execution(self) -> None:
+        """Bind prebuilt, factory and lazy agents to the exact active run control."""
+        if self._tool_execution_control is not None:
+            assert self._agent is not None
+            self._agent.bind_tool_execution(
+                tool_execution_control=self._tool_execution_control, tool_yield_policy=self._tool_yield_policy
+            )
 
     def _pool_providers(self) -> list[ProviderName]:
         """Return the distinct providers the session must keep credential-ready.
@@ -8140,14 +8290,44 @@ class SloAgentSession:
                 runtime trace event.
         """
 
+        from src.agents.slo_agent.sessions.cooperative_history import CooperativeHistoryWriter
+
+        writer = (
+            CooperativeHistoryWriter(
+                session_id=self._session_id,
+                turn_id=turn_id,
+                control=self._tool_execution_control,
+                store=self._history_store if self._enable_history else None,
+            )
+            if self._tool_execution_control is not None
+            else None
+        )
+
         async def _handler(event: AgentRuntimeEventDAO) -> None:
             """Append one runtime trace event to canonical history.
 
             Args:
                 event (AgentRuntimeEventDAO): Runtime trace event.
             """
+            if self._tool_execution_control is not None:
+                metadata = dict(event.payload.metadata)
+                if metadata.get("attempt_turn_id", turn_id) != turn_id:
+                    raise CooperativeYieldSettlementError()
+                metadata["attempt_turn_id"] = turn_id
+                event = event.model_copy(
+                    update={"payload": event.payload.model_copy(update={"metadata": metadata})}
+                )
             if event.kind in ("run_started", "run_completed", "run_aborted", "run_failed"):
                 return
+
+            if writer is not None:
+                if event.payload.metadata.get("require_cooperative_settlement"):
+                    async with self._history_barrier:
+                        await writer.certify_settlement()
+                    return
+                async with self._history_barrier:
+                    if await writer.persist(event=event):
+                        return
 
             if event.kind == "assistant_delta":
                 await self._append_history_event(
@@ -8301,17 +8481,90 @@ class SloAgentSession:
         """
         return {key: event.metadata[key] for key in _DISPATCH_AUDIT_KEYS if key in event.metadata}
 
-    async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
-        """Forward ``event`` to every registered subscriber (failure-isolated)."""
+    def _publish_requested_notice(self, metadata: CooperativeYieldMetadataDAO) -> None:
+        """Publish captured reservation metadata without awaiting observers or history."""
+        self._publish_presentation_event(
+            event=AgentStreamEventDAO(
+                kind="yield_requested",
+                iteration=metadata.iteration,
+                attempt_turn_id=metadata.attempt_turn_id,
+                metadata={"cooperative_yield_v1": metadata.model_dump(mode="json")},
+            )
+        )
+
+    def _publish_deferred_notice(self, metadata: CooperativeYieldMetadataDAO) -> None:
+        """Publish the control's immutable deferred observation without blocking tools."""
+        self._publish_presentation_event(
+            event=AgentStreamEventDAO(
+                kind="yield_deferred",
+                iteration=metadata.iteration,
+                attempt_turn_id=metadata.attempt_turn_id,
+                content="Urgent input accepted; delivery deferred until running tool work is safe.",
+                metadata={"cooperative_yield_v1": metadata.model_dump(mode="json")},
+            )
+        )
+
+    def _publish_presentation_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Fan out through existing pull buffers and bounded callback ownership."""
+        from src.agents.slo_agent.sessions.presentation import PresentationMailbox
+
         self._publish_invocation_event(event=event)
+        if self._presentation_closed:
+            return
+        if self._plugin_dispatcher is not None and self._presentation_dispatcher is None:
+            self._presentation_dispatcher = PresentationMailbox(
+                handler=self._plugin_dispatcher.emit_for_session
+            )
+        if self._presentation_dispatcher is not None:
+            self._presentation_dispatcher.publish(event=event)
+        for mailbox in self._presentation_mailboxes:
+            mailbox.publish(event=event)
+
+    async def _close_presentation_publication(self) -> None:
+        """Seal all observers before joining them; OS ownership remains retained."""
+        self._presentation_closed = True
+        mailboxes = list(self._presentation_mailboxes)
+        if self._presentation_dispatcher is not None:
+            mailboxes.append(self._presentation_dispatcher)
+        for mailbox in mailboxes:
+            mailbox.retire()
+        for mailbox in mailboxes:
+            await mailbox.join()
+        self._presentation_mailboxes.clear()
+        self._presentation_dispatcher = None
+
+    async def _dispatch_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Persist once, then deliver under the session's activated ownership contract.
+
+        Successful explicit startup retains the sole messaging scheduler through
+        idle, pause and shutdown. Its existence, not a transient message run,
+        selects nonblocking publication. Legacy relay callers still join callbacks.
+
+        Args:
+            event (AgentStreamEventDAO): Event for trusted history and observation.
+        """
+        await self._on_herdr_event(event)
+        if self._enable_history:
+            await self._on_stream_event_for_history(event)
+        if self._messaging_scheduler is not None:
+            self._publish_presentation_event(event=event)
+            return
+        await self._deliver_legacy_event(event=event)
+
+    async def _deliver_legacy_event(self, *, event: AgentStreamEventDAO) -> None:
+        """Preserve awaited legacy plugin/subscriber delivery on retained workers.
+
+        Subscribers registered before activation keep their exact worker and FIFO
+        ownership when messaging later starts. Close and unsubscribe join that
+        worker even if its legacy callback is still running.
+
+        Args:
+            event (AgentStreamEventDAO): Legacy event after trusted persistence.
+        """
+        self._publish_invocation_event(event=event)
+        if self._presentation_closed:
+            return
         if self._plugin_dispatcher is not None:
             await self._plugin_dispatcher.emit(event)
-        for subscriber in list(self._subscribers):
-            try:
-                await subscriber(event)
-            except Exception as exc:  # noqa: BLE001 — protect the stream
-                log_error(
-                    msg=f"SloAgentSession: subscriber {subscriber!r} raised",
-                    e=exc,
-                    stack_trace=False,
-                )
+        for mailbox in tuple(self._presentation_mailboxes):
+            await mailbox.deliver(event=event)

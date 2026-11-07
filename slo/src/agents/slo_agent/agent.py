@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from uuid import UUID
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Optional, Sequence
 
@@ -107,7 +108,22 @@ from src.agents.slo_agent.messaging.dao import (
     MessageDeliveryDAO,
     MessageStoreError,
 )
+from src.agents.slo_agent.history.message_contract_reconciler import (
+    is_settlement_failure,
+    CooperativeYieldSettlementError,
+    MessageContractReconciler,
+)
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
+
+from src.agents.slo_agent.tool_execution.yield_policy import (
+    ToolExecutionControl,
+    ToolYieldCapabilityError,
+    ToolYieldPolicy,
+)
+from src.agents.slo_agent.graph.service import _compile_slo_graph
+from src.agents.slo_agent.tool_execution import ToolExecutionMode
+from src.agents.slo_agent.history.dao import CooperativeYieldMetadataDAO
 
 
 class SloAgent:
@@ -138,10 +154,14 @@ class SloAgent:
         plugin_dispatcher: Optional["PluginDispatcher"] = None,
         snapshot: Optional[ModelCatalogSnapshotDAO] = None,
         message_source: Optional[AgentMessageSource] = None,
+        tool_execution_control: Optional[ToolExecutionControl] = None,
+        tool_yield_policy: Optional[ToolYieldPolicy] = None,
     ) -> None:
         """Build the agent.
 
         Args:
+            tool_execution_control: Optional run-owned phase arbitration, bound while idle.
+            tool_yield_policy: Trusted identity registry; omitted tools always defer.
             message_source: Optional session-owned delivery port; invoke must borrow
                 its matching logical run. The agent alone mutates live context.
             model_name (Optional[str]): Identifier passed to
@@ -190,6 +210,10 @@ class SloAgent:
                 construction view; None keeps global reads. Admission and capture
                 remain the session caller's responsibility.
         """
+        self._tool_execution_control = tool_execution_control
+        self._tool_yield_policy = tool_yield_policy
+        self._tool_execution_mode = ToolExecutionMode.CONCURRENT_READS
+        self._attempt_turn_id: Optional[str] = None
         self._message_source: Optional[AgentMessageSource] = message_source
         self._llm: Optional[LLM] = llm
         self._plugin_dispatcher: Optional["PluginDispatcher"] = plugin_dispatcher
@@ -202,6 +226,9 @@ class SloAgent:
             session_id=session_id,
             plugin_dispatcher=plugin_dispatcher,
             snapshot=snapshot,
+            tool_execution_mode=self._tool_execution_mode,
+            tool_execution_control=tool_execution_control,
+            tool_yield_policy=tool_yield_policy,
         )
         self._catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = _build_result.snapshot
         self._graph: CompiledStateGraph = _build_result.graph
@@ -299,6 +326,67 @@ class SloAgent:
         if self._message_source is not None:
             raise RuntimeError("SloAgent is bound to another message source")
         self._message_source = message_source
+
+    def bind_tool_execution(
+        self,
+        *,
+        tool_execution_control: ToolExecutionControl,
+        tool_yield_policy: Optional[ToolYieldPolicy] = None,
+    ) -> None:
+        """Bind one idle run around the retained model, tools and output queue.
+
+        The session calls this after lazy/factory readiness and before invoke.
+        Foreign source or live replacement refuses without publishing a graph.
+
+        Args:
+            tool_execution_control: Exact run control borrowing this agent's source.
+            tool_yield_policy: Retained cancellation policy for this logical run.
+
+        Raises:
+            ToolYieldCapabilityError: Agent is live, source differs, or replacement
+                was attempted before joined release. Recompilation retains model,
+                tools and queue; it does not acquire credentials or bind tools again.
+        """
+        if self._running or self._message_source is None:
+            raise ToolYieldCapabilityError()
+        tool_execution_control.require_source(source=self._message_source)
+        if self._tool_execution_control is tool_execution_control:
+            if self._tool_yield_policy is not tool_yield_policy:
+                raise ToolYieldCapabilityError()
+            return
+        if self._tool_execution_control is not None:
+            raise ToolYieldCapabilityError()
+        self._tool_yield_policy = tool_yield_policy
+        self._replace_controlled_graph(control=tool_execution_control)
+
+    def release_tool_execution(self, *, tool_execution_control: ToolExecutionControl) -> None:
+        """Retire the exact idle binding only after the run has joined.
+
+        Args:
+            tool_execution_control: Exact bound control whose provider, tools,
+                delegated iterators and history work have already joined.
+
+        Raises:
+            ToolYieldCapabilityError: Invocation is still live or control differs.
+        """
+        if self._running or self._tool_execution_control is not tool_execution_control:
+            raise ToolYieldCapabilityError()
+        self._replace_controlled_graph(control=None)
+
+    def _replace_controlled_graph(self, *, control: Optional[ToolExecutionControl]) -> None:
+        """Construct locally then adopt without model creation or a second bind_tools."""
+        assert self._llm is not None
+        graph = _compile_slo_graph(
+            llm_with_tools=self._llm,
+            tools=self._tools,
+            execution_mode=self._tool_execution_mode,
+            output_update_queue=self._output_update_queue,
+            plugin_dispatcher=self._plugin_dispatcher,
+            control=control,
+            policy=self._tool_yield_policy,
+        )
+        self._graph = graph
+        self._tool_execution_control = control
 
     @property
     def workspace_folders(self) -> list[WorkspaceFolderDAO]:
@@ -709,6 +797,7 @@ class SloAgent:
         runtime_handler: Optional[AgentRuntimeHandler],
         first_progress_timeout_seconds: Optional[float] = None,
         idle_timeout_seconds: Optional[float] = None,
+        message_run: Optional[MessageRunState] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Stream one LangGraph turn and yield all resulting stream events.
 
@@ -734,36 +823,40 @@ class SloAgent:
         Raises:
             Exception: Any exception raised by ``self._graph.astream``.
         """
-        first_progress_timeout: float = (
-            first_progress_timeout_seconds
-            if first_progress_timeout_seconds is not None
-            else provider_stream_first_progress_timeout_seconds()
+        control: Optional[ToolExecutionControl] = self._tool_execution_control
+        retained_context: list[BaseMessage] = list(accumulated_messages)
+        self._enter_provider_attempt(message_run=message_run, iteration=iteration)
+        completed_responses: list[BaseMessage] = []
+        settled_item: object = None
+        has_settled_item = False
+        graph_stream: AsyncIterator[object] = self._open_graph_transport(
+            accumulated_messages=accumulated_messages, completed_responses=completed_responses
         )
-        idle_timeout: float = (
-            idle_timeout_seconds
-            if idle_timeout_seconds is not None
-            else provider_stream_idle_timeout_seconds()
+        watchdog_timer: WatchDogTimer = self._build_turn_watchdog(
+            first_progress_timeout_seconds=first_progress_timeout_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
         )
-        turn_state: SloAgentStateDAO = SloAgentStateDAO(messages=list(accumulated_messages))
-        graph_stream = self._graph.astream(turn_state, stream_mode=["messages", "updates"])
-        watchdog_timer: WatchDogTimer = WatchDogTimer.build(
-            first_progress_timeout_seconds=first_progress_timeout,
-            idle_timeout_seconds=idle_timeout,
-        )
+        interrupted = False
+        stream_closed = False
         try:
             while True:
-                raw_item: object | None = await watchdog_timer.invoke(graph_stream=graph_stream)
-                if raw_item is None:
-                    return
+                outcome = await watchdog_timer.invoke(
+                    graph_stream=graph_stream, control=control, abort_event=self._abort_event
+                )
+                if outcome.kind == "yield":
+                    interrupted = True
+                    has_settled_item = outcome.has_settled_item
+                    settled_item = outcome.settled_item
+                    break
+                if outcome.kind == "end":
+                    break
+                if outcome.kind != "item":
+                    raise ValueError("graph_read_outcome_invalid")
+                raw_item: object = outcome.item
                 if self._abort_event.is_set():
-                    await self._emit_trace_event(
-                        runtime_handler=runtime_handler,
-                        event=AgentRuntimeEventDAO(kind="run_aborted", iteration=iteration),
-                    )
-                    yield AgentStreamEventDAO(
-                        kind="run_aborted",
-                        iteration=iteration,
-                        content="<aborted>",
+                    stream_closed = True
+                    yield await self._close_aborted_turn(
+                        graph_stream=graph_stream, runtime_handler=runtime_handler, iteration=iteration
                     )
                     return
                 async for output_event in self._drain_tool_output_updates(iteration=iteration):
@@ -772,40 +865,307 @@ class SloAgent:
                         stream_event=output_event,
                     )
                     yield output_event
-                parsed = parse_graph_stream_item(raw_item=raw_item)
-                if parsed.mode == "messages":
-                    if not isinstance(parsed.message_chunk, AIMessageChunk):
-                        continue
-                    stream_events: list[AgentStreamEventDAO] = await self._process_messages_mode_chunk(
-                        chunk=parsed.message_chunk,
-                        normalizer=normalizer,
-                        runtime_handler=runtime_handler,
-                    )
-                    watchdog_timer.observe_message_events(events=stream_events)
-                    for event in stream_events:
-                        yield event
-                    continue
-                if parsed.update_chunk is None:
-                    continue
-                update_events: list[AgentStreamEventDAO] = await self._process_updates_mode_chunk(
-                    chunk=parsed.update_chunk,
+                stream_events = await self._process_graph_read(
+                    raw_item=raw_item,
                     accumulated_messages=accumulated_messages,
                     turn=turn,
                     iteration=iteration,
                     normalizer=normalizer,
                     runtime_handler=runtime_handler,
+                    watchdog_timer=watchdog_timer,
                 )
-                watchdog_timer.observe_update_events(events=update_events)
-                for event in update_events:
+                for event in stream_events:
                     yield event
-        finally:
-            async for output_event in self._drain_tool_output_updates(iteration=iteration):
-                await self._emit_stream_trace_event(
-                    runtime_handler=runtime_handler,
-                    stream_event=output_event,
-                )
-                yield output_event
+        except asyncio.CancelledError:
+            if not self._abort_event.is_set():
+                raise
+            stream_closed = True
+            yield await self._close_aborted_turn(
+                graph_stream=graph_stream, runtime_handler=runtime_handler, iteration=iteration
+            )
+            return
+        except Exception as error:
+            # Existing eligible provider retry is safe only after joined close and
+            # unchanged strict context. Settlement failures never reach a planner.
+            stream_closed = True
             await self._close_graph_stream(graph_stream=graph_stream)
+            self._settle_retry_eligible_failure(
+                error=error, accumulated_messages=accumulated_messages, retained_context=retained_context
+            )
+            raise
+        finally:
+            # Closure is an unconditional ownership barrier, not a fallible
+            # presentation tail. No observer/history/drain failure may skip it.
+            if not stream_closed:
+                await self._close_graph_stream(graph_stream=graph_stream)
+        async for output_event in self._drain_tool_output_updates(iteration=iteration):
+            await self._emit_stream_trace_event(
+                runtime_handler=runtime_handler,
+                stream_event=output_event,
+            )
+            yield output_event
+        await self._transfer_settlement_diagnostics(runtime_handler=runtime_handler, iteration=iteration)
+        if interrupted:
+            await self._consume_interrupted_truth(
+                completed_responses=completed_responses,
+                settled_item=settled_item,
+                has_settled_item=has_settled_item,
+                turn=turn,
+                runtime_handler=runtime_handler,
+            )
+            interruption_metadata = await self._settle_provider_interruption(
+                accumulated_messages=accumulated_messages,
+                retained_context=retained_context,
+                turn=turn,
+                message_run=message_run,
+                iteration=iteration,
+                runtime_handler=runtime_handler,
+            )
+            yield AgentStreamEventDAO(
+                kind="iteration_interrupted",
+                iteration=iteration,
+                attempt_turn_id=self._attempt_turn_id,
+                content="Response interrupted for urgent input.",
+                metadata={"cooperative_yield_v1": interruption_metadata.model_dump(mode="json")},
+            )
+        await self._certify_turn_settlement(
+            accumulated_messages=accumulated_messages, runtime_handler=runtime_handler, iteration=iteration
+        )
+
+    def _enter_provider_attempt(self, *, message_run: Optional[MessageRunState], iteration: int) -> None:
+        """Capture applied delivery before opening transport; legacy runs have no control."""
+        if self._tool_execution_control is None:
+            return
+        if message_run is None or message_run.delivery is None or self._attempt_turn_id is None:
+            raise ToolYieldCapabilityError()
+        self._tool_execution_control.enter_provider(
+            delivery=message_run.delivery, attempt_turn_id=self._attempt_turn_id, iteration=iteration
+        )
+
+    def _open_graph_transport(
+        self,
+        *,
+        accumulated_messages: list[BaseMessage],
+        completed_responses: list[BaseMessage],
+    ) -> AsyncIterator[object]:
+        """Choose the owned compiled transport while preserving injected legacy stream contracts."""
+        from src.agents.slo_agent.graph.event_stream import GraphEventStream
+
+        state = SloAgentStateDAO(messages=list(accumulated_messages))
+        if isinstance(self._graph, CompiledStateGraph) and "astream" not in vars(self._graph):
+            return GraphEventStream.invoke(
+                graph=self._graph, state=state, completed_responses=completed_responses
+            )
+        return self._graph.astream(state, stream_mode=["messages", "updates"])
+
+    @staticmethod
+    def _build_turn_watchdog(
+        *,
+        first_progress_timeout_seconds: Optional[float],
+        idle_timeout_seconds: Optional[float],
+    ) -> WatchDogTimer:
+        """Resolve the existing provider deadlines without changing runner timeout policy."""
+        return WatchDogTimer.build(
+            first_progress_timeout_seconds=(
+                first_progress_timeout_seconds
+                if first_progress_timeout_seconds is not None
+                else provider_stream_first_progress_timeout_seconds()
+            ),
+            idle_timeout_seconds=(
+                idle_timeout_seconds
+                if idle_timeout_seconds is not None
+                else provider_stream_idle_timeout_seconds()
+            ),
+        )
+
+    async def _close_aborted_turn(
+        self,
+        *,
+        graph_stream: AsyncIterator[object],
+        runtime_handler: Optional[AgentRuntimeHandler],
+        iteration: int,
+    ) -> AgentStreamEventDAO:
+        """Join provider cleanup before any abort trace or public terminal is published."""
+        await self._close_graph_stream(graph_stream=graph_stream)
+        await self._emit_trace_event(
+            runtime_handler=runtime_handler,
+            event=AgentRuntimeEventDAO(kind="run_aborted", iteration=iteration),
+        )
+        return AgentStreamEventDAO(kind="run_aborted", iteration=iteration, content="<aborted>")
+
+    def _settle_retry_eligible_failure(
+        self,
+        *,
+        error: Exception,
+        accumulated_messages: list[BaseMessage],
+        retained_context: list[BaseMessage],
+    ) -> None:
+        """Permit ordinary retry only after joined close and unchanged strictly settled context."""
+        if self._tool_execution_control is None or is_settlement_failure(exc=error):
+            return
+        if accumulated_messages != retained_context:
+            raise CooperativeYieldSettlementError() from error
+        MessageContractReconciler.require_settled_live(messages=retained_context)
+        self._tool_execution_control.settle_attempt()
+
+    async def _transfer_settlement_diagnostics(
+        self,
+        *,
+        runtime_handler: Optional[AgentRuntimeHandler],
+        iteration: int,
+    ) -> None:
+        """Await canonical captured diagnostics only after the transport has joined and closed."""
+        if self._tool_execution_control is None:
+            return
+        for diagnostic in self._tool_execution_control.take_settlement_diagnostics():
+            await self._emit_trace_event(
+                runtime_handler=runtime_handler,
+                event=AgentRuntimeEventDAO(
+                    kind="run_retrying",
+                    iteration=iteration,
+                    payload=AgentRuntimePayloadDAO(
+                        metadata={"cooperative_yield_v1": diagnostic.model_dump(mode="json")}
+                    ),
+                ),
+            )
+
+    async def _certify_turn_settlement(
+        self,
+        *,
+        accumulated_messages: list[BaseMessage],
+        runtime_handler: Optional[AgentRuntimeHandler],
+        iteration: int,
+    ) -> None:
+        """Certify live pairing and canonical durability before the phase owner permits continuation."""
+        if self._tool_execution_control is None:
+            return
+        MessageContractReconciler.require_settled_live(messages=accumulated_messages)
+        await self._emit_trace_event(
+            runtime_handler=runtime_handler,
+            event=AgentRuntimeEventDAO(
+                kind="run_retrying",
+                iteration=iteration,
+                payload=AgentRuntimePayloadDAO(metadata={"require_cooperative_settlement": True}),
+            ),
+        )
+        self._tool_execution_control.settle_attempt()
+
+    async def _process_graph_read(
+        self,
+        *,
+        raw_item: object,
+        accumulated_messages: list[BaseMessage],
+        turn: TurnStreamAccumulator,
+        iteration: int,
+        normalizer: AssistantChunkNormalizer,
+        runtime_handler: Optional[AgentRuntimeHandler],
+        watchdog_timer: WatchDogTimer,
+    ) -> list[AgentStreamEventDAO]:
+        """Decode one transport item through the live or completed-truth adapter."""
+        parsed = parse_graph_stream_item(raw_item=raw_item)
+        if parsed.mode == "messages":
+            if not isinstance(parsed.message_chunk, AIMessageChunk):
+                return []
+            events = await self._process_messages_mode_chunk(
+                chunk=parsed.message_chunk,
+                normalizer=normalizer,
+                runtime_handler=runtime_handler,
+            )
+            watchdog_timer.observe_message_events(events=events)
+            return events
+        if parsed.update_chunk is None:
+            return []
+        events = await self._process_updates_mode_chunk(
+            chunk=parsed.update_chunk,
+            accumulated_messages=accumulated_messages,
+            turn=turn,
+            iteration=iteration,
+            normalizer=normalizer,
+            runtime_handler=runtime_handler,
+        )
+        watchdog_timer.observe_update_events(events=events)
+        return events
+
+    async def _consume_interrupted_truth(
+        self,
+        *,
+        completed_responses: list[BaseMessage],
+        settled_item: object,
+        has_settled_item: bool,
+        turn: TurnStreamAccumulator,
+        runtime_handler: Optional[AgentRuntimeHandler],
+    ) -> None:
+        """Consume exact completed truth after joined close without finalizing an answer."""
+        messages = list(completed_responses)
+        if has_settled_item:
+            parsed = parse_graph_stream_item(raw_item=settled_item)
+            if parsed.update_chunk is not None:
+                for message in self._chunk_message_delta(chunk=parsed.update_chunk):
+                    if not any(message is retained for retained in messages):
+                        messages.append(message)
+        if any(isinstance(message, ToolMessage) for message in messages):
+            raise CooperativeYieldSettlementError()
+        for message in messages:
+            if any(message is retained for retained in turn.completed_messages):
+                continue
+            turn.absorb_messages(messages=[message])
+            self._capture_completed_update_usage(messages=[message])
+            for event in self._trace_events_from_message(message=message):
+                await self._emit_trace_event(runtime_handler=runtime_handler, event=event)
+
+    async def _settle_provider_interruption(
+        self,
+        *,
+        accumulated_messages: list[BaseMessage],
+        retained_context: list[BaseMessage],
+        turn: TurnStreamAccumulator,
+        message_run: Optional[MessageRunState],
+        iteration: int,
+        runtime_handler: Optional[AgentRuntimeHandler],
+    ) -> CooperativeYieldMetadataDAO:
+        """Persist interruption before restoring context and permitting another boundary.
+
+        A complete opening requires affirmative reserved no-start evidence after
+        joined close. Canonical writes complete before context restoration.
+        """
+        if turn.completed_tool_messages:
+            raise CooperativeYieldSettlementError()
+        if turn.completed_assistant_message is not None and turn.completed_assistant_message.tool_calls:
+            if self._tool_execution_control is None:
+                raise CooperativeYieldSettlementError()
+            self._tool_execution_control.require_reserved_no_start()
+            await self._emit_trace_event(
+                runtime_handler=runtime_handler,
+                event=AgentRuntimeEventDAO(
+                    kind="run_retrying",
+                    iteration=iteration,
+                    payload=AgentRuntimePayloadDAO(metadata={"reserved_no_start": True}),
+                ),
+            )
+        if message_run is None or message_run.delivery is None or self._attempt_turn_id is None:
+            raise ToolYieldCapabilityError()
+        metadata = CooperativeYieldMetadataDAO(
+            run_id=message_run.run_id,
+            boundary_index=message_run.boundary_index,
+            attempt_turn_id=self._attempt_turn_id,
+            iteration=iteration,
+            urgent_high_water=message_run.delivery.urgent_high_water,
+            reason="provider",
+            disposition="interrupted",
+        )
+        await self._emit_trace_event(
+            runtime_handler=runtime_handler,
+            event=AgentRuntimeEventDAO(
+                kind="run_retrying",
+                iteration=iteration,
+                payload=AgentRuntimePayloadDAO(
+                    metadata={"cooperative_yield_v1": metadata.model_dump(mode="json")}
+                ),
+            ),
+        )
+        accumulated_messages[:] = retained_context
+        turn.interrupt()
+        return metadata
 
     async def _drain_tool_output_updates(
         self,
@@ -839,7 +1199,21 @@ class SloAgent:
         """Close a generator-backed graph stream when the provider read loop exits."""
         if not isinstance(graph_stream, AsyncGenerator):
             return
-        await graph_stream.aclose()
+        close_task: asyncio.Task[None] = asyncio.create_task(coro=graph_stream.aclose())
+        cancelled = False
+        while not close_task.done():
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception as error:
+                raise CooperativeYieldSettlementError() from error
+        try:
+            close_task.result()
+        except Exception as error:
+            raise CooperativeYieldSettlementError() from error
+        if cancelled:
+            raise asyncio.CancelledError()
 
     async def _finalize_iteration(
         self,
@@ -866,6 +1240,9 @@ class SloAgent:
             AgentStreamEventDAO: Closing stream events for any still-open blocks.
                 Yields nothing when all blocks were cleanly closed during streaming.
         """
+        if turn.interrupted:
+            self._last_assistant_text = ""
+            return
         for closing_event in normalizer.finalize_open_blocks(
             completed_assistant_message=turn.completed_assistant_message,
         ):
@@ -924,6 +1301,7 @@ class SloAgent:
         iteration: int,
         runtime_handler: Optional[AgentRuntimeHandler],
         iteration_retry_policy: Optional[IterationRetryPolicy],
+        message_run: Optional[MessageRunState] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Execute one outer-loop iteration, retrying on eligible provider failures.
 
@@ -953,21 +1331,30 @@ class SloAgent:
             normalizer: AssistantChunkNormalizer = AssistantChunkNormalizer(iteration=iteration)
             turn: TurnStreamAccumulator = TurnStreamAccumulator()
             try:
-                async for event in self._stream_graph_turn(
+                delegated = self._stream_graph_turn(
                     accumulated_messages=accumulated_messages,
                     normalizer=normalizer,
                     turn=turn,
                     iteration=iteration,
                     runtime_handler=runtime_handler,
-                ):
-                    if self._is_committed_output_event(event=event):
-                        partial_output_committed = True
-                    yield event
+                    message_run=message_run,
+                )
+                try:
+                    async for event in delegated:
+                        if self._is_committed_output_event(event=event):
+                            partial_output_committed = True
+                        yield event
+                finally:
+                    await self._close_graph_stream(graph_stream=delegated)
                 if self._abort_event.is_set():
                     return  # run_aborted already yielded; skip finalization and break
                 self._active_turn = turn
                 break
             except Exception as exc:
+                # A settlement failure is terminal before any generic transport
+                # or rate classification. It must not retry, reconnect or replay.
+                if is_settlement_failure(exc=exc):
+                    raise
                 # SDK role/usage chunks commit the gateway stream even when the
                 # transcript normalizer emits no visible event for them.
                 if isinstance(exc, OpenRouterAPIError) and exc.partial_output_committed:
@@ -1002,12 +1389,16 @@ class SloAgent:
                 )
                 await asyncio.sleep(retry_decision.wait_seconds)
 
-        async for event in self._finalize_iteration(
+        delegated = self._finalize_iteration(
             turn=turn,
             normalizer=normalizer,
             runtime_handler=runtime_handler,
-        ):
-            yield event
+        )
+        try:
+            async for event in delegated:
+                yield event
+        finally:
+            await self._close_graph_stream(graph_stream=delegated)
 
     async def _react_loop(
         self,
@@ -1047,13 +1438,18 @@ class SloAgent:
                 iteration=iteration,
             )
             try:
-                async for event in self._execute_iteration_with_retry(
+                delegated = self._execute_iteration_with_retry(
                     accumulated_messages=accumulated_messages,
                     iteration=iteration,
                     runtime_handler=runtime_handler,
                     iteration_retry_policy=iteration_retry_policy,
-                ):
-                    yield event
+                    message_run=message_run,
+                )
+                try:
+                    async for event in delegated:
+                        yield event
+                finally:
+                    await self._close_graph_stream(graph_stream=delegated)
             except Exception as exc:
                 recovery_decision: RecoveryDecisionDAO = self._decide_iteration_recovery(
                     exc=exc,
@@ -1064,12 +1460,16 @@ class SloAgent:
                     recovery_decision.recovery_class is RecoveryClass.LLM_RECOVERABLE
                     and recoveries_used < self._recovery_budget
                 ):
-                    async for event in self._perform_recovery(
+                    delegated = self._perform_recovery(
                         exc=exc,
                         decision=recovery_decision,
                         accumulated_messages=accumulated_messages,
-                    ):
-                        yield event
+                    )
+                    try:
+                        async for event in delegated:
+                            yield event
+                    finally:
+                        await self._close_graph_stream(graph_stream=delegated)
                     recoveries_used += 1
                     iteration += 1
                     pending_recovery = True
@@ -1077,12 +1477,16 @@ class SloAgent:
                         message_run.boundary_index += 1
                         message_run.delivery = None
                     continue
-                async for event in self._emit_terminal_failure(
+                delegated = self._emit_terminal_failure(
                     exc=exc,
                     recoveries_attempted=recoveries_used > 0,
                     runtime_handler=runtime_handler,
-                ):
-                    yield event
+                )
+                try:
+                    async for event in delegated:
+                        yield event
+                finally:
+                    await self._close_graph_stream(graph_stream=delegated)
                 raise
 
             if pending_recovery:
@@ -1105,12 +1509,16 @@ class SloAgent:
                 message_run.boundary_index += 1
                 message_run.delivery = None
             else:
-                async for event in self._apply_steering(
+                delegated = self._apply_steering(
                     accumulated_messages=accumulated_messages,
                     iteration=iteration,
                     runtime_handler=runtime_handler,
-                ):
-                    yield event
+                )
+                try:
+                    async for event in delegated:
+                        yield event
+                finally:
+                    await self._close_graph_stream(graph_stream=delegated)
 
     async def _apply_message_boundary(
         self, *, accumulated_messages: list[BaseMessage], run: MessageRunState
@@ -1199,6 +1607,11 @@ class SloAgent:
         Returns:
             RecoveryDecisionDAO: The recovery classification for ``exc``.
         """
+        if is_settlement_failure(exc=exc):
+            return RecoveryDecisionDAO(
+                recovery_class=RecoveryClass.FATAL,
+                reason="Live tool-group settlement failed; recovery is disabled.",
+            )
         if isinstance(exc, OpenRouterAPIError) and exc.partial_output_committed:
             return RecoveryDecisionDAO(
                 recovery_class=RecoveryClass.FATAL,
@@ -1327,8 +1740,12 @@ class SloAgent:
             AgentStreamEventDAO: All stream events for this run.
         """
         if self._abort_event.is_set():
-            async for event in self._handle_pre_run_abort(runtime_handler=runtime_handler):
-                yield event
+            delegated = self._handle_pre_run_abort(runtime_handler=runtime_handler)
+            try:
+                async for event in delegated:
+                    yield event
+            finally:
+                await self._close_graph_stream(graph_stream=delegated)
             return
 
         await self._emit_run_started_trace(query=query, runtime_handler=runtime_handler)
@@ -1339,21 +1756,29 @@ class SloAgent:
             message_history=message_history,
         )
         if message_run is None:
-            async for event in self._apply_steering(
+            delegated = self._apply_steering(
                 accumulated_messages=accumulated_messages,
                 iteration=0,
                 runtime_handler=runtime_handler,
-            ):
-                yield event
+            )
+            try:
+                async for event in delegated:
+                    yield event
+            finally:
+                await self._close_graph_stream(graph_stream=delegated)
 
-        async for event in self._react_loop(
+        delegated = self._react_loop(
             accumulated_messages=accumulated_messages,
             runtime_handler=runtime_handler,
             iteration_retry_policy=iteration_retry_policy,
             iteration_recovery_policy=iteration_recovery_policy,
             message_run=message_run,
-        ):
-            yield event
+        )
+        try:
+            async for event in delegated:
+                yield event
+        finally:
+            await self._close_graph_stream(graph_stream=delegated)
 
         if self._abort_event.is_set():
             return  # run_aborted already yielded by _stream_graph_turn; skip run_completed
@@ -1382,6 +1807,7 @@ class SloAgent:
         iteration_retry_policy: Optional[IterationRetryPolicy] = None,
         iteration_recovery_policy: Optional[IterationRecoveryPolicy] = None,
         message_run: Optional[MessageRunState] = None,
+        attempt_turn_id: Optional[str] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Run the multi-turn loop and yield normalized stream events.
 
@@ -1409,6 +1835,9 @@ class SloAgent:
             iteration_recovery_policy (Optional[IterationRecoveryPolicy]): Per-
                 iteration LLM-recovery decision injected by the session.
                 ``None`` preserves the legacy fail-fast behavior.
+            message_run: Session-owned cursor with frozen delivery, required with
+                a bound message source; never replaced during an invocation.
+            attempt_turn_id: Canonical attempt UUID required for controlled runs.
 
         Yields:
             AgentStreamEventDAO: Normalized visible delta, tool-result, and
@@ -1417,13 +1846,21 @@ class SloAgent:
         Raises:
             RuntimeError: If a run is already in progress on this instance.
             ValueError: If both ``history`` and ``message_history`` are supplied.
+            CooperativeYieldSettlementError: Delegated/provider close fails; never
+                eligible for automatic recovery. Consumer close joins the entire
+                delegate chain before clearing running state or releasing binding.
+            asyncio.CancelledError: Caller cancellation after owned cleanup joins.
         """
         self._validate_invoke_inputs(history=history, message_history=message_history)
         if (self._message_source is None) != (message_run is None):
             raise ValueError("message_source and message_run must be supplied together")
+        if self._tool_execution_control is not None:
+            if attempt_turn_id is None or str(UUID(attempt_turn_id)) != attempt_turn_id:
+                raise ToolYieldCapabilityError()
+        self._attempt_turn_id = attempt_turn_id
         self._initialize_run_state()
         try:
-            async for event in self._execute_run(
+            delegated: AsyncGenerator[AgentStreamEventDAO, None] = self._execute_run(
                 query=query,
                 history=history,
                 message_history=message_history,
@@ -1431,9 +1868,14 @@ class SloAgent:
                 iteration_retry_policy=iteration_retry_policy,
                 iteration_recovery_policy=iteration_recovery_policy,
                 message_run=message_run,
-            ):
-                yield event
+            )
+            try:
+                async for event in delegated:
+                    yield event.model_copy(update={"attempt_turn_id": attempt_turn_id})
+            finally:
+                await self._close_graph_stream(graph_stream=delegated)
         finally:
+            self._attempt_turn_id = None
             self._teardown_run_state()
 
     def steer(self, message: str | BaseMessage) -> None:
@@ -1733,7 +2175,12 @@ class SloAgent:
         """
         if runtime_handler is None:
             return
-        await runtime_handler(event)
+        try:
+            await runtime_handler(event)
+        except Exception as error:
+            if self._tool_execution_control is not None and not is_settlement_failure(exc=error):
+                raise CooperativeYieldSettlementError() from error
+            raise
 
     async def _emit_stream_trace_event(
         self,
@@ -1750,8 +2197,9 @@ class SloAgent:
         if runtime_handler is None:
             return
         if stream_event.kind == "tool_output_update":
-            await runtime_handler(
-                AgentRuntimeEventDAO(
+            await self._emit_trace_event(
+                runtime_handler=runtime_handler,
+                event=AgentRuntimeEventDAO(
                     kind="tool_output_update",
                     iteration=stream_event.iteration,
                     payload=AgentRuntimePayloadDAO(
@@ -1760,7 +2208,7 @@ class SloAgent:
                         tool_call_id=stream_event.tool_call_id,
                         metadata=stream_event.metadata,
                     ),
-                )
+                ),
             )
             return
         if stream_event.kind not in {
@@ -1772,8 +2220,9 @@ class SloAgent:
             "text_end",
         }:
             return
-        await runtime_handler(
-            AgentRuntimeEventDAO(
+        await self._emit_trace_event(
+            runtime_handler=runtime_handler,
+            event=AgentRuntimeEventDAO(
                 kind="assistant_delta",
                 iteration=stream_event.iteration,
                 payload=AgentRuntimePayloadDAO(
@@ -1783,7 +2232,7 @@ class SloAgent:
                     content=stream_event.content,
                     redacted=stream_event.redacted,
                 ),
-            )
+            ),
         )
 
     async def _emit_steering_traces(
@@ -1926,6 +2375,7 @@ class SloAgent:
                         tool_name=message.name,
                         tool_call_id=getattr(message, "tool_call_id", None),
                         tool_output=tool_output,
+                        metadata={"core_tool_result_status": message.status},
                     ),
                 )
             ]

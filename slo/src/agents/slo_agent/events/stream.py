@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "AgentStreamEventDAO",
@@ -32,6 +32,9 @@ StreamEventKind = Literal[
     "tool_result",
     "steering_applied",  # a queued /steer message was drained into model context
     "run_retrying",
+    "yield_requested",
+    "yield_deferred",
+    "iteration_interrupted",
     "preflight_bypassed",  # local TPM diagnostic; provider request still proceeds
     "stream_reconnecting",  # pre-commit provider stream reconnect audit (spec 70)
     # Compaction lifecycle — emitted by the session during overflow recovery:
@@ -86,6 +89,7 @@ class AgentStreamEventDAO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: StreamEventKind
+    attempt_turn_id: Optional[str] = Field(default=None, description="Canonical session attempt correlation.")
     iteration: int = 0
     block_id: Optional[str] = None
     content_index: int = 0
@@ -104,6 +108,30 @@ class AgentStreamEventDAO(BaseModel):
     task_id: Optional[str] = None
     """Originating task id when this is a sub-agent event.
     ``None`` for all orchestrator-pane (normal) events."""
+
+    @model_validator(mode="after")
+    def _validate_cooperative_correlation(self) -> AgentStreamEventDAO:
+        """Reject contradictory diagnostic shape while allowing legacy unmarked events."""
+        raw = self.metadata.get("cooperative_yield_v1")
+        if raw is None:
+            return self
+        from src.agents.slo_agent.history.dao import CooperativeYieldMetadataDAO
+
+        captured = CooperativeYieldMetadataDAO.model_validate(raw)
+        dispositions = {
+            "yield_requested": "requested",
+            "yield_deferred": "deferred",
+            "iteration_interrupted": "interrupted",
+        }
+        if (
+            dispositions.get(self.kind) != captured.disposition
+            or self.attempt_turn_id != captured.attempt_turn_id
+            or self.iteration != captured.iteration
+            or (self.kind != "yield_deferred" and captured.reason != "provider")
+            or (self.kind == "yield_deferred" and captured.reason == "provider")
+        ):
+            raise ValueError("cooperative_yield_stream_invalid")
+        return self
 
     @property
     def is_terminal(self) -> bool:

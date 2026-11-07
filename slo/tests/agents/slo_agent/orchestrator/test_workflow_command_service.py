@@ -18,6 +18,7 @@ from src.agents.slo_agent.orchestrator.dao import FleetSnapshotDAO, SubAgentStat
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.workflow_registry import (
+    RelaunchOwnership,
     WorkflowCommandResultDAO,
     WorkflowCommandService,
     WorkflowHandleDAO,
@@ -1202,7 +1203,7 @@ async def test_resume_refuses_failed_handle_with_aborted_status(tmp_path: Path) 
     ).write_terminal(state="aborted", exit_code=2, phase="done")
 
     @asynccontextmanager
-    async def launcher(**kwargs: object) -> AsyncIterator[None]:
+    async def launcher(*, handle: WorkflowHandleDAO, history_root: Path) -> AsyncIterator[RelaunchOwnership]:
         """Reject any unexpected relaunch at the injected boundary."""
         raise AssertionError("aborted workflow relaunched")
         yield

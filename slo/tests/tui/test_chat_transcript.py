@@ -896,31 +896,44 @@ async def test_clear_backpressures_real_subscriber_and_joins_repeated_cancellati
     session.subscribe(handler=subscriber)
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         await transcript.hydrate()
-        older = asyncio.create_task(transcript.load_older())
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        cleanup = asyncio.create_task(transcript.clear())
-        await asyncio.wait_for(cancelled.wait(), timeout=5)
+        older = asyncio.create_task(coro=transcript.load_older())
+        cleanup: asyncio.Task[None] | None = None
+        delivery: asyncio.Task[None] | None = None
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            cleanup = asyncio.create_task(coro=transcript.clear())
+            await asyncio.wait_for(cancelled.wait(), timeout=5)
 
-        async def deliver() -> None:
-            """Drive the public session relay with its awaitable subscriber contract."""
+            async def deliver() -> None:
+                """Drive the public session relay with its awaitable subscriber contract."""
+                await session.event_relay(
+                    AgentStreamEventDAO(kind="text_delta", delta="after-clear", iteration=1)
+                )
+
+            delivery = asyncio.create_task(coro=deliver())
+            for _ in range(3):
+                cleanup.cancel()
+                await asyncio.sleep(0)
+                assert not cleanup.done() and not delivery.done()
+            release.set()
+            await asyncio.gather(older, cleanup, return_exceptions=True)
+            await asyncio.wait_for(delivery, timeout=5)
             await session.event_relay(
-                AgentStreamEventDAO(kind="text_delta", delta="after-clear", iteration=1)
+                AgentStreamEventDAO(kind="text_end", content="after-clear", iteration=1)
             )
-
-        delivery = asyncio.create_task(deliver())
-        for _ in range(3):
-            cleanup.cancel()
-            await asyncio.sleep(0)
-            assert not cleanup.done() and not delivery.done()
-        release.set()
-        await asyncio.gather(older, cleanup, return_exceptions=True)
-        await asyncio.wait_for(delivery, timeout=5)
-        await session.event_relay(AgentStreamEventDAO(kind="text_end", content="after-clear", iteration=1))
-        await pilot.pause()
-        assert [b.get_copyable_text() for b in transcript.query(AssistantStreamBlock)] == ["after-clear"]
-        assert cleanup.cancelled()
-        assert not session.is_running
-    session.unsubscribe(handler=subscriber)
+            await pilot.pause()
+            assert [b.get_copyable_text() for b in transcript.query(AssistantStreamBlock)] == ["after-clear"]
+            assert cleanup.cancelled()
+            assert not session.is_running
+        finally:
+            # Release before joining: the reader deliberately suppresses cancellation.
+            release.set()
+            await asyncio.gather(
+                *(task for task in (older, cleanup, delivery) if task is not None),
+                return_exceptions=True,
+            )
+            await session.join_unsubscribed(handler=subscriber)
+            await transcript.close()
 
 
 async def test_ancestor_hidden_rejects_native_admission_without_changing_intent() -> None:

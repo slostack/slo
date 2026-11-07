@@ -35,6 +35,7 @@ from src.auth.credential_resolver import CredentialResolver
 
 from src.agents.slo_agent.compaction.compacter import CompactionResult
 from src.agents.slo_agent.history.dao import (
+    CooperativeHistoryEventValidator,
     HISTORY_OBSERVATION_MAX_BYTES,
     HISTORY_OBSERVATION_MAX_EVENTS,
     HistoryObservationWindowDAO,
@@ -52,6 +53,7 @@ from src.agents.slo_agent.history.dao import (
 # to the compaction package and is only required when appending an unstamped event.
 
 __all__ = [
+    "FileCertification",
     "FilesystemSessionHistoryStore",
     "HistoryCompactionRecoveryError",
     "normalize_session_name_key",
@@ -67,6 +69,31 @@ _EVENTS_FILE_NAME: str = "events.jsonl"
 # Open failures that mean "no readable active log right now" rather than an I/O fault:
 # missing file or directory, a non-directory component, or a refused symlink.
 _OBSERVATION_UNAVAILABLE_ERRNOS: frozenset[int] = frozenset({errno.ENOENT, errno.ENOTDIR, errno.ELOOP})
+
+
+class FileCertification:
+    """Confirm that an already-written history file reached durable storage.
+
+    WHAT: A narrow I/O boundary around ``os.fsync`` so append-once can certify
+        raw event bytes without owning a private patching seam.
+    WHO: The filesystem history owner calls it for new lines and for matching
+        existing events before reporting success.
+    WHEN: Once per append line and once per existing-event retry, while the
+        history lock still serializes writers.
+    """
+
+    def certify(self, *, path: Path) -> None:
+        """Flush every written byte of ``path`` to durable storage.
+
+        Args:
+            path (Path): Existing regular file whose current bytes must be
+                durable before the caller may report success.
+
+        Raises:
+            OSError: The storage barrier could not be confirmed.
+        """
+        with path.open(mode="rb") as handle:
+            os.fsync(handle.fileno())
 
 
 class HistoryCompactionRecoveryError(RuntimeError):
@@ -285,14 +312,22 @@ class FilesystemSessionHistoryStore:
     cannot stall Textual rendering while a prompt is in flight.
     """
 
-    def __init__(self, *, root: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        *,
+        root: Optional[Path] = None,
+        file_certification: Optional[FileCertification] = None,
+    ) -> None:
         """Default to ``~/.slo/sessions/history``; override for tests.
 
         Args:
             root (Optional[Path]): Override root directory.
+            file_certification (Optional[FileCertification]): Storage-barrier
+                collaborator; defaults to the real ``os.fsync`` implementation.
         """
         self._root: Path = (root or default_history_root()).expanduser().resolve()
         self._lock: asyncio.Lock = asyncio.Lock()
+        self._file_certification: FileCertification = file_certification or FileCertification()
 
     @property
     def root(self) -> Path:
@@ -428,12 +463,33 @@ class FilesystemSessionHistoryStore:
         Raises:
             MessageStoreError: Raw history, identity, redaction or persistence is uncertain.
         """
-        from src.agents.slo_agent.history.projector import SessionHistoryProjector
-
-        SessionHistoryProjector.project_message_application(event=event)
         async with self._lock:
             task: asyncio.Task[SessionHistoryEventDAO] = asyncio.create_task(
                 coro=asyncio.to_thread(self._append_message_application_once_sync, event=event)
+            )
+            return await self._join_application_worker(task=task)
+
+    async def append_cooperative_event_once(self, *, event: SessionHistoryEventDAO) -> SessionHistoryEventDAO:
+        """Append one validated cooperative event once or fail closed on conflict.
+
+        WHAT: Accepts only marked tool openings/results and cooperative/no-start
+            ``run_retrying`` diagnostics, then reuses the raw append-once barrier.
+        WHO: Session history barrier for cooperative-yield settlement evidence.
+        WHEN: After trusted correlation; never for ordinary history or message applications.
+
+        Args:
+            event: Validated canonical cooperative event.
+
+        Returns:
+            SessionHistoryEventDAO: Matching persisted event with assigned history fields.
+
+        Raises:
+            CooperativeYieldSettlementError: Invalid evidence, raw conflict,
+                duplicate identity, redaction change or uncertain persistence.
+        """
+        async with self._lock:
+            task: asyncio.Task[SessionHistoryEventDAO] = asyncio.create_task(
+                coro=asyncio.to_thread(self._append_cooperative_event_once_sync, event=event)
             )
             return await self._join_application_worker(task=task)
 
@@ -573,7 +629,41 @@ class FilesystemSessionHistoryStore:
     def _append_message_application_once_sync(
         self, *, event: SessionHistoryEventDAO
     ) -> SessionHistoryEventDAO:
-        """Verify raw identity and high-water before assigning sequence and committing metadata."""
+        """Validate and persist one message application through the shared raw barrier."""
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+        from src.agents.slo_agent.messaging.dao import MessageStoreError
+
+        try:
+            SessionHistoryProjector.project_message_application(event=event)
+            return self._append_once_sync(event=event)
+        except Exception as error:
+            raise MessageStoreError() from error
+
+    def _append_cooperative_event_once_sync(self, *, event: SessionHistoryEventDAO) -> SessionHistoryEventDAO:
+        """Validate and persist one cooperative event through the shared raw barrier."""
+        from src.agents.slo_agent.history.message_contract_reconciler import (
+            CooperativeYieldSettlementError,
+        )
+
+        try:
+            CooperativeHistoryEventValidator.validate(event=event)
+            return self._append_once_sync(event=event)
+        except Exception as error:
+            raise CooperativeYieldSettlementError() from error
+
+    def _append_once_sync(self, *, event: SessionHistoryEventDAO) -> SessionHistoryEventDAO:
+        """Verify raw identity and high-water before assigning sequence and committing metadata.
+
+        Args:
+            event (SessionHistoryEventDAO): Canonical event already validated by its
+                owning restricted append-once entry point.
+
+        Returns:
+            SessionHistoryEventDAO: Matching persisted event with assigned history fields.
+
+        Raises:
+            MessageStoreError: Raw identity, redaction or persistence is uncertain.
+        """
         from src.agents.slo_agent.messaging.dao import MessageStoreError
 
         try:
@@ -588,10 +678,16 @@ class FilesystemSessionHistoryStore:
                     existing = item
             if existing is not None and existing.application_sha256() != event.application_sha256():
                 raise MessageStoreError()
+            if existing is not None:
+                # Certify the raw line before repairing metadata or returning. A failed
+                # retry must leave the durable high-water marker stale; readable bytes
+                # alone are not proof that the event reached the storage barrier.
+                self._file_certification.certify(path=self._events_path(session_id=event.session_id))
+                metadata.latest_sequence = high_water
+                self._write_metadata_sync(metadata=metadata)
+                return existing
             metadata.latest_sequence = high_water
             self._write_metadata_sync(metadata=metadata)
-            if existing is not None:
-                return existing
             redacted: SessionHistoryEventDAO = SessionHistoryEventDAO.model_validate_json(
                 json_data=CredentialResolver.redact_openrouter_text(text=event.model_dump_json())
             )
@@ -785,6 +881,8 @@ class FilesystemSessionHistoryStore:
 
         try:
             active: list[SessionHistoryEventDAO] = self._read_application_events_sync(session_id=session_id)
+            # Raw marked groups must settle before any selection or coverage cut.
+            SessionHistoryProjector.validate_tool_groups(events=active)
             digest: str = self._snapshot_sha256(events=events)
             if digest != self._snapshot_sha256(events=active):
                 raise MessageStoreError()
@@ -1498,9 +1596,11 @@ class FilesystemSessionHistoryStore:
             handle.write(line)
             handle.write("\n")
             handle.flush()
-            os.fsync(handle.fileno())
         if is_new:
             path.chmod(_FILE_MODE)
+        # The complete line is now written; certification confirms the storage
+        # barrier. A failure leaves the readable bytes for the exact-event retry.
+        self._file_certification.certify(path=path)
 
     def _compact_to_boundary_sync(
         self,
@@ -1522,11 +1622,19 @@ class FilesystemSessionHistoryStore:
         Returns:
             SessionHistoryEventDAO: Summary assigned the transaction sequence.
         """
+        self._require_current_active_snapshot_sync(session_id=session_id, events=events)
         if messaging_compaction_id is not None:
             from src.agents.slo_agent.messaging.dao import _require_uuid
 
             _require_uuid(value=messaging_compaction_id, field="messaging_compaction_id")
             self._select_message_compaction_sync(session_id=session_id, events=events, result=result)
+        retain_from_sequence: int = self._resolve_retain_boundary_sequence(
+            events=events,
+            first_kept_entry_id=result.first_kept_entry_id,
+        )
+        retain_event: SessionHistoryEventDAO = self._event_at_sequence(
+            events=events, sequence=retain_from_sequence
+        )
         metadata: SessionHistoryMetadataDAO = self._read_metadata_sync(session_id=session_id)
         sequence: int = metadata.latest_sequence + 1
         summary_event: SessionHistoryEventDAO = SessionHistoryEventDAO(
@@ -1538,7 +1646,7 @@ class FilesystemSessionHistoryStore:
                 content=result.summary_text,
                 token_usage=math.ceil(len(result.summary_text) / 4),
                 metadata={
-                    "first_kept_entry_id": result.first_kept_entry_id,
+                    "first_kept_entry_id": retain_event.event_id,
                     "cut_point_entry_id": result.cut_point_entry_id,
                     "tokens_before": result.tokens_before,
                     "tokens_after": result.tokens_after,
@@ -1547,10 +1655,6 @@ class FilesystemSessionHistoryStore:
         )
         if messaging_compaction_id is not None:
             summary_event.payload.metadata["messaging_compaction_id"] = messaging_compaction_id
-        retain_from_sequence: int = self._resolve_retain_boundary_sequence(
-            events=events,
-            first_kept_entry_id=result.first_kept_entry_id,
-        )
         candidate_events: list[SessionHistoryEventDAO] = self._build_post_compaction_events(
             events=events,
             retain_from_sequence=retain_from_sequence,
@@ -1584,20 +1688,58 @@ class FilesystemSessionHistoryStore:
         Raises:
             FileNotFoundError: When ``events.jsonl`` does not exist.
             ValueError: When ``first_kept_entry_id`` cannot be resolved.
+            MessageStoreError: The supplied source is not the current raw snapshot.
         """
+        self._require_current_active_snapshot_sync(session_id=session_id, events=events)
         retain_from_sequence: int = self._resolve_retain_boundary_sequence(
             events=events,
             first_kept_entry_id=first_kept_entry_id,
         )
+        retain_event: SessionHistoryEventDAO = self._event_at_sequence(
+            events=events, sequence=retain_from_sequence
+        )
+        adjusted_summary: SessionHistoryEventDAO = self._summary_at_boundary(
+            summary_event=summary_event, first_kept_entry_id=retain_event.event_id
+        )
         new_events: list[SessionHistoryEventDAO] = self._build_post_compaction_events(
             events=events,
             retain_from_sequence=retain_from_sequence,
-            summary_event=summary_event,
+            summary_event=adjusted_summary,
         )
         self._atomic_replace_events_file(
             session_id=session_id,
             new_events=new_events,
         )
+
+    def _require_current_active_snapshot_sync(
+        self, *, session_id: str, events: list[SessionHistoryEventDAO]
+    ) -> None:
+        """Refuse a rewrite whose source is not the current validated raw history.
+
+        The caller already holds the store serialization lock. Reading active
+        history here means a caller-supplied snapshot cannot hide a group that
+        was appended after capture.
+
+        Args:
+            session_id (str): Session owner.
+            events (list[SessionHistoryEventDAO]): Caller-supplied pre-compaction events.
+
+        Raises:
+            FileNotFoundError: When ``events.jsonl`` does not exist.
+            UnsettledToolGroupError: The current active raw groups are unresolved.
+            MessageStoreError: The supplied source differs from current active history.
+        """
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+        from src.agents.slo_agent.messaging.dao import MessageStoreError
+
+        active: list[SessionHistoryEventDAO] = self._load_events_sync(session_id=session_id)
+        if not self._events_path(session_id=session_id).exists():
+            raise FileNotFoundError(
+                f"events.jsonl not found for session {session_id!r}; call ensure_session first"
+            )
+        SessionHistoryProjector.validate_tool_groups(events=active)
+        if self._snapshot_sha256(events=events) != self._snapshot_sha256(events=active):
+            raise MessageStoreError()
 
     @staticmethod
     def _resolve_retain_boundary_sequence(
@@ -1616,11 +1758,60 @@ class FilesystemSessionHistoryStore:
 
         Raises:
             ValueError: When no event in ``events`` carries ``first_kept_entry_id``.
+            UnsettledToolGroupError: A marked group would be sliced or is unresolved.
         """
+        from src.agents.slo_agent.history.projector import SessionHistoryProjector
+
         for event in events:
             if event.event_id == first_kept_entry_id:
-                return event.sequence
+                return SessionHistoryProjector.compaction_retain_sequence(
+                    events=events, retain_from_sequence=event.sequence
+                )
         raise ValueError(f"first_kept_entry_id {first_kept_entry_id!r} not found in events")
+
+    @staticmethod
+    def _event_at_sequence(*, events: list[SessionHistoryEventDAO], sequence: int) -> SessionHistoryEventDAO:
+        """Return the event carrying ``sequence`` for the retained boundary.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Pre-compaction event list.
+            sequence (int): Resolved first retained sequence.
+
+        Returns:
+            SessionHistoryEventDAO: The exact boundary event.
+
+        Raises:
+            ValueError: When no event carries ``sequence``.
+        """
+        for event in events:
+            if event.sequence == sequence:
+                return event
+        raise ValueError(f"no event at retain sequence {sequence!r}")
+
+    @staticmethod
+    def _summary_at_boundary(
+        *, summary_event: SessionHistoryEventDAO, first_kept_entry_id: str
+    ) -> SessionHistoryEventDAO:
+        """Retarget a compatibility summary at the actual retained boundary.
+
+        Args:
+            summary_event (SessionHistoryEventDAO): Caller-provided summary event.
+            first_kept_entry_id (str): Event id of the pinned first retained event.
+
+        Returns:
+            SessionHistoryEventDAO: Summary whose pointer matches the retained tail.
+        """
+        if summary_event.payload.metadata.get("first_kept_entry_id") == first_kept_entry_id:
+            return summary_event
+        payload: SessionHistoryEventPayloadDAO = summary_event.payload.model_copy(
+            update={
+                "metadata": {
+                    **summary_event.payload.metadata,
+                    "first_kept_entry_id": first_kept_entry_id,
+                }
+            }
+        )
+        return summary_event.model_copy(update={"payload": payload})
 
     @staticmethod
     def _build_post_compaction_events(

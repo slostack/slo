@@ -8,6 +8,8 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from src.agents.base import LLMBuildResult
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from tests.integration.herdr_parity_124 import SemanticTrace
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
@@ -29,7 +31,7 @@ async def test_enabled_disabled_whole_jsonl_parity(
     monkeypatch.setattr(
         target=CredentialResolver, name="resolve", value=classmethod(lambda cls, **kw: credential)
     )
-    streams: list[list[dict[str, object]]] = []
+    streams: list[list[object]] = []
     for disabled in (False, True):
         monkeypatch.setenv(name="SLO_HERDR_DISABLED", value="1" if disabled else "0")
         runner = HeadlessRunner(config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4"))
@@ -53,5 +55,7 @@ async def test_enabled_disabled_whole_jsonl_parity(
         assert (wire == before) is disabled
         assert "--herdr-restore" not in wire.decode()
         assert "synthetic-parity-secret" not in captured.out + captured.err + wire.decode()
-        streams.append(events)
+        streams.append(
+            SemanticTrace().serialize(records=[AgentStreamEventDAO.model_validate(event) for event in events])
+        )
     assert streams[0] == streams[1]

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from src.agents.slo_agent.history.message_contract_reconciler import (
     MessageContractReconciler,
+    UnsettledToolGroupError,
 )
 
 
@@ -27,6 +30,11 @@ def _ai_with_tool_calls(*, ids: list[str]) -> AIMessage:
 def _tool_message(*, tool_call_id: str, content: str = "ok") -> ToolMessage:
     """Build a ``ToolMessage`` answering ``tool_call_id``."""
     return ToolMessage(content=content, name="bash", tool_call_id=tool_call_id)
+
+
+def _detached_snapshot(*, messages: list[BaseMessage]) -> list[dict[str, Any]]:
+    """Serialize every message into a detached, comparable snapshot."""
+    return [message.model_dump(mode="json") for message in messages]
 
 
 def test_drops_orphan_tool_result_with_no_preceding_call() -> None:
@@ -157,3 +165,260 @@ def test_keeps_assistant_message_with_text_blocks() -> None:
     result = MessageContractReconciler.reconcile(messages=[with_text, no_text])
     assert with_text in result
     assert no_text not in result
+
+
+# ---------------------------------------------------------------------------
+# Strict live guard (sub-spec 96.a.2 §6.1, A12)
+# ---------------------------------------------------------------------------
+
+
+def test_live_guard_accepts_exact_ordered_group_without_mutation() -> None:
+    """A complete source-ordered group passes and its detached content is untouched."""
+    messages: list[BaseMessage] = [
+        HumanMessage(content="run both"),
+        _ai_with_tool_calls(ids=["A", "B"]),
+        ToolMessage(content="a", name="bash", tool_call_id="A", status="success"),
+        ToolMessage(content="b", name="bash", tool_call_id="B", status="error"),
+        AIMessage(content="done"),
+    ]
+    before: list[dict[str, Any]] = _detached_snapshot(messages=messages)
+    MessageContractReconciler.require_settled_live(messages=messages)
+    assert _detached_snapshot(messages=messages) == before
+
+
+def test_live_guard_rejection_leaves_detached_snapshot_unchanged() -> None:
+    """A rejected group mutates neither shared messages nor their status or args."""
+    messages: list[BaseMessage] = [
+        _ai_with_tool_calls(ids=["A"]),
+        ToolMessage(content="a", name="bash", tool_call_id="A", status="error"),
+        ToolMessage(content="duplicate", name="bash", tool_call_id="A", status="success"),
+    ]
+    before: list[dict[str, Any]] = _detached_snapshot(messages=messages)
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(messages=messages)
+    assert _detached_snapshot(messages=messages) == before
+
+
+def test_live_guard_accepts_plain_conversation() -> None:
+    """History with no tool calls is settled."""
+    MessageContractReconciler.require_settled_live(
+        messages=[HumanMessage(content="hello"), AIMessage(content="hi")],
+    )
+
+
+def test_live_guard_rejects_orphan_result() -> None:
+    """A ToolMessage with no open call is an orphan, not a heal candidate."""
+    with pytest.raises(UnsettledToolGroupError) as raised:
+        MessageContractReconciler.require_settled_live(
+            messages=[HumanMessage(content="summary"), _tool_message(tool_call_id="orphan")],
+        )
+    assert str(raised.value) == "unsettled_tool_group"
+
+
+def test_live_guard_rejects_blank_result_id() -> None:
+    """A ToolMessage without an ID cannot settle a live group."""
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[_ai_with_tool_calls(ids=["A"]), ToolMessage(content="x", name="bash", tool_call_id="")],
+        )
+
+
+def test_live_guard_rejects_missing_result() -> None:
+    """A declared call with no result never heals live."""
+    messages: list[BaseMessage] = [_ai_with_tool_calls(ids=["A", "B"]), _tool_message(tool_call_id="A")]
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(messages=messages)
+    assert len(messages) == 2
+
+
+def test_live_guard_rejects_duplicate_result() -> None:
+    """A second result for the same call is a duplicate, not a new settlement."""
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[
+                _ai_with_tool_calls(ids=["A"]),
+                _tool_message(tool_call_id="A"),
+                _tool_message(tool_call_id="A"),
+            ],
+        )
+
+
+def test_live_guard_accepts_result_order_not_matching_call_order() -> None:
+    """A result removes its matching pending ID once; source order is not required.
+
+    Spec §6.1 says a ``ToolMessage`` "requires nonblank pending ID and removes
+    it once". It does not require the result to be the first pending call;
+    executors own source-ordering of their outputs. Rejecting a matching
+    non-first result here would enforce a rule the spec does not state.
+    """
+    MessageContractReconciler.require_settled_live(
+        messages=[
+            _ai_with_tool_calls(ids=["A", "B"]),
+            _tool_message(tool_call_id="B"),
+            _tool_message(tool_call_id="A"),
+        ],
+    )
+
+
+def test_live_guard_rejects_interleaved_non_tool_message() -> None:
+    """A non-tool message while a group is pending is interleaving."""
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[
+                _ai_with_tool_calls(ids=["A"]),
+                HumanMessage(content="wait"),
+                _tool_message(tool_call_id="A"),
+            ],
+        )
+
+
+def test_live_guard_rejects_blank_call_id() -> None:
+    """A blank declared call ID is malformed."""
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[_ai_with_tool_calls(ids=[""])],
+        )
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "reason"),
+    [
+        ({"name": "bash", "args": {}, "id": ""}, "blank ID"),
+        ({"name": "bash", "args": {}, "id": "   "}, "whitespace ID"),
+        ({"name": "bash", "args": {}, "id": 7}, "non-string ID"),
+        ({"name": "", "args": {}, "id": "A"}, "blank name"),
+        ({"name": 7, "args": {}, "id": "A"}, "non-string name"),
+        ({"args": {}, "id": "A"}, "missing name"),
+        ("not-a-mapping", "non-mapping entry"),
+    ],
+    ids=[
+        "blank-id",
+        "whitespace-id",
+        "non-string-id",
+        "blank-name",
+        "non-string-name",
+        "missing-name",
+        "non-mapping",
+    ],
+)
+def test_live_tool_call_validator_rejects_malformed_entries(*, tool_call: Any, reason: str) -> None:
+    """The pure call validator rejects each malformed shape it owns.
+
+    The public guard can be masked by its result guard for blank IDs, so this
+    direct decision test proves the opening-side validation itself.
+    """
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler._live_tool_call_id(tool_call=tool_call)
+
+
+def test_live_guard_rejects_duplicate_call_ids_in_one_group() -> None:
+    """One opening cannot declare the same call ID twice even when one result settles it."""
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[
+                _ai_with_tool_calls(ids=["A", "A"]),
+                _tool_message(tool_call_id="A"),
+            ],
+        )
+
+
+def test_live_guard_rejects_reused_call_id_across_groups() -> None:
+    """A later group cannot reuse a call ID seen earlier in the context."""
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[
+                _ai_with_tool_calls(ids=["A"]),
+                _tool_message(tool_call_id="A"),
+                _ai_with_tool_calls(ids=["A"]),
+                _tool_message(tool_call_id="A"),
+            ],
+        )
+
+
+def test_live_guard_rejects_malformed_partial_tool_call() -> None:
+    """A raw partial tool-call structure with no ID is rejected."""
+    partial = AIMessage.model_construct(
+        content="",
+        tool_calls=[{"name": "bash", "args": {}}],
+        invalid_tool_calls=[],
+        type="ai",
+    )
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(messages=[partial])
+
+
+def test_live_guard_rejects_tool_call_without_args() -> None:
+    """An ID and name without ``args`` is a partial structure."""
+    partial = AIMessage.model_construct(
+        content="",
+        tool_calls=[{"name": "bash", "id": "A"}],
+        invalid_tool_calls=[],
+        type="ai",
+    )
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[partial, _tool_message(tool_call_id="A")],
+        )
+
+
+def test_live_guard_rejects_tool_call_with_non_mapping_args() -> None:
+    """A partial JSON-string argument value is not an executable tool call."""
+    partial = AIMessage.model_construct(
+        content="",
+        tool_calls=[{"name": "bash", "args": '{"command":', "id": "A"}],
+        invalid_tool_calls=[],
+        type="ai",
+    )
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[partial, _tool_message(tool_call_id="A")],
+        )
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [None, 0, "", (), {}, object()],
+    ids=["null", "zero", "empty-string", "empty-tuple", "empty-mapping", "non-iterable"],
+)
+def test_live_guard_rejects_unsupported_outer_call_container(*, tool_calls: Any) -> None:
+    """Only the canonical list shape is accepted; every other container is unsettled."""
+    malformed = AIMessage.model_construct(
+        content="",
+        tool_calls=tool_calls,
+        invalid_tool_calls=[],
+        type="ai",
+    )
+    with pytest.raises(UnsettledToolGroupError) as raised:
+        MessageContractReconciler.require_settled_live(messages=[malformed])
+    assert str(raised.value) == "unsettled_tool_group"
+
+
+def test_live_guard_accepts_omitted_and_explicit_empty_tool_calls() -> None:
+    """The canonical missing/default and empty-list forms remain accepted."""
+    MessageContractReconciler.require_settled_live(
+        messages=[
+            AIMessage(content="omitted"),
+            AIMessage(content="explicit", tool_calls=[]),
+        ],
+    )
+
+
+def test_live_guard_rejects_invalid_tool_calls_with_settled_normal_group() -> None:
+    """A settled normal group cannot mask parser-invalid calls in the same response."""
+    invalid = AIMessage(
+        content="",
+        tool_calls=[{"name": "bash", "args": {}, "id": "A"}],
+        invalid_tool_calls=[{"name": "bash", "args": "oops", "id": "bad", "error": "bad args"}],
+    )
+    with pytest.raises(UnsettledToolGroupError):
+        MessageContractReconciler.require_settled_live(
+            messages=[invalid, _tool_message(tool_call_id="A")],
+        )
+
+
+def test_reconcile_healing_placeholder_status_is_error() -> None:
+    """Historical healing is marked ``error`` and never implies live settlement."""
+    result = MessageContractReconciler.reconcile(messages=[_ai_with_tool_calls(ids=["call-x"])])
+    tool_messages = [message for message in result if isinstance(message, ToolMessage)]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].status == "error"

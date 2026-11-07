@@ -291,6 +291,50 @@ async def test_auth_requirement_preserves_original_lazy_error(tmp_path: Path) ->
     assert not session._reporting_operations
 
 
+@pytest.mark.parametrize("tree", [False, True], ids=["single", "tree"])
+async def test_messaging_auth_refusal_preserves_original_error_and_retained_input(
+    tmp_path: Path, tree: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generic pause settlement cannot overwrite a settled pre-provider refusal."""
+    from uuid import uuid4
+    from src.agents.slo_agent.messaging.dao import MessageErrorDAO
+    from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+    from src.agents.slo_agent.history.tree_store import TreeBasedFilesystemSessionHistoryStore
+
+    history_root = tmp_path / "history"
+    assert history_root.resolve().is_relative_to(tmp_path.resolve())
+    store = (
+        TreeBasedFilesystemSessionHistoryStore(root=history_root)
+        if tree
+        else FilesystemSessionHistoryStore(root=history_root)
+    )
+    session = SloAgentSession(
+        session_id=str(uuid4()),
+        workdir=tmp_path,
+        config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4"),
+        history_store=store,
+        enable_history=True,
+    )
+    monkeypatch.delenv(name="SLO_OPENAI_API_KEY", raising=False)
+    emitted: list[object] = []
+    try:
+        await session.start_messaging()
+        with pytest.raises(ValueError, match="No OpenAI credentials found"):
+            async with asyncio.timeout(delay=5):
+                async for event in session.invoke(text="explicit credential refusal probe"):
+                    emitted.append(event)
+        assert emitted == []
+        assert session._agent is None
+        retained = await session.list_retained_messages(principal=session.messaging_owner_principal)
+        assert not isinstance(retained, MessageErrorDAO)
+        assert [item.submission.text for item in retained.items] == ["explicit credential refusal probe"]
+        assert retained.next_after_sequence is None
+        assert session._messaging_paused
+        assert not session._messaging_storage_failed
+    finally:
+        await session.close_messaging()
+
+
 @pytest.mark.parametrize("chunked_usage", [False, True])
 @pytest.mark.parametrize("first_total", [12, 23])
 @pytest.mark.parametrize("refresh_each_event", [False, True])

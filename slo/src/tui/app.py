@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -11,7 +11,8 @@ from time import monotonic
 from typing import Literal, Optional, Protocol, cast
 
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
+from textual.screen import Screen
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.timer import Timer
@@ -31,6 +32,7 @@ from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
 from src.agents.slo_agent.history.inbox.store import SessionInboxStore, SessionInboxClaimReadError
 from src.agents.slo_agent.messaging.client import LocalSessionMessagingClient
 from src.agents.slo_agent.messaging.dao import (
+    Priority,
     MessageAdmissionError,
     LegacyInboxAdmissionDAO,
     MessageIdentityDAO,
@@ -293,6 +295,7 @@ class SloTUI(App):
     ]
 
     BINDINGS = [
+        Binding(key="alt+u", action="send_urgently", description="Send urgently", show=False, priority=True),
         # ``priority=True`` so our interrupt wins over Textual's default
         # ctrl+c quit; ``show=False`` keeps it out of the footer.
         Binding(
@@ -1141,7 +1144,7 @@ class SloTUI(App):
                 session=session,
                 target=session.messaging_target,
                 principal=session.messaging_owner_principal,
-                supported_priorities=frozenset({"normal"}),
+                supported_priorities=frozenset({"normal", "urgent"}),
             )
         )
         self._messaging_session = session
@@ -2368,6 +2371,20 @@ class SloTUI(App):
         self._input.focus()
         self._input.insert(text=event.character or "")
 
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        """Keep framework commands and always expose the terminal-safe urgent action."""
+        yield from super().get_system_commands(screen)
+        yield SystemCommand(
+            title="Send urgently",
+            help="Ctrl+Enter / Alt+U: Send urgently",
+            callback=self.action_send_urgently,
+        )
+
+    async def action_send_urgently(self) -> None:
+        """Request the same stamped component intent as Ctrl+Enter without clearing it."""
+        if self._input is not None and self._input.is_prompt_input_open:
+            self._input.request_submission(priority="urgent")
+
     async def on_prompt_input_component_submitted(self, event: PromptInputComponent.Submitted) -> None:
         """Route a submitted input line as a slash command, new turn, or held prompt.
 
@@ -2395,7 +2412,15 @@ class SloTUI(App):
                     await self._input.handle(command=ClearSubmissionDAO())
                 await self._dispatch_slash_command(line=text)
                 return
-            await self._submit_durable_draft(text=text, intent_revision=event.draft_revision)
+            await self._submit_durable_draft(
+                text=text, intent_revision=event.draft_revision, priority=event.priority
+            )
+            return
+        if text and not text.startswith("/") and event.priority == "urgent":
+            await self._write_lifecycle_notice(
+                content="Urgent input is unsupported in this session; your text was kept.",
+                classes="tool-result",
+            )
             return
         if text and not text.startswith("/") and self._session.has_messaging_store() is True:
             await self._write_lifecycle_notice(
@@ -2749,7 +2774,9 @@ class SloTUI(App):
             return None
         return matches[0]
 
-    async def _submit_durable_draft(self, *, text: str, intent_revision: Optional[int]) -> None:
+    async def _submit_durable_draft(
+        self, *, text: str, intent_revision: Optional[int], priority: Priority = "normal"
+    ) -> None:
         """Capture the exact draft and register it through the component-owned adapter.
 
         Capture and registration run with no await between them, so the ordered
@@ -2758,13 +2785,16 @@ class SloTUI(App):
 
         Args:
             text (str): Normalized ordinary prompt text.
+            priority (Priority): Semantic intent forwarded into the immutable snapshot.
             intent_revision (Optional[int]): Captured Enter revision, or None for
                 non-restorable slash-originated text.
         """
         assert self._input is not None
         prompt: PromptInputComponent = self._input
         try:
-            draft = prompt.build_draft_submission(text=text, intent_revision=intent_revision)
+            draft = prompt.build_draft_submission(
+                text=text, intent_revision=intent_revision, priority=priority
+            )
             if draft is None:
                 return  # Stale intent: the user edited after Enter; nothing cleared or sent.
             await prompt.handle(command=SubmitDraftDAO(draft_submission=draft))
@@ -2793,7 +2823,7 @@ class SloTUI(App):
                 content="Messaging is starting; steering was not sent.", classes="tool-result"
             )
             return
-        await self._submit_durable_draft(text=text, intent_revision=None)
+        await self._submit_durable_draft(text=text, intent_revision=None, priority="normal")
 
     async def _submit_or_queue_prompt(self, *, text: str) -> None:
         """Accept an idle ordinary prompt or replace the one held behind a run.
@@ -3600,11 +3630,12 @@ class SloTUI(App):
             bool: Whether cleanup completed without a reported failure. The commit
                 renders a failure notice after the successor's display clear.
         """
-        if self._messaging_session is not old_session:
-            return True
         closed = True
         try:
-            await self._close_session_messaging(session=old_session)
+            if self._messaging_session is old_session:
+                await self._close_session_messaging(session=old_session)
+            else:
+                await old_session.close_messaging()
         except Exception:
             self._replacement_delivery_safe = False
             closed = False

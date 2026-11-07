@@ -19,8 +19,10 @@ from src.agents.slo_agent.tool_execution.dao import (
     ToolConcurrencyClass,
     ToolExecutionPlanDAO,
     ToolResultDAO,
+    ToolInvocationDAO,
 )
 from src.agents.tools.tool_output import ToolOutputUpdateDAO
+from src.agents.slo_agent.tool_execution.yield_policy import ToolExecutionControl, ToolYieldPolicy
 
 if TYPE_CHECKING:
     from src.agents.slo_agent.plugins.dispatcher import PluginToolInterceptorProtocol
@@ -55,12 +57,21 @@ class ToolExecutor(ABC):
         self._plugin_dispatcher: "PluginToolInterceptorProtocol | None" = plugin_dispatcher
 
     @abstractmethod
-    async def execute(self, *, plan: ToolExecutionPlanDAO) -> list[ToolMessage]:
+    async def execute(
+        self,
+        *,
+        plan: ToolExecutionPlanDAO,
+        control: Optional[ToolExecutionControl] = None,
+        policy: Optional[ToolYieldPolicy] = None,
+    ) -> list[ToolMessage]:
         """Execute one planned tool batch.
 
         Args:
             plan (ToolExecutionPlanDAO): Planned execution for one
                 assistant-emitted batch.
+            control: Optional run control owning phase/checkpoint eligibility.
+            policy: Trusted cancellation policy; default is defer. Invocation and
+                port ownership must join before terminal results are returned.
 
         Returns:
             list[ToolMessage]: Tool results in source order.
@@ -71,6 +82,8 @@ class ToolExecutor(ABC):
         self,
         *,
         envelope: ToolCallEnvelopeDAO,
+        control: Optional[ToolExecutionControl] = None,
+        policy: Optional[ToolYieldPolicy] = None,
     ) -> tuple[int, ToolMessage]:
         """Execute one tool call safely and return its source index plus message.
 
@@ -81,38 +94,114 @@ class ToolExecutor(ABC):
             tuple[int, ToolMessage]: The source-order index and the
                 resulting ``ToolMessage``.
         """
-        call: dict[str, Any] = dict(envelope.call)
-        tool_name: str = str(call["name"])
-        tool_call_id: str = str(call["id"])
-        tool_input: dict[str, Any] = dict(call.get("args") or {})
-
-        tool: BaseTool | None = self._tools_by_name.get(tool_name)
-        if tool is None:
-            return (
-                envelope.source_index,
-                ToolMessage(
-                    tool_call_id=tool_call_id,
-                    name=tool_name,
-                    content=f"Error: tool '{tool_name}' not found.",
-                    status="error",
-                ),
-            )
-
-        before_decision = await self._run_before_tool_call(
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            tool_input=tool_input,
+        prepared = await self._preflight(envelope=envelope, control=control)
+        if isinstance(prepared, ToolMessage):
+            return envelope.source_index, prepared
+        tool, tool_input = prepared
+        if control is not None and not control.before_dispatch(tool_call_id=str(envelope.call["id"])):
+            return envelope.source_index, self._not_started(envelope=envelope)
+        task = asyncio.create_task(
+            coro=self._invoke_message(envelope=envelope, tool=tool, tool_input=tool_input)
         )
-        if before_decision.block:
-            return envelope.source_index, await self._build_terminal_message(
-                tool_call_id=tool_call_id,
+        return await self._join_invocation(
+            envelope=envelope, tool=tool, task=task, control=control, policy=policy
+        )
+
+    async def _join_invocation(
+        self,
+        *,
+        envelope: ToolCallEnvelopeDAO,
+        tool: BaseTool,
+        task: asyncio.Task[ToolMessage],
+        control: Optional[ToolExecutionControl],
+        policy: Optional[ToolYieldPolicy] = None,
+        concurrent: bool = False,
+    ) -> tuple[int, ToolMessage]:
+        """Own an already registered task and all urgency/port joins through shutdown."""
+        tool_call_id = str(envelope.call["id"])
+        urgent: Optional[asyncio.Task[None]] = None
+        try:
+            if control is not None:
+                urgent = asyncio.create_task(coro=control.wait_for_yield())
+                await asyncio.wait(fs={task, urgent}, return_when=asyncio.FIRST_COMPLETED)
+                if not task.done() and control.yield_is_requested():
+                    if policy is not None and policy.mode_for(tool=tool) == "cancel_confirmed":
+                        outcome = await policy.cancel_and_join(
+                            invocation=ToolInvocationDAO(tool=tool, tool_call_id=tool_call_id, task=task),
+                            control=control,
+                        )
+                        assert outcome.result is not None
+                        return envelope.source_index, outcome.result
+                    await control.defer(
+                        tool_call_id=tool_call_id,
+                        reason="concurrent_batch" if concurrent else "noninterruptible_tool",
+                    )
+            return envelope.source_index, await asyncio.shield(task)
+        finally:
+            if urgent is not None and not urgent.done():
+                urgent.cancel()
+            joined = asyncio.gather(task, *([urgent] if urgent is not None else []), return_exceptions=True)
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError:
+                    continue
+            joined.result()
+
+    async def _preflight(
+        self,
+        *,
+        envelope: ToolCallEnvelopeDAO,
+        control: Optional[ToolExecutionControl],
+    ) -> ToolMessage | tuple[BaseTool, dict[str, Any]]:
+        """Join decision-bearing interception without starting actual tool work."""
+        tool_name = str(envelope.call["name"])
+        call_id = str(envelope.call["id"])
+        if control is not None and not control.before_dispatch(tool_call_id=call_id):
+            return self._not_started(envelope=envelope)
+        tool = self._tools_by_name.get(tool_name)
+        if tool is None:
+            return ToolMessage(
+                tool_call_id=call_id,
+                name=tool_name,
+                content=f"Error: tool '{tool_name}' not found.",
+                status="error",
+            )
+        tool_input = dict(envelope.call.get("args") or {})
+        decision = await self._run_before_tool_call(
+            tool_name=tool_name, tool_call_id=call_id, tool_input=tool_input
+        )
+        if control is not None and not control.before_dispatch(tool_call_id=call_id):
+            return self._not_started(envelope=envelope)
+        if decision.block:
+            return await self._build_terminal_message(
+                tool_call_id=call_id,
                 tool_name=tool_name,
-                content=before_decision.reason or "Error: blocked by plugin.",
+                content=decision.reason or "Error: blocked by plugin.",
                 is_error=True,
             )
-        if before_decision.mutated_input is not None:
-            tool_input = dict(before_decision.mutated_input)
+        return tool, dict(decision.mutated_input) if decision.mutated_input is not None else tool_input
 
+    @staticmethod
+    def _not_started(*, envelope: ToolCallEnvelopeDAO) -> ToolMessage:
+        """Pair denied work without running any interceptor or inventing an effect."""
+        return ToolMessage(
+            tool_call_id=str(envelope.call["id"]),
+            name=str(envelope.call["name"]),
+            content="not_started: cooperative yield before dispatch",
+            status="error",
+        )
+
+    async def _invoke_message(
+        self,
+        *,
+        envelope: ToolCallEnvelopeDAO,
+        tool: BaseTool,
+        tool_input: dict[str, Any],
+    ) -> ToolMessage:
+        """Own actual invocation and awaited result plugins in one exact message task."""
+        tool_name = str(envelope.call["name"])
+        tool_call_id = str(envelope.call["id"])
         invocation_tool, invocation_config = self._prepare_output_update_transport(
             tool=tool,
             tool_call_id=tool_call_id,
@@ -122,7 +211,7 @@ class ToolExecutor(ABC):
             result: Any = await invocation_tool.ainvoke(tool_input, config=invocation_config)
         except Exception as exc:  # noqa: BLE001
             log_error(msg=f"ToolExecutor: {tool_name} raised", e=exc, stack_trace=False)
-            return envelope.source_index, await self._build_terminal_message(
+            return await self._build_terminal_message(
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 content=f"Error: {exc}",
@@ -130,7 +219,7 @@ class ToolExecutor(ABC):
             )
 
         if isinstance(result, ToolResultDAO):
-            return envelope.source_index, await self._build_terminal_message(
+            return await self._build_terminal_message(
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 content=self._coerce_tool_content(result=result.content),
@@ -138,7 +227,7 @@ class ToolExecutor(ABC):
                 image_reference=result.image_reference,
             )
 
-        return envelope.source_index, await self._build_terminal_message(
+        return await self._build_terminal_message(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             content=self._coerce_tool_content(result=result),
@@ -204,7 +293,7 @@ class ToolExecutor(ABC):
             if patch.content is not None:
                 terminal_content = patch.content
             if patch.is_error is not None:
-                final_error = patch.is_error
+                final_error = is_error or patch.is_error
         return ToolMessage(
             tool_call_id=tool_call_id,
             name=tool_name,
@@ -275,18 +364,27 @@ class ToolExecutor(ABC):
 class SequentialToolExecutor(ToolExecutor):
     """Execute every call in source order."""
 
-    async def execute(self, *, plan: ToolExecutionPlanDAO) -> list[ToolMessage]:
+    async def execute(
+        self,
+        *,
+        plan: ToolExecutionPlanDAO,
+        control: Optional[ToolExecutionControl] = None,
+        policy: Optional[ToolYieldPolicy] = None,
+    ) -> list[ToolMessage]:
         """Execute the planned batch sequentially.
 
         Args:
             plan (ToolExecutionPlanDAO): Planned tool batch.
+            control: Run authority; checkpoints deny unstarted calls on newer urgency.
+            policy: Trusted sequential cancellation capability. Default defer retains
+                actual invocation and port joins before results or failure escape.
 
         Returns:
             list[ToolMessage]: Tool results in source order.
         """
         tool_messages: list[ToolMessage] = []
         for envelope in plan.calls:
-            _, tool_message = await self._invoke_one(envelope=envelope)
+            _, tool_message = await self._invoke_one(envelope=envelope, control=control, policy=policy)
             tool_messages.append(tool_message)
         return tool_messages
 
@@ -294,11 +392,21 @@ class SequentialToolExecutor(ToolExecutor):
 class ConcurrentToolExecutor(ToolExecutor):
     """Execute an all-read-only batch concurrently and reorder results."""
 
-    async def execute(self, *, plan: ToolExecutionPlanDAO) -> list[ToolMessage]:
+    async def execute(
+        self,
+        *,
+        plan: ToolExecutionPlanDAO,
+        control: Optional[ToolExecutionControl] = None,
+        policy: Optional[ToolYieldPolicy] = None,
+    ) -> list[ToolMessage]:
         """Execute the planned batch concurrently.
 
         Args:
             plan (ToolExecutionPlanDAO): Planned all-read-only tool batch.
+            control: Run-scoped dispatch authority; newer urgency denies unstarted
+                calls but never cancels an already registered concurrent batch.
+            policy: Retained sequential cancellation capability; concurrent work
+                always defers and joins all siblings before returning or raising.
 
         Returns:
             list[ToolMessage]: Tool results in source order.
@@ -306,18 +414,114 @@ class ConcurrentToolExecutor(ToolExecutor):
         Raises:
             ValueError: If ``plan`` is not safe for concurrent execution.
         """
+        self._require_concurrent_plan(plan=plan)
+        prepared = await self._preflight_batch(plan=plan, control=control)
+        return await self._register_and_join_batch(plan=plan, prepared=prepared, control=control)
+
+    @staticmethod
+    def _require_concurrent_plan(*, plan: ToolExecutionPlanDAO) -> None:
+        """Reject unsafe batches before asynchronous preflight or any effect."""
         if not plan.run_concurrently:
             raise ValueError("ConcurrentToolExecutor requires plan.run_concurrently=True")
+        if any(call.concurrency_class is not ToolConcurrencyClass.READ_ONLY for call in plan.calls):
+            raise ValueError("ConcurrentToolExecutor requires all calls to be READ_ONLY")
 
-        for envelope in plan.calls:
-            if envelope.concurrency_class is not ToolConcurrencyClass.READ_ONLY:
-                raise ValueError(
-                    "ConcurrentToolExecutor requires all calls to be READ_ONLY",
+    async def _preflight_batch(
+        self, *, plan: ToolExecutionPlanDAO, control: Optional[ToolExecutionControl]
+    ) -> list[ToolMessage | tuple[BaseTool, dict[str, Any]]]:
+        """Join every interceptor before validating results or registering work."""
+        preflight = asyncio.gather(
+            *[self._preflight(envelope=envelope, control=control) for envelope in plan.calls],
+            return_exceptions=True,
+        )
+        await self._join_batch(joined=preflight)
+        prepared: list[ToolMessage | tuple[BaseTool, dict[str, Any]]] = []
+        for result in preflight.result():
+            if isinstance(result, BaseException):
+                raise result
+            prepared.append(result)
+        return prepared
+
+    async def _register_and_join_batch(
+        self,
+        *,
+        plan: ToolExecutionPlanDAO,
+        prepared: list[ToolMessage | tuple[BaseTool, dict[str, Any]]],
+        control: Optional[ToolExecutionControl],
+    ) -> list[ToolMessage]:
+        """Register the eligible whole batch without awaits, then join source-ordered truth."""
+        tasks, completed_results = self._register_batch(plan=plan, prepared=prepared, control=control)
+        joined = asyncio.gather(*tasks, return_exceptions=True)
+        await self._join_batch(joined=joined)
+        return self._source_ordered_results(joined=joined.result(), completed_results=completed_results)
+
+    def _register_batch(
+        self,
+        *,
+        plan: ToolExecutionPlanDAO,
+        prepared: list[ToolMessage | tuple[BaseTool, dict[str, Any]]],
+        control: Optional[ToolExecutionControl],
+    ) -> tuple[list[asyncio.Task[tuple[int, ToolMessage]]], list[tuple[int, ToolMessage]]]:
+        """Synchronously register all eligible invocations before yielding to the owner loop."""
+        tasks: list[asyncio.Task[tuple[int, ToolMessage]]] = []
+        completed_results: list[tuple[int, ToolMessage]] = []
+        # No await from this final eligibility check through ALL task registrations.
+        for envelope, result in zip(plan.calls, prepared):
+            if control is not None and not control.before_dispatch(tool_call_id=str(envelope.call["id"])):
+                completed_results.append((envelope.source_index, self._not_started(envelope=envelope)))
+                continue
+            if isinstance(result, ToolMessage):
+                completed_results.append((envelope.source_index, result))
+                continue
+            assert not isinstance(result, BaseException)
+            tool, tool_input = result
+            tasks.append(
+                self._register_invocation(
+                    envelope=envelope, tool=tool, tool_input=tool_input, control=control
                 )
+            )
+        return tasks, completed_results
 
-        tasks: list[asyncio.Task[tuple[int, ToolMessage]]] = [
-            asyncio.create_task(self._invoke_one(envelope=envelope)) for envelope in plan.calls
-        ]
-        completed_results: list[tuple[int, ToolMessage]] = await asyncio.gather(*tasks)
+    def _register_invocation(
+        self,
+        *,
+        envelope: ToolCallEnvelopeDAO,
+        tool: BaseTool,
+        tool_input: dict[str, Any],
+        control: Optional[ToolExecutionControl],
+    ) -> asyncio.Task[tuple[int, ToolMessage]]:
+        """Retain the exact message task inside its source-indexed join owner, without an await gap."""
+        invocation: asyncio.Task[ToolMessage] = asyncio.create_task(
+            coro=self._invoke_message(envelope=envelope, tool=tool, tool_input=tool_input)
+        )
+        return asyncio.create_task(
+            coro=self._join_invocation(
+                envelope=envelope, tool=tool, task=invocation, control=control, concurrent=True
+            )
+        )
+
+    @staticmethod
+    def _source_ordered_results(
+        *,
+        joined: list[tuple[int, ToolMessage] | BaseException],
+        completed_results: list[tuple[int, ToolMessage]],
+    ) -> list[ToolMessage]:
+        """Propagate joined failure or return exact completed truth in original call order."""
+        for completed in joined:
+            if isinstance(completed, BaseException):
+                raise completed
+            completed_results.append(completed)
         completed_results.sort(key=lambda item: item[0])
         return [tool_message for _, tool_message in completed_results]
+
+    @staticmethod
+    async def _join_batch(*, joined: asyncio.Future[Any]) -> None:
+        """Retain all sibling/preflight ownership on errors and repeated cancellation."""
+        try:
+            await asyncio.shield(joined)
+        finally:
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError:
+                    continue

@@ -44,7 +44,21 @@ async def run_blocking_tool_call(
     """
     semaphore: asyncio.Semaphore = _semaphore_for_current_loop()
     async with semaphore:
-        return await asyncio.to_thread(func, **kwargs)
+        leaf: asyncio.Task[T] = asyncio.create_task(coro=asyncio.to_thread(func, **kwargs))
+        cancelled = False
+        while not leaf.done():
+            try:
+                await asyncio.shield(leaf)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            # Retrieve real leaf failure before propagating wrapper cancellation.
+            if not leaf.cancelled():
+                leaf.exception()
+            raise asyncio.CancelledError()
+        return leaf.result()
 
 
 def _semaphore_for_current_loop() -> asyncio.Semaphore:

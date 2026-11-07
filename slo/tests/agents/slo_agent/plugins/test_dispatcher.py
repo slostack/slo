@@ -572,3 +572,34 @@ class TestLiveStatusMap:
         dispatcher.set_status(key="ci-watch:status", text="")
 
         assert dispatcher.status_map() == {}
+
+
+async def test_session_observer_failure_retires_dispatcher_not_interceptors() -> None:
+    """Mailbox emission surfaces isolated observer failure without disabling decisions."""
+    from src.agents.slo_agent.sessions.presentation import PresentationMailbox
+
+    failed = asyncio.Event()
+    calls: list[str] = []
+
+    async def observer(event: AgentStreamEventDAO) -> None:
+        """Fail one optional callback after signalling exact execution."""
+        calls.append("observer")
+        failed.set()
+        raise RuntimeError("private observer detail")
+
+    registration = _make_registration(plugin_id="owner", handlers={"text_delta": [observer]})
+    dispatcher = _build_dispatcher(registrations=[registration])
+    mailbox = PresentationMailbox(handler=dispatcher.emit_for_session)
+    try:
+        mailbox.publish(event=AgentStreamEventDAO(kind="text_delta", content="one"))
+        await failed.wait()
+        await asyncio.sleep(delay=0)
+        mailbox.publish(event=AgentStreamEventDAO(kind="text_delta", content="two"))
+        await asyncio.sleep(delay=0)
+        assert calls == ["observer"]
+        assert mailbox.diagnostic == "presentation_replay_gap"
+        decision = await dispatcher.run_before_tool_call(tool_name="read", tool_call_id="call", tool_input={})
+        assert not decision.block
+        assert registration.health.handler_failures == 1
+    finally:
+        await mailbox.join()

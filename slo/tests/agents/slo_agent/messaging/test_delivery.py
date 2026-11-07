@@ -2820,7 +2820,9 @@ async def test_history_uncertainty_prevents_next_provider_step(tmp_path: Path) -
         assert session._message_store is not None
         identities: tuple[MessageIdentityDAO, ...] = await session._message_store.read_identities()
         assert identities[0].receipt.state == "applied"
-        assert identities[1].receipt.state == "applying"
+        # Marked opening persistence now detects the corrupt raw history before
+        # the next boundary can claim input (rather than only at application).
+        assert identities[1].receipt.state == "accepted"
     finally:
         model.release.set()
         await client.close()

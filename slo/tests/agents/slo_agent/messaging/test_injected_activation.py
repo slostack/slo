@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.messaging.client import LocalSessionMessagingClient
@@ -48,6 +49,154 @@ def _build_injected_session(
         history_store=FilesystemSessionHistoryStore(root=history_root),
         enable_history=True,
     )
+
+
+async def test_preactivation_subscriber_keeps_worker_through_idle_activation_and_close(
+    tmp_path: Path,
+) -> None:
+    """Activation changes publication, not ownership of an already held legacy callback."""
+    session = _build_injected_session(tmp_path=tmp_path, model=FauxChatModel(responses=[]))
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    callbacks: list[tuple[str, asyncio.Task[object] | None]] = []
+    delivered = asyncio.Event()
+
+    async def observe(event: AgentStreamEventDAO) -> None:
+        """Hold the first callback while later activated publications queue behind it."""
+        callbacks.append((event.content or "", asyncio.current_task()))
+        if event.content == "legacy":
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+        else:
+            delivered.set()
+
+    session.subscribe(handler=observe)
+
+    async def relay_legacy() -> None:
+        """Await the public relay through a coroutine owned by this test."""
+        await session.event_relay(AgentStreamEventDAO(kind="text_delta", content="legacy"))
+
+    legacy: asyncio.Task[None] = asyncio.create_task(coro=relay_legacy())
+    closing: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(delay=5):
+            await entered.wait()
+            assert not legacy.done()
+            await session.start_messaging()
+            assert session.is_messaging_ready and not session.is_running
+            await session.event_relay(AgentStreamEventDAO(kind="text_delta", content="messaging"))
+            assert not legacy.done() and not delivered.is_set()
+            release.set()
+            await legacy
+            await delivered.wait()
+            assert [content for content, _ in callbacks] == ["legacy", "messaging"]
+            assert callbacks[0][1] is callbacks[1][1]
+            assert not cancelled.is_set()
+            store = FilesystemSessionHistoryStore(root=tmp_path / "history")
+            await store.ensure_session(session_id=session.session_id, workdir=tmp_path, model_name=None)
+            await session.event_relay(AgentStreamEventDAO(kind="sub_agent_spawned", sub_agent_id="child"))
+            history = await store.load_events(session_id=session.session_id)
+            assert sum(event.kind == "sub_agent_spawned" for event in history) == 1
+            closing = asyncio.create_task(coro=session.close_messaging())
+            await closing
+            assert not session.is_running
+    finally:
+        release.set()
+        await asyncio.gather(
+            *(task for task in (legacy, closing) if task is not None), return_exceptions=True
+        )
+        await session.join_unsubscribed(handler=observe)
+        await session.close_messaging()
+
+
+async def test_legacy_relay_cancellation_joins_suppressing_subscriber(tmp_path: Path) -> None:
+    """A cancelled legacy caller cannot leave its callback running after delivery exits."""
+    session = _build_injected_session(tmp_path=tmp_path, model=FauxChatModel(responses=[]))
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def observe(event: AgentStreamEventDAO) -> None:
+        """Retain callback work after the first cancellation until explicitly released."""
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+
+    session.subscribe(handler=observe)
+
+    async def relay_legacy() -> None:
+        """Await the public relay through a coroutine owned by this test."""
+        await session.event_relay(AgentStreamEventDAO(kind="text_delta", content="legacy"))
+
+    delivery: asyncio.Task[None] = asyncio.create_task(coro=relay_legacy())
+    try:
+        async with asyncio.timeout(delay=2):
+            await entered.wait()
+            delivery.cancel()
+            await cancelled.wait()
+            delivery.cancel()
+            await asyncio.sleep(delay=0)
+            assert not delivery.done()
+            release.set()
+            result = await asyncio.gather(delivery, return_exceptions=True)
+            assert isinstance(result[0], asyncio.CancelledError)
+            assert not session.is_running
+    finally:
+        release.set()
+        await asyncio.gather(delivery, return_exceptions=True)
+        await session.join_unsubscribed(handler=observe)
+        await session.close_messaging()
+
+
+async def test_legacy_callback_cancellation_stops_relay_after_callback_termination(
+    tmp_path: Path,
+) -> None:
+    """Callback-origin cancellation reaches the legacy caller before later observers."""
+    session: SloAgentSession = _build_injected_session(tmp_path=tmp_path, model=FauxChatModel(responses=[]))
+    entered, release, terminated = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    recorded: list[AgentStreamEventDAO] = []
+
+    async def cancel_callback(event: AgentStreamEventDAO) -> None:
+        """Raise cancellation independently of any caller or owner cancellation."""
+        entered.set()
+        try:
+            await release.wait()
+            raise asyncio.CancelledError()
+        finally:
+            terminated.set()
+
+    async def record_callback(event: AgentStreamEventDAO) -> None:
+        """Record forbidden delivery to the later legacy subscriber."""
+        recorded.append(event)
+
+    session.subscribe(handler=cancel_callback)
+    session.subscribe(handler=record_callback)
+
+    async def relay_legacy() -> None:
+        """Await the public relay through a coroutine owned by this test."""
+        await session.event_relay(AgentStreamEventDAO(kind="text_delta", content="legacy"))
+
+    delivery: asyncio.Task[None] = asyncio.create_task(coro=relay_legacy())
+    try:
+        async with asyncio.timeout(delay=2):
+            await entered.wait()
+            assert not delivery.done()
+            assert not terminated.is_set()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await delivery
+            assert terminated.is_set()
+            assert recorded == []
+    finally:
+        release.set()
+        await asyncio.gather(delivery, return_exceptions=True)
+        await session.join_unsubscribed(handler=cancel_callback)
+        await session.join_unsubscribed(handler=record_callback)
+        await session.close_messaging()
 
 
 async def test_injected_agent_binds_session_source_and_delivers_once(tmp_path: Path) -> None:

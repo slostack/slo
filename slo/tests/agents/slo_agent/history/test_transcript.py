@@ -494,3 +494,40 @@ def test_active_compaction_summary_is_visible_without_fabricated_application() -
     entries = ReplayEntryProjector.build_entries(events=[summary])
     assert entries == [TranscriptEntryDAO(kind="note", content="⊛ verified summary")]
     assert all(entry.application is None for entry in entries)
+
+
+def test_late_thinking_end_repairs_exact_attempt_iteration_block() -> None:
+    """Reused provider block IDs cannot repair another attempt's open thinking."""
+    events = []
+    for turn_id, iteration, text in [("attempt-a", 0, "first"), ("attempt-b", 1, "second")]:
+        events.extend(
+            [
+                _event(
+                    kind="assistant_delta",
+                    turn_id=turn_id,
+                    iteration=iteration,
+                    payload=SessionHistoryEventPayloadDAO(
+                        delta_kind="thinking_delta", block_id="shared", delta=text
+                    ),
+                ),
+                _event(
+                    kind="tool_call",
+                    turn_id=turn_id,
+                    iteration=iteration,
+                    payload=SessionHistoryEventPayloadDAO(tool_call_id=turn_id, tool_name="echo"),
+                ),
+            ]
+        )
+    events.append(
+        _event(
+            kind="assistant_delta",
+            turn_id="attempt-a",
+            iteration=0,
+            payload=SessionHistoryEventPayloadDAO(
+                delta_kind="thinking_end", block_id="shared", content="first repaired"
+            ),
+        )
+    )
+    entries = ReplayEntryProjector.build_entries(events=events)
+    assistants = [entry for entry in entries if entry.kind == "assistant"]
+    assert [entry.reasoning for entry in assistants] == ["first repaired", "second"]

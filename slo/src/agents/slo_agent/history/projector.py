@@ -17,6 +17,8 @@ Incomplete-turn policy:
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING
 from uuid import UUID, uuid5
 
@@ -31,10 +33,16 @@ from src.agents.providers.message_extension import PROVIDER_MESSAGE_EXTENSION_KE
 
 if TYPE_CHECKING:
     from src.agents.slo_agent.messaging.dao import MessageApplicationMetadataDAO
-from src.agents.slo_agent.history.dao import SessionHistoryEventDAO, SessionHistoryEventPayloadDAO
+from src.agents.slo_agent.history.dao import (
+    CooperativeHistoryEventValidator,
+    SessionHistoryEventDAO,
+    SessionHistoryEventPayloadDAO,
+)
 from src.agents.slo_agent.history.message_contract_reconciler import (
     MessageContractReconciler,
+    UnsettledToolGroupError,
 )
+from src.agents.slo_agent.tool_execution.dao import ToolGroupMetadataDAO
 
 __all__ = ["SessionHistoryProjector"]
 
@@ -47,6 +55,191 @@ _SELF_TERMINAL_KINDS: frozenset[str] = frozenset({"workflow_update"})
 A ``workflow_update`` event (spec 57.a.4) is persisted between runs as a
 one-event turn with a fresh ``turn_id`` and no ``run_started``/``run_completed``
 envelope, so its own presence marks the turn complete."""
+
+
+@dataclass
+class _RawToolGroupState:
+    """Accumulate one marked group across raw pages before any context selection.
+
+    WHAT: Owns identity, ordered opening membership, result membership and the
+        affirmative no-start marker for exactly one ``tool_group_v1`` group.
+    WHO: ``SessionHistoryProjector.validate_tool_groups`` collects and settles it.
+    WHEN: Raw startup/context validation, before completed-turn, exclusion or
+        compaction selection and before any historical healing.
+    """
+
+    group: ToolGroupMetadataDAO
+    opening_call_ids: set[str] = field(default_factory=set)
+    opening_event_ids: set[str] = field(default_factory=set)
+    opening_signature: Optional[str] = None
+    result_call_ids: set[str] = field(default_factory=set)
+    marker_event_id: Optional[str] = None
+    first_opening_index: Optional[int] = None
+    anchor_opening_index: Optional[int] = None
+    marker_index: Optional[int] = None
+    first_index: Optional[int] = None
+    last_index: Optional[int] = None
+
+    def observe(self, *, index: int) -> None:
+        """Record this raw record's position for whole-group boundary pinning.
+
+        Args:
+            index (int): Position of the record in the append-ordered raw list.
+        """
+        if self.first_index is None:
+            self.first_index = index
+        self.last_index = index
+
+    def require_same_identity(self, *, group: ToolGroupMetadataDAO) -> None:
+        """Require every record to describe the same attempt, iteration and group.
+
+        Args:
+            group (ToolGroupMetadataDAO): Metadata parsed from the next record.
+
+        Raises:
+            UnsettledToolGroupError: The record conflicts with this group identity.
+        """
+        expected: tuple[object, ...] = (
+            self.group.attempt_turn_id,
+            self.group.iteration,
+            self.group.tool_call_ids,
+            self.group.opened_at,
+        )
+        actual: tuple[object, ...] = (
+            group.attempt_turn_id,
+            group.iteration,
+            group.tool_call_ids,
+            group.opened_at,
+        )
+        if actual != expected:
+            raise UnsettledToolGroupError()
+
+    def add_opening(self, *, event: SessionHistoryEventDAO, index: int) -> None:
+        """Add one complete opening and require array/content agreement.
+
+        Args:
+            event (SessionHistoryEventDAO): Validated marked ``tool_call``.
+            index (int): Raw event position used to require marker-after-opening.
+
+        Raises:
+            UnsettledToolGroupError: The call is duplicated or the group's
+                ordered call array/content disagrees with the first opening.
+        """
+        self.observe(index=index)
+        self.require_same_identity(
+            group=ToolGroupMetadataDAO.model_validate_json(
+                json.dumps(obj=event.payload.metadata["tool_group_v1"], allow_nan=False)
+            )
+        )
+        call_id: Optional[str] = event.payload.tool_call_id
+        if call_id is None or call_id in self.opening_call_ids:
+            raise UnsettledToolGroupError()
+        signature: str = json.dumps(
+            obj={
+                "calls": event.payload.tool_calls,
+                "content": event.payload.content,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if self.opening_signature is None:
+            self.opening_signature = signature
+            self.first_opening_index = index
+        elif signature != self.opening_signature:
+            raise UnsettledToolGroupError()
+        if call_id == self.group.tool_call_ids[0] and self.anchor_opening_index is None:
+            self.anchor_opening_index = index
+        self.opening_call_ids.add(call_id)
+        self.opening_event_ids.add(event.event_id)
+
+    def add_result(self, *, event: SessionHistoryEventDAO, index: int) -> None:
+        """Add one result and require its own opening plus the projection anchor.
+
+        Only the first-call (anchor) opening projects the group's ``AIMessage``.
+        A sibling result admitted before that anchor would be projected first,
+        dropped as an orphan and historically healed, so no actual result may be
+        admitted until the complete anchor opening has been observed.
+
+        Args:
+            event (SessionHistoryEventDAO): Validated marked ``tool_result``.
+            index (int): Raw event position for whole-group boundary pinning.
+
+        Raises:
+            UnsettledToolGroupError: The call is undeclared, not opened earlier,
+                the first-call projection anchor has not been observed, or the
+                call is already answered.
+        """
+        self.observe(index=index)
+        self.require_same_identity(
+            group=ToolGroupMetadataDAO.model_validate_json(
+                json.dumps(obj=event.payload.metadata["tool_group_v1"], allow_nan=False)
+            )
+        )
+        call_id: Optional[str] = event.payload.tool_call_id
+        if (
+            call_id not in self.group.tool_call_ids
+            or call_id not in self.opening_call_ids
+            or self.anchor_opening_index is None
+            or call_id in self.result_call_ids
+        ):
+            raise UnsettledToolGroupError()
+        self.result_call_ids.add(call_id)
+
+    def add_marker(self, *, event: SessionHistoryEventDAO, index: int) -> None:
+        """Record the single affirmative no-start marker for this group.
+
+        Args:
+            event (SessionHistoryEventDAO): Validated no-start ``run_retrying``.
+            index (int): Raw event position used to require marker-after-opening.
+
+        Raises:
+            UnsettledToolGroupError: More than one marker exists for the group.
+        """
+        self.require_same_identity(
+            group=ToolGroupMetadataDAO.model_validate_json(
+                json.dumps(obj=event.payload.metadata["tool_group_v1"], allow_nan=False)
+            )
+        )
+        if self.marker_event_id is not None:
+            raise UnsettledToolGroupError()
+        self.observe(index=index)
+        self.marker_event_id = event.event_id
+        self.marker_index = index
+
+    def require_settled(self) -> None:
+        """Require either a complete result set or a proven no-start disposition.
+
+        Raises:
+            UnsettledToolGroupError: Members are missing, a marker coexists with
+                an actual result, or no complete opening anchors the disposition.
+        """
+        declared: set[str] = set(self.group.tool_call_ids)
+        anchor_call_id: str = self.group.tool_call_ids[0]
+        if self.marker_event_id is not None:
+            if (
+                not self.opening_call_ids
+                or anchor_call_id not in self.opening_call_ids
+                or self.result_call_ids
+            ):
+                raise UnsettledToolGroupError()
+            if (
+                self.marker_index is None
+                or self.anchor_opening_index is None
+                or self.marker_index <= self.anchor_opening_index
+            ):
+                raise UnsettledToolGroupError()
+            return
+        if self.opening_call_ids != declared or self.result_call_ids != declared:
+            raise UnsettledToolGroupError()
+
+    def excluded_event_ids(self) -> set[str]:
+        """Return the opening/private-anchor events of a proven no-start group.
+
+        Returns:
+            set[str]: Opening event ids to omit, or an empty set for a settled group.
+        """
+        return set(self.opening_event_ids) if self.marker_event_id is not None else set()
 
 
 class SessionHistoryProjector:
@@ -90,7 +283,9 @@ class SessionHistoryProjector:
         prepends its own. Tool-call ``AIMessage``s preserve their
         ``tool_calls`` arrays so the model sees the same shape it
         originally emitted, and ``ToolMessage`` results carry their
-        ``tool_call_id``/``name`` envelope intact.
+        ``tool_call_id``/``name`` envelope intact. Marked results also carry
+        the durable ``tool_result_status``; legacy unmarked results keep
+        LangChain's default status.
 
         Args:
             events (list[SessionHistoryEventDAO]): Canonical events in
@@ -133,6 +328,147 @@ class SessionHistoryProjector:
         ]
 
     @classmethod
+    def validate_tool_groups(cls, *, events: list[SessionHistoryEventDAO]) -> list[SessionHistoryEventDAO]:
+        """Validate every raw marked tool group before context selection or healing.
+
+        WHAT: Reconstructs each ``tool_group_v1`` group from raw append-ordered
+            events, requires deterministic identities, one complete ordered
+            opening array with agreeing arguments/content, exactly one actual
+            result per declared call (or one affirmative no-start marker after a
+            full opening), and rejects duplicate/conflicting/unknown-version
+            evidence. Proven no-start openings/private anchors are omitted.
+        WHO: Startup/readiness callers and the shared context slice before
+            completed-turn, exclusion or compaction selection.
+        WHEN: On every raw history read; never after healing or message repair.
+        NOT: It never fabricates a ``ToolMessage``, infers a no-start from
+            absence, heals an unresolved group or mutates the durable log.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Raw events in append order,
+                possibly assembled from several bounded evidence pages.
+
+        Returns:
+            list[SessionHistoryEventDAO]: The same events minus the openings and
+                private anchors of groups with a proven affirmative no-start.
+
+        Raises:
+            UnsettledToolGroupError: Any marked group is malformed, conflicting,
+                duplicated, unknown-versioned or unresolved.
+        """
+        groups: dict[str, _RawToolGroupState] = cls._validated_tool_group_states(events=events)
+        excluded_event_ids: set[str] = set()
+        for state in groups.values():
+            excluded_event_ids.update(state.excluded_event_ids())
+        return [event for event in events if event.event_id not in excluded_event_ids]
+
+    @classmethod
+    def compaction_retain_sequence(
+        cls, *, events: list[SessionHistoryEventDAO], retain_from_sequence: int
+    ) -> int:
+        """Return a retain boundary that never slices a marked tool group.
+
+        WHAT: Validates every raw marked group, then lowers a requested cut that
+            falls inside a group to that group's first event. A group entirely
+            before the cut is still removed whole; a group entirely after it is
+            retained whole.
+        WHO: The history store's compaction select/write/remove paths.
+        WHEN: Before a compaction candidate is built or activated.
+        NOT: It never heals, infers disposition or skips raw validation.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Raw events in append order.
+            retain_from_sequence (int): Requested first retained sequence.
+
+        Returns:
+            int: Boundary at or before the requested sequence; no group straddles it.
+
+        Raises:
+            UnsettledToolGroupError: Any marked group is unresolved or malformed.
+        """
+        if not any(cls._carries_cooperative_marker(event=event) for event in events):
+            return retain_from_sequence
+        boundary: int = retain_from_sequence
+        for state in cls._validated_tool_group_states(events=events).values():
+            if state.first_index is None or state.last_index is None:
+                continue
+            start_sequence: int = events[state.first_index].sequence
+            end_sequence: int = events[state.last_index].sequence
+            if start_sequence < boundary <= end_sequence:
+                boundary = start_sequence
+        return boundary
+
+    @classmethod
+    def _validated_tool_group_states(
+        cls, *, events: list[SessionHistoryEventDAO]
+    ) -> dict[str, _RawToolGroupState]:
+        """Reconstruct and settle every raw marked group, raising when unresolved.
+
+        Args:
+            events (list[SessionHistoryEventDAO]): Raw events in append order.
+
+        Returns:
+            dict[str, _RawToolGroupState]: Settled groups keyed by canonical id.
+
+        Raises:
+            UnsettledToolGroupError: A record conflicts or a group is unresolved.
+        """
+        groups: dict[str, _RawToolGroupState] = {}
+        for index, event in enumerate(events):
+            if not cls._carries_cooperative_marker(event=event):
+                continue
+            try:
+                CooperativeHistoryEventValidator.validate(event=event)
+                group: Optional[ToolGroupMetadataDAO] = cls._tool_group_metadata(event=event)
+            except Exception as error:
+                raise UnsettledToolGroupError() from error
+            if group is None:
+                continue
+            state: _RawToolGroupState = groups.setdefault(group.group_id, _RawToolGroupState(group=group))
+            if event.kind == "tool_call":
+                state.add_opening(event=event, index=index)
+                continue
+            if event.kind == "tool_result":
+                state.add_result(event=event, index=index)
+                continue
+            if event.kind == "run_retrying":
+                state.add_marker(event=event, index=index)
+                continue
+            raise UnsettledToolGroupError()
+        for state in groups.values():
+            state.require_settled()
+        return groups
+
+    @staticmethod
+    def _carries_cooperative_marker(*, event: SessionHistoryEventDAO) -> bool:
+        """Return whether a raw event claims either cooperative metadata marker.
+
+        Args:
+            event (SessionHistoryEventDAO): Raw event to inspect.
+
+        Returns:
+            bool: True when cooperative group/diagnostic metadata is present.
+        """
+        metadata: dict[str, Any] = event.payload.metadata
+        return "tool_group_v1" in metadata or "cooperative_yield_v1" in metadata
+
+    @staticmethod
+    def _tool_group_metadata(*, event: SessionHistoryEventDAO) -> Optional[ToolGroupMetadataDAO]:
+        """Parse the event's tool-group metadata, or return None for diagnostics.
+
+        Args:
+            event (SessionHistoryEventDAO): Raw event already validated by the
+                cooperative admission owner.
+
+        Returns:
+            Optional[ToolGroupMetadataDAO]: Parsed group metadata, or None when
+                the record is a cooperative diagnostic rather than a group.
+        """
+        raw_group: object = event.payload.metadata.get("tool_group_v1")
+        if raw_group is None:
+            return None
+        return ToolGroupMetadataDAO.model_validate_json(json.dumps(obj=raw_group, allow_nan=False))
+
+    @classmethod
     def _context_event_slice(
         cls,
         *,
@@ -148,15 +484,27 @@ class SessionHistoryProjector:
         Returns:
             list[SessionHistoryEventDAO]: Events before message conversion.
         """
-        completed_turn_ids: set[str] = cls._completed_turn_ids(events=events)
+        validated_events: list[SessionHistoryEventDAO] = cls.validate_tool_groups(events=events)
+        interrupted = {
+            (event.turn_id, event.iteration)
+            for event in validated_events
+            if isinstance(event.payload.metadata.get("cooperative_yield_v1"), dict)
+            and event.payload.metadata["cooperative_yield_v1"].get("disposition") == "interrupted"
+        }
+        validated_events = [
+            event
+            for event in validated_events
+            if not (event.kind == "assistant_message" and (event.turn_id, event.iteration) in interrupted)
+        ]
+        completed_turn_ids: set[str] = cls._completed_turn_ids(events=validated_events)
         completed_turn_ids.difference_update(excluded_turn_ids or set())
         summary_event: Optional[SessionHistoryEventDAO] = cls._find_last_compaction_summary_event(
-            events=events
+            events=validated_events
         )
         if summary_event is None:
-            return cls._completed_turn_events(events=events, completed_turn_ids=completed_turn_ids)
+            return cls._completed_turn_events(events=validated_events, completed_turn_ids=completed_turn_ids)
         return [summary_event] + cls._retained_tail_events(
-            events=events,
+            events=validated_events,
             completed_turn_ids=completed_turn_ids,
             keep_from_sequence=cls._resolve_retain_boundary_sequence(
                 summary_event=summary_event,
@@ -267,7 +615,7 @@ class SessionHistoryProjector:
         if isinstance(first_kept_entry_id, str) and first_kept_entry_id:
             for event in events:
                 if event.event_id == first_kept_entry_id:
-                    return event.sequence
+                    return cls.compaction_retain_sequence(events=events, retain_from_sequence=event.sequence)
         return summary_event.sequence
 
     # ---- Private helpers --------------------------------------------------
@@ -411,10 +759,17 @@ class SessionHistoryProjector:
                 additional_kwargs=cls._provider_extension_kwargs(payload=payload),
             )
         if event.kind == "tool_result":
+            group: Optional[ToolGroupMetadataDAO] = cls._tool_group_metadata(event=event)
+            status_kwargs: dict[str, str] = (
+                {}
+                if group is None or group.tool_result_status is None
+                else {"status": group.tool_result_status}
+            )
             return ToolMessage(
                 content=payload.tool_output or "",
                 name=payload.tool_name or "",
                 tool_call_id=payload.tool_call_id or "",
+                **status_kwargs,
             )
         if event.kind == "assistant_delta":
             return None

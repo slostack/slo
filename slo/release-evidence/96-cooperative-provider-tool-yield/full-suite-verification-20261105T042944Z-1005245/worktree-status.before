@@ -1,0 +1,88 @@
+ M slo/SLO.md
+ M slo/src/agents/providers/model_pool.py
+ M slo/src/agents/slo_agent/agent.py
+ M slo/src/agents/slo_agent/compaction/compacter.py
+ M slo/src/agents/slo_agent/events/runtime.py
+ M slo/src/agents/slo_agent/events/stream.py
+ M slo/src/agents/slo_agent/graph/service.py
+ M slo/src/agents/slo_agent/history/dao.py
+ M slo/src/agents/slo_agent/history/filesystem_store.py
+ M slo/src/agents/slo_agent/history/message_contract_reconciler.py
+ M slo/src/agents/slo_agent/history/projector.py
+ M slo/src/agents/slo_agent/history/store_protocol.py
+ M slo/src/agents/slo_agent/history/transcript.py
+ M slo/src/agents/slo_agent/history/tree_store.py
+ M slo/src/agents/slo_agent/plugins/dispatcher.py
+ M slo/src/agents/slo_agent/sessions/service.py
+ M slo/src/agents/slo_agent/tool_execution/dao.py
+ M slo/src/agents/slo_agent/tool_execution/executors.py
+ M slo/src/agents/slo_agent/turn_stream_accumulator.py
+ M slo/src/agents/slo_agent/watchdog_timer.py
+ M slo/src/agents/tools/_blocking.py
+ M slo/src/tui/app.py
+ M slo/src/tui/components/chat_transcript/adapters/transcript_projector.py
+ M slo/src/tui/components/prompt_input/component.py
+ M slo/src/tui/slash_command_registry.py
+ M slo/src/tui/widgets/assistant_stream_block.py
+ M slo/src/tui/widgets/assistant_stream_thinking_block.py
+ M slo/tests/agents/slo_agent/history/test_message_contract_reconciler.py
+ M slo/tests/agents/slo_agent/history/test_transcript.py
+ M slo/tests/agents/slo_agent/messaging/test_delivery.py
+ M slo/tests/agents/slo_agent/plugins/test_dispatcher.py
+ M slo/tests/agents/slo_agent/test_watchdog_timer.py
+ M slo/tests/agents/slo_agent/tool_execution/test_plugin_interceptors.py
+ M slo/tests/tui/test_composer_prerequisites.py
+ M slo/tests/tui/test_composer_visual_matrix.py
+ M slo/tests/tui/test_durable_composer.py
+ M slo/tests/tui/test_herdr_replacement.py
+ M slo/tests/tui/test_prompt_input_component.py
+ M slo/tests/tui/test_transcript_projector.py
+?? slo/docs/
+?? slo/release-evidence/96-cooperative-provider-tool-yield/
+?? slo/release-evidence/96-durable-composer/dispatch10-dc08.md
+?? slo/release-evidence/96-durable-composer/dispatch11-dc09.md
+?? slo/release-evidence/96-durable-composer/dispatch12-cutover.md
+?? slo/release-evidence/96-durable-composer/dispatch13-full-gates.md
+?? slo/release-evidence/96-durable-composer/dispatch14-regression-repair.md
+?? slo/release-evidence/96-durable-composer/dispatch5-dc03.md
+?? slo/release-evidence/96-durable-composer/dispatch6-dc04.md
+?? slo/release-evidence/96-durable-composer/dispatch7-dc05.md
+?? slo/release-evidence/96-durable-composer/dispatch8-dc06.md
+?? slo/release-evidence/96-durable-composer/dispatch9-dc07.md
+?? slo/release-evidence/96-durable-composer/early-review.md
+?? slo/release-evidence/96-durable-composer/final-review-turn2.md
+?? slo/release-evidence/96-durable-composer/final-review.md
+?? slo/release-evidence/96-durable-composer/recovery-2026-11-03.md
+?? slo/release-evidence/96-durable-composer/turn2-repair.md
+?? slo/src/agents/slo_agent/graph/event_stream.py
+?? slo/src/agents/slo_agent/sessions/cooperative_history.py
+?? slo/src/agents/slo_agent/sessions/presentation.py
+?? slo/src/agents/slo_agent/tool_execution/yield_policy.py
+?? slo/tests/agents/slo_agent/history/test_compaction_summary_guard.py
+?? slo/tests/agents/slo_agent/history/test_compaction_tool_groups.py
+?? slo/tests/agents/slo_agent/history/test_cooperative_yield_metadata.py
+?? slo/tests/agents/slo_agent/history/test_history_file_certification.py
+?? slo/tests/agents/slo_agent/history/test_projector_tool_groups.py
+?? slo/tests/agents/slo_agent/history/test_settlement_failure.py
+?? slo/tests/agents/slo_agent/messaging/test_canonical_yield_writer.py
+?? slo/tests/agents/slo_agent/messaging/test_history_cooperative_append.py
+?? slo/tests/agents/slo_agent/messaging/test_provider_settlement_guard.py
+?? slo/tests/agents/slo_agent/messaging/test_startup_raw_tool_groups.py
+?? slo/tests/agents/slo_agent/test_graph_read_outcome.py
+?? slo/tests/agents/slo_agent/test_graph_stream_lifetime.py
+?? slo/tests/agents/slo_agent/test_watchdog_yield.py
+?? slo/tests/agents/slo_agent/tool_execution/test_blocking_yield.py
+?? slo/tests/agents/slo_agent/tool_execution/test_spawn_yield.py
+?? slo/tests/agents/slo_agent/tool_execution/test_tool_group_metadata.py
+?? slo/tests/agents/slo_agent/tool_execution/test_yield_control.py
+?? slo/tests/agents/slo_agent/tool_execution/test_yield_policy.py
+?? slo/tests/integration/test_messaging_yield.py
+?? slo/tests/integration/test_yield_consumer_contract.py
+?? slo/tests/integration/test_yield_retry_identity.py
+?? slo/tests/integration/test_yield_session_failure.py
+?? slo/tests/tui/test_urgent_composer.py
+?? slo/tests/tui/test_urgent_keys.py
+?? slo/tests/tui/test_urgent_lifecycle.py
+?? slo/tests/tui/test_urgent_projection.py
+?? slo/tests/tui/test_urgent_retirement.py
+?? slo/tests/tui/test_urgent_tool_paint.py

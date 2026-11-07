@@ -1,0 +1,88 @@
+ M SLO.md
+ M src/agents/providers/model_pool.py
+ M src/agents/slo_agent/agent.py
+ M src/agents/slo_agent/compaction/compacter.py
+ M src/agents/slo_agent/events/runtime.py
+ M src/agents/slo_agent/events/stream.py
+ M src/agents/slo_agent/graph/service.py
+ M src/agents/slo_agent/history/dao.py
+ M src/agents/slo_agent/history/filesystem_store.py
+ M src/agents/slo_agent/history/message_contract_reconciler.py
+ M src/agents/slo_agent/history/projector.py
+ M src/agents/slo_agent/history/store_protocol.py
+ M src/agents/slo_agent/history/transcript.py
+ M src/agents/slo_agent/history/tree_store.py
+ M src/agents/slo_agent/plugins/dispatcher.py
+ M src/agents/slo_agent/sessions/service.py
+ M src/agents/slo_agent/tool_execution/dao.py
+ M src/agents/slo_agent/tool_execution/executors.py
+ M src/agents/slo_agent/turn_stream_accumulator.py
+ M src/agents/slo_agent/watchdog_timer.py
+ M src/agents/tools/_blocking.py
+ M src/tui/app.py
+ M src/tui/components/chat_transcript/adapters/transcript_projector.py
+ M src/tui/components/prompt_input/component.py
+ M src/tui/slash_command_registry.py
+ M src/tui/widgets/assistant_stream_block.py
+ M src/tui/widgets/assistant_stream_thinking_block.py
+ M tests/agents/slo_agent/history/test_message_contract_reconciler.py
+ M tests/agents/slo_agent/history/test_transcript.py
+ M tests/agents/slo_agent/messaging/test_delivery.py
+ M tests/agents/slo_agent/plugins/test_dispatcher.py
+ M tests/agents/slo_agent/test_watchdog_timer.py
+ M tests/agents/slo_agent/tool_execution/test_plugin_interceptors.py
+ M tests/tui/test_composer_prerequisites.py
+ M tests/tui/test_composer_visual_matrix.py
+ M tests/tui/test_durable_composer.py
+ M tests/tui/test_herdr_replacement.py
+ M tests/tui/test_prompt_input_component.py
+ M tests/tui/test_transcript_projector.py
+?? docs/
+?? release-evidence/96-cooperative-provider-tool-yield/
+?? release-evidence/96-durable-composer/dispatch10-dc08.md
+?? release-evidence/96-durable-composer/dispatch11-dc09.md
+?? release-evidence/96-durable-composer/dispatch12-cutover.md
+?? release-evidence/96-durable-composer/dispatch13-full-gates.md
+?? release-evidence/96-durable-composer/dispatch14-regression-repair.md
+?? release-evidence/96-durable-composer/dispatch5-dc03.md
+?? release-evidence/96-durable-composer/dispatch6-dc04.md
+?? release-evidence/96-durable-composer/dispatch7-dc05.md
+?? release-evidence/96-durable-composer/dispatch8-dc06.md
+?? release-evidence/96-durable-composer/dispatch9-dc07.md
+?? release-evidence/96-durable-composer/early-review.md
+?? release-evidence/96-durable-composer/final-review-turn2.md
+?? release-evidence/96-durable-composer/final-review.md
+?? release-evidence/96-durable-composer/recovery-2026-11-03.md
+?? release-evidence/96-durable-composer/turn2-repair.md
+?? src/agents/slo_agent/graph/event_stream.py
+?? src/agents/slo_agent/sessions/cooperative_history.py
+?? src/agents/slo_agent/sessions/presentation.py
+?? src/agents/slo_agent/tool_execution/yield_policy.py
+?? tests/agents/slo_agent/history/test_compaction_summary_guard.py
+?? tests/agents/slo_agent/history/test_compaction_tool_groups.py
+?? tests/agents/slo_agent/history/test_cooperative_yield_metadata.py
+?? tests/agents/slo_agent/history/test_history_file_certification.py
+?? tests/agents/slo_agent/history/test_projector_tool_groups.py
+?? tests/agents/slo_agent/history/test_settlement_failure.py
+?? tests/agents/slo_agent/messaging/test_canonical_yield_writer.py
+?? tests/agents/slo_agent/messaging/test_history_cooperative_append.py
+?? tests/agents/slo_agent/messaging/test_provider_settlement_guard.py
+?? tests/agents/slo_agent/messaging/test_startup_raw_tool_groups.py
+?? tests/agents/slo_agent/test_graph_read_outcome.py
+?? tests/agents/slo_agent/test_graph_stream_lifetime.py
+?? tests/agents/slo_agent/test_watchdog_yield.py
+?? tests/agents/slo_agent/tool_execution/test_blocking_yield.py
+?? tests/agents/slo_agent/tool_execution/test_spawn_yield.py
+?? tests/agents/slo_agent/tool_execution/test_tool_group_metadata.py
+?? tests/agents/slo_agent/tool_execution/test_yield_control.py
+?? tests/agents/slo_agent/tool_execution/test_yield_policy.py
+?? tests/integration/test_messaging_yield.py
+?? tests/integration/test_yield_consumer_contract.py
+?? tests/integration/test_yield_retry_identity.py
+?? tests/integration/test_yield_session_failure.py
+?? tests/tui/test_urgent_composer.py
+?? tests/tui/test_urgent_keys.py
+?? tests/tui/test_urgent_lifecycle.py
+?? tests/tui/test_urgent_projection.py
+?? tests/tui/test_urgent_retirement.py
+?? tests/tui/test_urgent_tool_paint.py

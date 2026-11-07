@@ -23,6 +23,8 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolM
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from src.agents.slo_agent.tool_execution.yield_policy import ToolExecutionControl, ToolYieldPolicy
 
 from config.cfg import cfg
 from src.agents.base import LLM, LLMBuildProduct, LLMBuildResult, LLMFactory
@@ -43,6 +45,7 @@ from src.agents.slo_agent.tool_execution import (
 from src.agents.reasoning_capabilities import ReasoningLevel
 from src.agents.tools.bundles import create_extended_tools
 from src.agents.slo_agent.graph.dao import SloAgentBuildResult, SloAgentStateDAO
+from src.agents.slo_agent.graph.event_stream import GraphEventStream
 
 __all__ = [
     "LLMFactory",
@@ -180,20 +183,37 @@ def _make_agent_node(llm_with_tools: BaseChatModel) -> NodeFn:
 
     Returns:
         NodeFn: Async LangGraph node producing the assistant message.
+
+    Raises:
+        UnsettledToolGroupError: If the live provider context contains an
+            unsettled tool group. Raised before any provider request.
     """
+    # Imported here: the history package imports compaction, which imports this
+    # graph package. A module-level import would close that cycle.
+    from src.agents.slo_agent.history.message_contract_reconciler import (
+        MessageContractReconciler,
+    )
+
     pool_bound: bool = _is_pool_bound(llm=llm_with_tools)
 
     async def agent_node(state: SloAgentStateDAO) -> dict:
         request_messages: list[BaseMessage] = list(state.messages)
+        MessageContractReconciler.require_settled_live(messages=request_messages)
         if pool_bound:
-            response: BaseMessage = await llm_with_tools.ainvoke(request_messages)
+            response: BaseMessage = await GraphEventStream.invoke_joined_provider(
+                llm=llm_with_tools, messages=request_messages, kwargs={}
+            )
+            GraphEventStream.retain_completed_response(message=response)
             return {"messages": [response]}
         shaped_messages, shaped_kwargs = adapt_chatgpt_backend_request(
             llm=llm_with_tools,
             messages=request_messages,
             kwargs={},
         )
-        response = await llm_with_tools.ainvoke(shaped_messages, **shaped_kwargs)
+        response = await GraphEventStream.invoke_joined_provider(
+            llm=llm_with_tools, messages=shaped_messages, kwargs=shaped_kwargs
+        )
+        GraphEventStream.retain_completed_response(message=response)
         return {"messages": [response]}
 
     return agent_node
@@ -257,6 +277,8 @@ def _make_tool_node(
     execution_mode: ToolExecutionMode,
     output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] | None = None,
     plugin_dispatcher: "PluginDispatcher | None" = None,
+    control: Optional[ToolExecutionControl] = None,
+    policy: Optional[ToolYieldPolicy] = None,
 ) -> NodeFn:
     """Build the Slo tool node with managed execution policy.
 
@@ -278,6 +300,8 @@ def _make_tool_node(
         if not isinstance(last, AIMessage) or not last.tool_calls:
             return {"messages": []}
 
+        if control is not None:
+            control.enter_tools(tool_call_ids=tuple(call.get("id") or "" for call in last.tool_calls))
         plan = plan_tool_batch(calls=list(last.tool_calls))  # type: ignore[arg-type]  # ToolCall is a TypedDict
 
         async def sink(*, snapshot: ToolOutputUpdateDAO) -> None:
@@ -287,6 +311,9 @@ def _make_tool_node(
                 snapshot (ToolOutputUpdateDAO): Executor-stamped latest snapshot.
             """
             await queue.put(snapshot)
+            from langchain_core.callbacks.manager import adispatch_custom_event
+
+            await adispatch_custom_event(name="slo_tool_output_ready", data={})
 
         executor = _select_tool_executor(
             execution_mode=execution_mode,
@@ -295,7 +322,7 @@ def _make_tool_node(
             output_update_sink=sink,
             plugin_dispatcher=plugin_dispatcher,
         )
-        tool_messages: list[ToolMessage] = await executor.execute(plan=plan)
+        tool_messages: list[ToolMessage] = await executor.execute(plan=plan, control=control, policy=policy)
 
         # On a turn that hit the output-token ceiling, a tool call may have lost a
         # trailing argument to partial-JSON parsing, surfacing as an error result
@@ -307,6 +334,8 @@ def _make_tool_node(
                 _append_truncation_hint(message=message) if message.status == "error" else message
                 for message in tool_messages
             ]
+        if control is not None:
+            control.enter_settling()
         return {"messages": tool_messages}
 
     return tool_node
@@ -424,6 +453,8 @@ def build_slo_agent(
     tool_execution_mode: ToolExecutionMode = ToolExecutionMode.CONCURRENT_READS,
     plugin_dispatcher: "PluginDispatcher | None" = None,
     snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    tool_execution_control: Optional[ToolExecutionControl] = None,
+    tool_yield_policy: Optional[ToolYieldPolicy] = None,
 ) -> SloAgentBuildResult:
     """Build a compiled Slo one-shot-turn graph (single model or pool).
 
@@ -460,6 +491,10 @@ def build_slo_agent(
         session_id (Optional[str]): Active session id for ChatGPT-backend headers.
         tool_execution_mode (ToolExecutionMode): Batch execution policy
             for the custom Slo tool node.
+        tool_execution_control: Optional exact run control; callers must join
+            provider/tool work before replacing or releasing its graph closure.
+        tool_yield_policy: Retained trusted cancellation capability registry;
+            omitted means default defer, never inferred rollback.
         snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied immutable
             construction view. None preserves existing global reads; no capture
             or runtime admission happens here.
@@ -502,13 +537,50 @@ def build_slo_agent(
 
     llm_with_tools: BaseChatModel = cast(BaseChatModel, llm.bind_tools(tools=list(tools))) if tools else llm
 
-    agent_node: NodeFn = _make_agent_node(llm_with_tools=llm_with_tools)
     output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] = asyncio.Queue()
-    tool_node: NodeFn = _make_tool_node(
+    compiled = _compile_slo_graph(
+        llm_with_tools=llm_with_tools,
         tools=tools,
         execution_mode=tool_execution_mode,
         output_update_queue=output_update_queue,
         plugin_dispatcher=plugin_dispatcher,
+        control=tool_execution_control,
+        policy=tool_yield_policy,
+    )
+
+    return SloAgentBuildResult(
+        graph=compiled,
+        tools=tools,
+        llm=llm_with_tools,
+        output_update_queue=output_update_queue,
+        supports_explicit_caching=explicit_caching,
+        snapshot=snapshot,
+    )
+
+
+def _compile_slo_graph(
+    *,
+    llm_with_tools: BaseChatModel,
+    tools: Sequence[BaseTool],
+    execution_mode: ToolExecutionMode,
+    output_update_queue: asyncio.Queue[ToolOutputUpdateDAO],
+    plugin_dispatcher: Optional[PluginDispatcher] = None,
+    control: Optional[ToolExecutionControl] = None,
+    policy: Optional[ToolYieldPolicy] = None,
+) -> CompiledStateGraph:
+    """Compile around retained runtime objects without rebinding tools or creating a model.
+
+    Initial assembly and idle run binding share this sole topology. Compilation
+    starts no tasks; callers adopt the completed graph atomically.
+    """
+    agent_node: NodeFn = _make_agent_node(llm_with_tools=llm_with_tools)
+    tool_node: NodeFn = _make_tool_node(
+        tools=tools,
+        execution_mode=execution_mode,
+        output_update_queue=output_update_queue,
+        plugin_dispatcher=plugin_dispatcher,
+        control=control,
+        policy=policy,
     )
 
     # Linear, one-shot turn:
@@ -524,11 +596,4 @@ def build_slo_agent(
     graph.add_edge("agent", "tools")
     graph.add_edge("tools", END)
 
-    return SloAgentBuildResult(
-        graph=graph.compile(),
-        tools=tools,
-        llm=llm_with_tools,
-        output_update_queue=output_update_queue,
-        supports_explicit_caching=explicit_caching,
-        snapshot=snapshot,
-    )
+    return graph.compile()

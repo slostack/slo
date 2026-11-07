@@ -1,0 +1,5 @@
+executable: /root/.pyenv/versions/slo-harness/bin/python
+prefix: /root/.pyenv/versions/slo-harness
+Python: 3.11.7 (main, Sep  6 2026, 18:25:07) [GCC 13.3.0]
+pytest: 9.0.3
+pytest-xdist: 3.8.0

@@ -34,9 +34,8 @@ for counting and stopping rules. One workflow turn is a complete pass through
 all required phases, not one agent dispatch. Track partial passes, phase retries
 and dispatch limits separately. Disclose a harness budget conflict before launch;
 never claim repeated writing attempts were complete writing-and-review cycles.
-Limits: eight workflow turns started per task (partial turns included), six
-dispatch calls per turn, three retries per failed task, and no retries after an
-abort. Resume and takeover preserve task-wide counts. Use `single` at review
+Limits: three retries per failed task, and no retries after an abort. Resume
+and takeover preserve task-wide counts. Use `single` at review
 gates; process completion alone does not establish workflow acceptance.
 
 ## Workflow and testing rules

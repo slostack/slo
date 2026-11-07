@@ -111,8 +111,8 @@ async def test_executor_applies_mutation_then_terminal_patch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_executor_allows_error_patch_to_clear_core_error() -> None:
-    """Post-result patches use the DAO error field for a core invocation error."""
+async def test_executor_preserves_core_error_despite_success_patch() -> None:
+    """A.2 requires actual core error status to survive optional content patches."""
     tool: _RecordingTool = _RecordingTool()
     dispatcher = _Dispatcher(
         before=BeforeToolCallDecisionDAO(),
@@ -124,7 +124,7 @@ async def test_executor_allows_error_patch_to_clear_core_error() -> None:
     messages = await executor.execute(plan=_plan())
 
     assert messages[0].content == "recovered"
-    assert messages[0].status == "success"
+    assert messages[0].status == "error"
 
 
 @pytest.mark.asyncio

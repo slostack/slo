@@ -1,0 +1,19 @@
+{
+  "COLUMNS": "120",
+  "HOME": "/root",
+  "LANG": "en_US.UTF-8",
+  "LINES": "40",
+  "PATH": "/root/.pyenv/plugins/pyenv-virtualenv/shims:/root/.local/bin:/root/.pyenv/shims:/root/.pyenv/bin:/root/.local/share/pi-node/node-v22.23.2-linux-x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin",
+  "PYTHONDONTWRITEBYTECODE": "1",
+  "PYTHONPATH": "/root/Code/slo-message-queue/slo",
+  "SLO_ANTHROPIC_API_KEY": "ci-placeholder-tests-are-fully-mocked",
+  "SLO_APP_DIR": "/root/Code/slo-message-queue/slo",
+  "SLO_APP_NAME": "slo",
+  "SLO_AUTO_VISUALIZE": "0",
+  "SLO_DEFAULT_MODEL_NAME": "gpt-5.4",
+  "SLO_ENV": "test",
+  "SLO_HERDR_DISABLED": "1",
+  "SLO_LOG_FORMAT": "text",
+  "SLO_ROOT_DIR": "/root/Code/slo-message-queue/slo",
+  "TERM": "xterm-256color"
+}

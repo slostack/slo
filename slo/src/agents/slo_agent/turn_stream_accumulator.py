@@ -24,6 +24,7 @@ class TurnStreamAccumulator:
         self.completed_tool_messages: list[ToolMessage] = []
         self.completed_messages: list[BaseMessage] = []
         self.final_assistant_text: str = ""
+        self.interrupted: bool = False
 
     def absorb_messages(self, *, messages: list[BaseMessage]) -> None:
         """Absorb completed messages from one ``updates`` chunk.
@@ -40,3 +41,8 @@ class TurnStreamAccumulator:
                 continue
             if isinstance(message, ToolMessage):
                 self.completed_tool_messages.append(message)
+
+    def interrupt(self) -> None:
+        """Retain completed truth but forbid normal answer finalization for this response."""
+        self.interrupted = True
+        self.final_assistant_text = ""

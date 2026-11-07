@@ -1,0 +1,126 @@
+{
+  "first": {
+    "1261413": {
+      "argv": [
+        "/root/.pyenv/versions/slo-harness/bin/python",
+        "/root/.pyenv/versions/slo-harness/bin/pytest",
+        "-m",
+        "not e2e"
+      ],
+      "state": "S",
+      "ppid": "1",
+      "pgid": "1261401",
+      "sid": "1261401",
+      "ticks": [
+        "76651",
+        "10799"
+      ],
+      "start": "29862206",
+      "cwd": "/root/Code/slo-94-herdr-integration/slo (deleted)",
+      "io": "rchar: 8083398031\nwchar: 127693957\nsyscr: 1640715\nsyscw: 71482\nread_bytes: 49152\nwrite_bytes: 245215232\ncancelled_write_bytes: 33693696\n",
+      "children": [
+        [
+          "1261413",
+          "1261498 "
+        ],
+        [
+          "1284244",
+          ""
+        ],
+        [
+          "1289574",
+          ""
+        ],
+        [
+          "1289575",
+          ""
+        ]
+      ],
+      "waits": [
+        [
+          "1261413",
+          "ep_poll"
+        ],
+        [
+          "1284244",
+          "poll_schedule_timeout.constprop.0"
+        ],
+        [
+          "1289574",
+          "futex_do_wait"
+        ],
+        [
+          "1289575",
+          "futex_do_wait"
+        ]
+      ],
+      "fds": {
+        "0": "/dev/null",
+        "1": "/tmp/#12078003 (deleted)",
+        "2": "/tmp/#12078004 (deleted)"
+      }
+    }
+  },
+  "second": {
+    "1261413": {
+      "argv": [
+        "/root/.pyenv/versions/slo-harness/bin/python",
+        "/root/.pyenv/versions/slo-harness/bin/pytest",
+        "-m",
+        "not e2e"
+      ],
+      "state": "S",
+      "ppid": "1",
+      "pgid": "1261401",
+      "sid": "1261401",
+      "ticks": [
+        "76651",
+        "10799"
+      ],
+      "start": "29862206",
+      "cwd": "/root/Code/slo-94-herdr-integration/slo (deleted)",
+      "io": "rchar: 8083398031\nwchar: 127693957\nsyscr: 1640715\nsyscw: 71482\nread_bytes: 49152\nwrite_bytes: 245215232\ncancelled_write_bytes: 33693696\n",
+      "children": [
+        [
+          "1261413",
+          "1261498 "
+        ],
+        [
+          "1284244",
+          ""
+        ],
+        [
+          "1289574",
+          ""
+        ],
+        [
+          "1289575",
+          ""
+        ]
+      ],
+      "waits": [
+        [
+          "1261413",
+          "ep_poll"
+        ],
+        [
+          "1284244",
+          "poll_schedule_timeout.constprop.0"
+        ],
+        [
+          "1289574",
+          "futex_do_wait"
+        ],
+        [
+          "1289575",
+          "futex_do_wait"
+        ]
+      ],
+      "fds": {
+        "0": "/dev/null",
+        "1": "/tmp/#12078003 (deleted)",
+        "2": "/tmp/#12078004 (deleted)"
+      }
+    }
+  }
+}

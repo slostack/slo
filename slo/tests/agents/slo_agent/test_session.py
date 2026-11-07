@@ -467,8 +467,10 @@ class TestSloAgentSessionSubscribers:
         assert captured == []
 
     @pytest.mark.asyncio
-    async def test_subscriber_exception_does_not_break_stream(self, tmp_path: Path) -> None:
-        """A raising subscriber is logged and swallowed; siblings still run; ``log_error`` called."""
+    async def test_subscriber_exception_does_not_break_stream(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising subscriber emits an error log while siblings and the stream complete."""
         session: SloAgentSession = _build_faux_session(
             workdir=tmp_path,
             responses=[FauxChatModel.assistant_message(content="hi")],
@@ -484,14 +486,21 @@ class TestSloAgentSessionSubscribers:
         session.subscribe(handler=_bad)
         session.subscribe(handler=_good)
 
-        with patch("src.agents.slo_agent.sessions.service.log_error") as mock_log_error:
-            yielded: list[AgentStreamEventDAO] = []
+        yielded: list[AgentStreamEventDAO] = []
+        try:
             async for event in session.invoke(text="hello"):
                 yielded.append(event)
 
-        assert recorded == yielded
-        assert yielded[-1].kind == "run_completed"
-        assert mock_log_error.call_count >= 1
+            assert recorded == yielded
+            assert yielded[-1].kind == "run_completed"
+            assert any(
+                record.levelname == "ERROR"
+                and record.getMessage() == "SloAgentSession: legacy subscriber raised"
+                for record in caplog.records
+            )
+        finally:
+            await session.join_unsubscribed(handler=_bad)
+            await session.join_unsubscribed(handler=_good)
 
 
 class TestSloAgentSessionPassThroughs:

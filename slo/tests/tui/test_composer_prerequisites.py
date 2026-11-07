@@ -45,10 +45,11 @@ def gated_session(
     )
 
 
+@pytest.mark.parametrize(argnames="priority", argvalues=["normal", "urgent"])
 @pytest.mark.parametrize(argnames="limit_code", argvalues=["sender_limit", "queue_full"])
 @pytest.mark.parametrize(argnames="newer_typing", argvalues=[False, True])
 async def test_real_sender_limit_preserves_or_restores_draft(
-    tmp_path: Path, newer_typing: bool, limit_code: str
+    tmp_path: Path, newer_typing: bool, limit_code: str, priority: str
 ) -> None:
     """DC02 A2/A3: worker-held refusal keeps B recoverable or restores its untouched editor."""
     gate = CompletionGate(hold_before=True)
@@ -80,7 +81,7 @@ async def test_real_sender_limit_preserves_or_restores_draft(
             )
             gate.armed = True
             prompt.load_text("B")
-            await pilot.press("enter")
+            await pilot.press("ctrl+enter" if priority == "urgent" else "enter")
             await _wait_until(predicate=gate.started.is_set)
             assert prompt.text == ""
             if newer_typing:
@@ -98,6 +99,7 @@ async def test_real_sender_limit_preserves_or_restores_draft(
                 await _wait_until(predicate=lambda: any("B" in line for line in _transcript_notices(app)))
                 drafts = prompt.list_recoverable_drafts()
                 assert len(drafts) == 1 and drafts[0].draft_submission.message_submission.text == "B"
+                assert drafts[0].draft_submission.message_submission.priority == priority
             else:
                 assert prompt.cursor_location == (0, 1)
                 assert prompt.list_recoverable_drafts() == ()
@@ -119,7 +121,10 @@ async def test_real_sender_limit_preserves_or_restores_draft(
     assert len(rows) == 2 and all(state == "applied" for _, _, state in rows)
 
 
-async def test_real_unknown_outcome_retry_observes_single_committed_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize(argnames="priority", argvalues=["normal", "urgent"])
+async def test_real_unknown_outcome_retry_observes_single_committed_identity(
+    tmp_path: Path, priority: str
+) -> None:
     """DC02 A4: both deadlines expire before commit; slash retry reads the original ID."""
     gate = CompletionGate(hold_before=True)
     model = RecordingModel(responses=[AIMessage(content="once")])
@@ -133,13 +138,19 @@ async def test_real_unknown_outcome_retry_observes_single_committed_identity(tmp
             prompt = app.query_one(RecordingPromptInput)
             gate.armed = True
             prompt.load_text("uncertain")
-            await pilot.press("enter")
+            await pilot.press("ctrl+enter" if priority == "urgent" else "enter")
             await _wait_until(
                 predicate=lambda: any("delivery uncertain" in line for line in _transcript_notices(app))
             )
             drafts = prompt.list_recoverable_drafts()
             assert len(drafts) == 1 and drafts[0].last_error_code == "unknown_outcome"
-            message_id = drafts[0].draft_submission.message_submission.message_id
+            original = drafts[0].draft_submission.message_submission
+            assert original.priority == priority
+            original_bytes = original.model_dump_json()
+            message_id = original.message_id
+            await pilot.press("n", "e", "w")
+            assert prompt.text == "new"
+            assert drafts[0].draft_submission.message_submission.model_dump_json() == original_bytes
             gate.release.set()
             await asyncio.wait_for(model.entered.wait(), timeout=3)
             prompt.load_text(f"/messages retry {message_id[:8]}")

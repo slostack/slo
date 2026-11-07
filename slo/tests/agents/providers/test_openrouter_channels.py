@@ -1,7 +1,7 @@
 """Local SDK to session/history/headless security boundary evidence."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import patch
 import json
 import traceback
@@ -11,7 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from src.agents.base import LLMFactory
+from src.agents.base import LLM, LLMFactory
 from src.agents.model_catalog.dao import ModelCatalogEntryDAO
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.openrouter import OpenRouterChatOpenAI
@@ -129,6 +129,147 @@ async def test_sdk_session_private_history_and_public_headless_channels(
     assert anchors[0]["payload"]["provider_message_extension"]["reasoning_details"] == [
         {"type": "encrypted", "data": sentinel}
     ]
+
+
+def _build_reasoning_text_tool_call_deltas(
+    *, has_role_delta: bool, visible_text: Optional[str]
+) -> list[dict[str, object]]:
+    """Build one GLM-style streamed turn: reasoning, optional visible text, two parallel tool calls.
+
+    Args:
+        has_role_delta (bool): Whether the stream opens with a separate empty-content role delta.
+        visible_text (Optional[str]): Assistant text streamed after the reasoning, if any.
+
+    Returns:
+        list[dict[str, object]]: Chat Completions SSE deltas in the observed GLM order.
+    """
+    deltas: list[dict[str, object]] = [{"role": "assistant", "content": ""}] if has_role_delta else []
+    for reasoning_text in ("I should echo twice ", "before answering."):
+        deltas.append(
+            {
+                "reasoning": reasoning_text,
+                "reasoning_details": [
+                    {"type": "reasoning.text", "text": reasoning_text, "format": "unknown", "index": 0}
+                ],
+            }
+        )
+    if visible_text is not None:
+        middle: int = len(visible_text) // 2
+        deltas.extend([{"content": visible_text[:middle]}, {"content": visible_text[middle:]}])
+    for index, tool_call_id in enumerate(("call-echo-first", "call-echo-second")):
+        deltas.append(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {"name": "channel_echo", "arguments": "{}"},
+                    }
+                ]
+            }
+        )
+    return deltas
+
+
+def _is_chat_completions_content(*, content: object) -> bool:
+    """Return whether one message content value is a Chat Completions string, null, or list of typed parts.
+
+    Args:
+        content (object): The ``content`` value of one outbound wire message.
+
+    Returns:
+        bool: False for a list holding any element that is not a typed object.
+    """
+    if not isinstance(content, list):
+        return content is None or isinstance(content, str)
+    return all(isinstance(part, dict) and isinstance(part.get("type"), str) for part in content)
+
+
+@pytest.mark.parametrize(
+    ("has_role_delta", "visible_text", "expected_assistant_content"),
+    [
+        (True, "I'll echo twice.", [{"type": "text", "text": "I'll echo twice."}]),
+        (False, "I'll echo twice.", [{"type": "text", "text": "I'll echo twice."}]),
+        (True, None, None),
+    ],
+    ids=["role-delta-text", "inline-role-text", "role-delta-no-text"],
+)
+async def test_reasoning_text_parallel_tool_turn_continues_with_chat_completions_content(
+    tmp_path: Path,
+    has_role_delta: bool,
+    visible_text: Optional[str],
+    expected_assistant_content: Optional[list[dict[str, str]]],
+) -> None:
+    """Continue a reasoning + text + parallel-tool turn with valid assistant content.
+
+    The local OpenRouter boundary rejects malformed assistant content with HTTP 400, as
+    the gateway does, so the session run completes only when the replayed tool turn is
+    valid Chat Completions content with its tool calls and reasoning details intact.
+    """
+    requests: list[dict[str, object]] = []
+    history_root: Path = tmp_path / "history"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        """Serve the GLM-style tool turn, then validate the continuation like OpenRouter."""
+        chat_completion_request: dict[str, object] = json.loads(request.content)
+        requests.append(chat_completion_request)
+        if len(requests) == 1:
+            return _sse(
+                _build_reasoning_text_tool_call_deltas(
+                    has_role_delta=has_role_delta, visible_text=visible_text
+                )
+            )
+        messages = chat_completion_request["messages"]
+        assert isinstance(messages, list)
+        if not all(_is_chat_completions_content(content=message.get("content")) for message in messages):
+            return httpx.Response(
+                status_code=400,
+                json={"error": {"code": 400, "message": "Invalid assistant message content"}},
+            )
+        return _sse([{"content": "Both echoes returned."}])
+
+    credential: CredentialDAO = CredentialDAO(
+        provider=ProviderName.OPENROUTER, auth_type=AuthType.API_KEY, access_token="fixture"
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with patch("src.agents.base.CredentialResolver.require", return_value=credential):
+            model: LLM = LLMFactory.create(
+                model_name=_OPENROUTER_MODEL_NAME, snapshot=_prepared_snapshot(), http_async_client=client
+            ).llm
+        history_store: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(root=history_root)
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(llm=model, tools=[channel_echo], cwd=str(tmp_path), system_prompt="Echo twice."),
+            workdir=tmp_path,
+            session_id="reasoning-text-tools-session",
+            history_store=history_store,
+            enable_history=True,
+        )
+        events: list[AgentStreamEventDAO] = [event async for event in session.invoke(text="echo twice")]
+
+    assert len(requests) == 2
+    continuation_messages = requests[1]["messages"]
+    assert isinstance(continuation_messages, list)
+    assistant = next(message for message in continuation_messages if message["role"] == "assistant")
+    assert assistant["content"] == expected_assistant_content
+    assert [tool_call["id"] for tool_call in assistant["tool_calls"]] == [
+        "call-echo-first",
+        "call-echo-second",
+    ]
+    assert assistant["reasoning_details"] == [
+        {
+            "type": "reasoning.text",
+            "text": "I should echo twice before answering.",
+            "format": "unknown",
+            "index": 0,
+        }
+    ]
+    assert events[-1].kind == "run_completed"
+    persisted_kinds: list[str] = [
+        event.kind for event in await history_store.load_events(session_id=session.session_id)
+    ]
+    assert "run_failed" not in persisted_kinds
+    assert persisted_kinds[-1] == "run_completed"
 
 
 @pytest.mark.parametrize("compact", [False, True], ids=["resume", "compacted-tail"])

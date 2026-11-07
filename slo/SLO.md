@@ -71,6 +71,10 @@ gates; process completion alone does not establish workflow acceptance.
   splitting phases so no single blocking call exceeds the parent guard. See
   KB `slo/operational-reference.md` and KB `slo/headless-workflow-orchestration.md`.
 
+- Do not add any files to document the implementation under the `<project_root>/docs`
+  or `<project_root>/implementation` or create any new folders to track your progress.
+  Always use the tmp folders and delete the files at the end of the implementation.
+
 - **Verify before you claim.** Follow `skills/engineering/engineering-testing/SKILL.md`
   and `skills/coding/test-verification-policy/SKILL.md` for meaningful behavior,
   boundary and critical failure-path evidence. Run the full non-e2e suite before

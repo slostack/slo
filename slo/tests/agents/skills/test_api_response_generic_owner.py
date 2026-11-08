@@ -192,7 +192,7 @@ def test_language_recipes_delegate_common_policy_and_retain_adapter_requirements
         assert "data" in text and "api_version" in text and "errors" in text
 
     assert "SuccessResponseDAO" in python
-    assert "success_response(payload=page_dao.model_dump(mode=\"json\"))" in python
+    assert 'success_response(payload=page_dao.model_dump(mode="json"))' in python
     assert "page=0" in python and "size=25" in python and "size <= 100" in python
     assert "success_response()" in python
 

@@ -23,8 +23,9 @@ async def test_full_pages_require_progress(repeated: bool) -> None:
         rows = [{"id": f"vendor/model-{index}"} for index in range(start, start + 500)]
         return httpx.Response(status_code=200, json={"data": [] if offset == "1000" else rows})
 
-    credential = CredentialDAO(provider=ProviderName.OPENROUTER, auth_type=AuthType.API_KEY,
-                               access_token="synthetic-pagination-key")
+    credential = CredentialDAO(
+        provider=ProviderName.OPENROUTER, auth_type=AuthType.API_KEY, access_token="synthetic-pagination-key"
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
         client = OpenRouterAPIClient(credential=credential, http_client=http)
         if repeated:

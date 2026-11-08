@@ -320,9 +320,7 @@ class AuthenticationScreen(ModalScreen[Optional[CredentialDAO]]):
         """
         return attempt == self._api_key_attempt
 
-    async def _paint_openrouter_attempt_result(
-        self, *, result: OpenRouterAuthenticationResultDAO
-    ) -> None:
+    async def _paint_openrouter_attempt_result(self, *, result: OpenRouterAuthenticationResultDAO) -> None:
         """Paint the safe result from the current OpenRouter authentication attempt.
 
         WHAT: Routes verified results to success and non-verified results to the

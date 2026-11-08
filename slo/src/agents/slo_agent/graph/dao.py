@@ -21,6 +21,7 @@ from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.bridges.protocol import SloBridgeProtocol
 from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 from src.agents.tools.tool_output import ToolOutputUpdateDAO
 
@@ -57,6 +58,7 @@ class SloAgentBuildResult(NamedTuple):
     output_update_queue: asyncio.Queue[ToolOutputUpdateDAO] | None = None
     supports_explicit_caching: bool = False
     snapshot: Optional[ModelCatalogSnapshotDAO] = None
+    bridge_owner: Optional[SloBridgeProtocol] = None
 
 
 class SloAgentStateDAO(BaseModel):

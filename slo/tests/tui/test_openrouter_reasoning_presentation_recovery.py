@@ -15,9 +15,7 @@ from tests.agents.model_catalog.test_openrouter_converter_metadata import _entry
         ({"supported_efforts": ["low", "high"]}, "low, high"),
     ],
 )
-def test_picker_reports_only_permitted_reasoning_controls(
-    reasoning: dict[str, object], summary: str
-) -> None:
+def test_picker_reports_only_permitted_reasoning_controls(reasoning: dict[str, object], summary: str) -> None:
     """Project canonical evidence without advertising unestablished disable permission."""
     entry = _entry(reasoning=reasoning)
     snapshot = SeedModelCatalog.load().model_copy(update={"entries": {entry.model_name: entry}})

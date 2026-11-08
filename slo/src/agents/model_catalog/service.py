@@ -1885,6 +1885,10 @@ class ModelCatalogService:
         Raises:
             ValueError: When the model name or alias is not known.
         """
+        if model_name.startswith("claude-bridge:"):
+            from src.bridges.claude.routes import ClaudeBridgeRoute
+
+            return ClaudeBridgeRoute.entry(model_name=model_name)
         snapshot = snapshot if snapshot is not None else cls.load()
         return cls._resolve_entry(snapshot=snapshot, model_name=model_name)
 
@@ -2031,6 +2035,25 @@ class ModelCatalogService:
         )
 
     @classmethod
+    def picker_entries(cls, *, snapshot: ModelCatalogSnapshotDAO) -> list[ModelCatalogEntryDAO]:
+        """Project visible routes without inserting local bridge entries into shared state.
+
+        Args:
+            snapshot: Captured persisted catalog generation.
+
+        Returns:
+            Detached visible entries plus explicitly enabled local native routes.
+        """
+        from src.bridges.claude.routes import ClaudeBridgeRoute
+
+        entries = [entry for entry in snapshot.entries.values() if entry.visible_in_picker]
+        if ClaudeBridgeRoute.is_enabled():
+            entries.extend(
+                ClaudeBridgeRoute.entry(model_name=name) for name in ClaudeBridgeRoute.model_names()
+            )
+        return entries
+
+    @classmethod
     def _group_visible_entries(
         cls,
         *,
@@ -2045,9 +2068,7 @@ class ModelCatalogService:
             dict[ProviderName, list[str]]: Visible model names grouped by provider.
         """
         grouped: dict[ProviderName, list[str]] = {provider: [] for provider in ProviderName}
-        for entry in snapshot.entries.values():
-            if not entry.visible_in_picker:
-                continue
+        for entry in cls.picker_entries(snapshot=snapshot):
             grouped[entry.provider].append(entry.model_name)
         for provider in grouped:
             grouped[provider].sort()

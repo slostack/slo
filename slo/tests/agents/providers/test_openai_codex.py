@@ -619,7 +619,9 @@ class TestSanitizedExtrasWireFormat:
         for forbidden_key in ("temperature", "top_p", "top_logprobs", "logprobs"):
             assert forbidden_key not in body
 
-    def test_api_key_astra_factory_bound_tool_streams_platform_responses_without_sampling_fields(self) -> None:
+    def test_api_key_astra_factory_bound_tool_streams_platform_responses_without_sampling_fields(
+        self,
+    ) -> None:
         """Factory API-key Astra streams a local Platform Responses request, never Codex."""
         captured: dict[str, Any] = {}
 

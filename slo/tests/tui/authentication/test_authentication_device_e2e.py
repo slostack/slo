@@ -15,6 +15,7 @@ import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -231,32 +232,68 @@ async def test_openai_device_authorization_start_failure_paints_visible_error(tm
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_live_openai_device_authorization_paints_instructions_then_cancels(tmp_path: Path) -> None:
-    """Opt-in live smoke: the real OpenAI usercode endpoint paints the URL and code, then Esc cancels.
+async def test_openai_device_authorization_paints_instructions_then_cancels(tmp_path: Path) -> None:
+    """Real factory/provider/store paint production URLs using controlled vendor HTTP.
 
-    Uses the production ``OAuthFlowFactory()`` and provider with no endpoint overrides.
-    It stops at the painted instructions: Esc cancels before any approval, so polling
-    never completes and no credential is written. The device authorization id is never
-    painted, so no assertion message can print it.
+    No endpoint override or live account request is needed to verify the public
+    URL, response decoding, instruction paint and cancellation contract.
     """
+    requests: list[tuple[str, dict[str, str]]] = []
+
+    def post(*, url: str, json: dict[str, str]) -> MagicMock:
+        """Fail closed outside the two expected third-party device endpoints."""
+        requests.append((url, json))
+        response = MagicMock()
+        if url == "https://auth.openai.com/api/accounts/deviceauth/usercode":
+            assert set(json) == {"client_id"}
+            response.status = 200
+            response.json = AsyncMock(
+                return_value={
+                    "device_auth_id": "dummy-device-id",
+                    "user_code": _USER_CODE,
+                    "interval": "5",
+                    "expires_at": "2026-09-14T12:15:00.000000+00:00",
+                }
+            )
+        elif url == "https://auth.openai.com/api/accounts/deviceauth/token":
+            assert json == {"device_auth_id": "dummy-device-id", "user_code": _USER_CODE}
+            response.status = 403
+            response.json = AsyncMock(return_value={})
+        else:
+            raise AssertionError("Unexpected vendor endpoint")
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=response)
+        context.__aexit__ = AsyncMock(return_value=None)
+        return context
+
+    http = MagicMock()
+    http.post.side_effect = post
+    http_context = MagicMock()
+    http_context.__aenter__ = AsyncMock(return_value=http)
+    http_context.__aexit__ = AsyncMock(return_value=None)
     store_path: Path = tmp_path / "authentication.json"
     harness: _Harness = _Harness(store=CredentialStore(path=store_path), oauth_factory=OAuthFlowFactory())
-    async with harness.run_test(size=(80, 24)) as pilot:
-        await _choose_openai_device_authorization(pilot=pilot)
-        painted: str = ""
-        for _network_wait in range(_LIVE_START_WAITS):
-            painted = await wait_until_painted(pilot=pilot, text=_LIVE_CODE_PROMPT)
-            if "".join(_LIVE_CODE_PROMPT.split()) in painted:
-                break
-        link_targets: set[str] = painted_link_targets(
-            strips=painted_widget_strips(app=pilot.app, widget=pilot.app.screen.query_one("#oauth-url"))
-        )
-        painted_code: str = painted_text(
-            strips=painted_widget_strips(app=pilot.app, widget=pilot.app.screen.query_one("#oauth-redirect"))
-        )
-        await pilot.press("escape")
-        await pilot.pause()
+    with patch("src.auth.providers.openai_codex_provider.ClientSession", return_value=http_context):
+        async with harness.run_test(size=(80, 24)) as pilot:
+            await _choose_openai_device_authorization(pilot=pilot)
+            painted: str = ""
+            for _network_wait in range(_LIVE_START_WAITS):
+                painted = await wait_until_painted(pilot=pilot, text=_LIVE_CODE_PROMPT)
+                if "".join(_LIVE_CODE_PROMPT.split()) in painted:
+                    break
+            link_targets: set[str] = painted_link_targets(
+                strips=painted_widget_strips(app=pilot.app, widget=pilot.app.screen.query_one("#oauth-url"))
+            )
+            painted_code: str = painted_text(
+                strips=painted_widget_strips(
+                    app=pilot.app, widget=pilot.app.screen.query_one("#oauth-redirect")
+                )
+            )
+            await pilot.press("escape")
+            await pilot.pause()
 
+    assert requests
+    assert requests[0][0].endswith("/deviceauth/usercode")
     assert _VERIFICATION_URL in painted
     assert link_targets == {_VERIFICATION_URL}
     assert re.fullmatch(pattern=r"[A-Z0-9-]{4,}", string=painted_code) is not None

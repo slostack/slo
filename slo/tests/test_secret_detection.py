@@ -32,7 +32,9 @@ def test_secret_detection_retries_only_infrastructure_failures() -> None:
 
 def test_commits_are_scanned_locally_by_pinned_gitleaks() -> None:
     """The pre-commit hook scans staged changes with a pinned gitleaks release."""
-    config: dict[str, Any] = yaml.safe_load((REPOSITORY / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    config: dict[str, Any] = yaml.safe_load(
+        (REPOSITORY / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    )
     (gitleaks,) = [repo for repo in config["repos"] if repo["repo"] == "https://github.com/gitleaks/gitleaks"]
     assert gitleaks["rev"] == "v8.29.1"
     assert [hook["id"] for hook in gitleaks["hooks"]] == ["gitleaks"]

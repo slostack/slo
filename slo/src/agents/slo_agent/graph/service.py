@@ -6,6 +6,10 @@ Private helpers: all graph-building and node-factory functions.
 
 from __future__ import annotations
 
+from src.bridges.claude.routes import ClaudeBridgeRoute
+from src.bridges.protocol import SloBridgeProtocol
+from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
+
 import asyncio
 from typing import (
     TYPE_CHECKING,
@@ -41,7 +45,7 @@ from src.agents.slo_agent.tool_execution import (
     plan_tool_batch,
 )
 from src.agents.reasoning_capabilities import ReasoningLevel
-from src.agents.tools.bundles import create_extended_tools
+from src.agents.tools.bundles import create_extended_tools, create_local_tools
 from src.agents.slo_agent.graph.dao import SloAgentBuildResult, SloAgentStateDAO
 
 __all__ = [
@@ -59,6 +63,7 @@ __all__ = [
     "_uses_chatgpt_backend_responses",
     "adapt_chatgpt_backend_request",
     "build_slo_agent",
+    "default_tools_for_model",
 ]
 
 
@@ -409,6 +414,17 @@ def _select_tool_executor(
     )
 
 
+def default_tools_for_model(*, model_name: Optional[str]) -> list[BaseTool]:
+    """Return the default tool bundle for a route.
+
+    Routes where ``ClaudeBridgeRoute.is_bridge_route`` is true get
+    ``create_local_tools()``; every other route gets ``create_extended_tools()``.
+    """
+    if model_name and ClaudeBridgeRoute.is_bridge_route(model_name=model_name):
+        return create_local_tools()
+    return create_extended_tools()
+
+
 def build_slo_agent(
     *,
     model_name: Optional[str] = None,
@@ -424,6 +440,8 @@ def build_slo_agent(
     tool_execution_mode: ToolExecutionMode = ToolExecutionMode.CONCURRENT_READS,
     plugin_dispatcher: "PluginDispatcher | None" = None,
     snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+    bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
+    bridge_adapter: Optional[SloBridgeAdapterProtocol] = None,
 ) -> SloAgentBuildResult:
     """Build a compiled Slo one-shot-turn graph (single model or pool).
 
@@ -443,8 +461,9 @@ def build_slo_agent(
         model_pool_dao (Optional[ModelPoolDAO]): Pool config. When set (and
             ``llm`` is None), the build uses ``LLMFactory.create_pool``.
         tools (Optional[Sequence[BaseTool]]): Tools the agent may call.
-            Defaults to ``create_extended_tools()`` (the full pi-parity
-            bundle plus ``read_pdf`` and ``now``).
+            Defaults to ``default_tools_for_model(model_name=model_name)``:
+            the local bundle for Claude bridge routes, the extended bundle
+            (local plus connectors) for every other route.
         llm (Optional[LLM]): Pre-built chat model — use this to inject a
             ``FauxChatModel`` or a ``ModelPool`` for tests. When provided,
             both ``model_name`` and ``model_pool_dao`` are ignored.
@@ -469,8 +488,9 @@ def build_slo_agent(
             ``tools``, the tool-bound ``llm``, and the build-time caching flag.
     """
     if tools is None:
-        tools = create_extended_tools()
+        tools = default_tools_for_model(model_name=model_name)
 
+    bridge_owner: Optional[SloBridgeProtocol] = None
     explicit_caching: bool = False
     if llm is None:
         build_product: LLMBuildProduct
@@ -487,6 +507,11 @@ def build_slo_agent(
             )
         else:
             resolved_model: str = model_name or (cfg(key="DEFAULT_MODEL_NAME") or "gpt-5.4")
+            bridge_construction: dict[str, Any] = {}
+            if bridge_adapter_class is not None:
+                bridge_construction["bridge_adapter_class"] = bridge_adapter_class
+            if bridge_adapter is not None:
+                bridge_construction["bridge_adapter"] = bridge_adapter
             build_product = LLMFactory.create(
                 model_name=resolved_model,
                 temperature=temperature,
@@ -496,7 +521,9 @@ def build_slo_agent(
                 reasoning_level=reasoning_level,
                 session_id=session_id,
                 snapshot=snapshot,
+                **bridge_construction,
             )
+        bridge_owner = build_product.bridge_owner
         llm = build_product.llm
         explicit_caching = build_product.supports_explicit_caching
 
@@ -531,4 +558,5 @@ def build_slo_agent(
         output_update_queue=output_update_queue,
         supports_explicit_caching=explicit_caching,
         snapshot=snapshot,
+        bridge_owner=bridge_owner,
     )

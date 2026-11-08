@@ -70,6 +70,7 @@ def test_overview_author_has_ordered_procedure_and_document() -> None:
     ):
         assert requirement in text
 
+
 def test_legacy_hooks_are_removed_and_unreferenced() -> None:
     """The overview author replaced the PRE/POST hooks; nothing may route to them."""
     for hook in ("pre", "post"):
@@ -78,6 +79,7 @@ def test_legacy_hooks_are_removed_and_unreferenced() -> None:
         text = path.read_text(encoding="utf-8")
         for hook in ("feature-specifications-pre-hook", "feature-specifications-post-hook"):
             assert hook not in text, (path, hook)
+
 
 def test_workflow_sequences_overview_sub_specs_then_family_review() -> None:
     """Both documents exist before one independent review, and REVISE returns to the owner."""
@@ -100,8 +102,17 @@ def test_workflow_sequences_overview_sub_specs_then_family_review() -> None:
     assert "independent, adversarial review" in text
     assert "`overview.md` → Step 1; sub-specs and `task-list.md` → Step 2" in text
     assert "#progression-and-authorization" in text
-    for obsolete in ("pre-hook", "post-hook", "Self-check stage", "Gather context", "JIRA", "Mode A", "Mode B"):
+    for obsolete in (
+        "pre-hook",
+        "post-hook",
+        "Self-check stage",
+        "Gather context",
+        "JIRA",
+        "Mode A",
+        "Mode B",
+    ):
         assert obsolete not in text, obsolete
+
 
 def test_code_review_links_canonical_depth_guidance() -> None:
     """Make caller burden an evidence-based review concern in all languages."""
@@ -204,6 +215,7 @@ def test_context_companion_metadata_and_paths_use_canonical_author() -> None:
     assert "This pre-hook" not in text
     assert "Stop here and wait for user sign-off" in text
 
+
 def test_convention_lists_cover_each_language_and_resolve() -> None:
     """Both authors route to Python, Go and TypeScript conventions through real skill paths."""
     for relative in (
@@ -218,7 +230,9 @@ def test_convention_lists_cover_each_language_and_resolve() -> None:
             "coding/test-verification-policy/SKILL.md",
         ):
             assert gateway in text, (relative, gateway)
-    text = (SKILLS_DIR / "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md").read_text(encoding="utf-8")
+    text = (SKILLS_DIR / "design-and-analysis/breakdown-feature-spec-to-tasks/SKILL.md").read_text(
+        encoding="utf-8"
+    )
     section = text.split("#### Convention skills by language and layer", 1)[1].split("\n### ", 1)[0]
     roots = ("", "languages/python/", "languages/go/", "languages/typescript/")
     for reference in re.findall(pattern=r"`([a-z0-9/-]+/SKILL\.md)`", string=section):
@@ -251,6 +265,7 @@ def test_specification_skills_prioritise_behaviour_tests_without_tool_specific_s
         assert "Playwright" in text, relative
         assert "JIRA" not in text and "Jira" not in text, relative
 
+
 def test_generated_index_matches_registry() -> None:
     """Verify generated discovery metadata rather than hand-maintained keywords."""
     expected = _INDEX_HEADER + SkillRegistry.format_for_prompt(
@@ -279,7 +294,12 @@ def test_authoring_relative_links_and_anchors_resolve() -> None:
     )
     for path in paths:
         # Links inside fenced blocks are document templates, not live references.
-        text = re.sub(pattern=r"^```.*?^```", repl="", string=path.read_text(encoding="utf-8"), flags=re.MULTILINE | re.DOTALL)
+        text = re.sub(
+            pattern=r"^```.*?^```",
+            repl="",
+            string=path.read_text(encoding="utf-8"),
+            flags=re.MULTILINE | re.DOTALL,
+        )
         for target in re.findall(pattern=r"\]\(([^)]+)\)", string=text):
             if "://" in target:
                 continue

@@ -114,6 +114,9 @@ def resolve_model_name_with_fallback(
     # ``src.agents.base`` via ``src.auth.provider_for_model``.
     from src.auth.provider_for_model import provider_for_model
 
+    if model_name.startswith("claude-bridge:"):
+        ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
+        return model_name, None
     try:
         ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot)
         return model_name, None

@@ -747,6 +747,9 @@ class TestHeadlessRunnerWatchdogControls:
                 self.close_external_reporting = AsyncMock()
                 self.finish_retired_reporting_cleanup = AsyncMock()
 
+            async def close_agent_resources(self) -> None:
+                """Close the session-owned model resources; this double owns none."""
+
             def subscribe(self, *, handler) -> None:
                 """Register the runner stdout emitter."""
                 self._subscribers.append(handler)

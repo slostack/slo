@@ -510,6 +510,11 @@ class SlashSuggestionEngine:
         Returns:
             str: Human-readable detail string.
         """
+        if entry.model_name.startswith("claude-bridge:"):
+            return (
+                f"{entry.status_summary} · host context planning {entry.context_window}; "
+                f"native capacity unverified · native effort {entry.reasoning_summary}"
+            )
         availability: str = entry.status_summary or (
             "requires /auth" if entry.requires_auth else "key configured; not checked"
         )

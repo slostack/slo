@@ -16,8 +16,13 @@ iteration cap.
 
 from __future__ import annotations
 
+from src.bridges.protocol import SloBridgeProtocol
+from src.bridges.dao import SloBridgeSessionOptionsDAO
+from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
+
 import asyncio
 import os
+from uuid import uuid4
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Optional, Sequence
 
@@ -127,6 +132,8 @@ class SloAgent:
         session_id: Optional[str] = None,
         plugin_dispatcher: Optional["PluginDispatcher"] = None,
         snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+        bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
+        bridge_adapter: Optional[SloBridgeAdapterProtocol] = None,
     ) -> None:
         """Build the agent.
 
@@ -188,6 +195,8 @@ class SloAgent:
             session_id=session_id,
             plugin_dispatcher=plugin_dispatcher,
             snapshot=snapshot,
+            bridge_adapter_class=bridge_adapter_class,
+            bridge_adapter=bridge_adapter,
         )
         self._catalog_snapshot: Optional[ModelCatalogSnapshotDAO] = _build_result.snapshot
         self._graph: CompiledStateGraph = _build_result.graph
@@ -222,6 +231,15 @@ class SloAgent:
             skills=self._skills,
             workspace_folders=self._workspace_folders,
         )
+        self._bridge_owner: Optional[SloBridgeProtocol] = _build_result.bridge_owner
+        if self._bridge_owner is not None:
+            self._bridge_owner.configure_session(
+                session_options=SloBridgeSessionOptionsDAO(
+                    session_id=session_id or str(uuid4()),
+                    working_directory=Path(self._cwd).resolve(),
+                    instructions=self._system_prompt,
+                )
+            )
         self._supports_explicit_caching: bool = _build_result.supports_explicit_caching
         self._should_stop_after_turn_hook: ShouldStopAfterTurnHook = should_stop_after_turn_hook
         self._steering_queue: asyncio.Queue[BaseMessage] = asyncio.Queue()
@@ -414,17 +432,26 @@ class SloAgent:
     def _usage_from_completed_message(self, *, message: AIMessage) -> TokenUsageTotalsDAO:
         """Extract provider-supplied totals without estimating missing fields."""
         usage_metadata: dict[str, object] = dict(message.usage_metadata or {})
+        raw_details: object = usage_metadata.get("input_token_details")
+        details: dict[str, object] = raw_details if isinstance(raw_details, dict) else {}
+        # Flat keys keep priority; LangChain's standard ``input_token_details``
+        # (Anthropic, OpenAI, OpenRouter, Codex, Claude bridge) fills the gap.
         return TokenUsageTotalsDAO(
             input_tokens=int_or_none(value=usage_metadata.get("input_tokens")),
             output_tokens=int_or_none(value=usage_metadata.get("output_tokens")),
             total_tokens=int_or_none(value=usage_metadata.get("total_tokens")),
-            cache_creation_input_tokens=int_or_none(
-                value=usage_metadata.get("cache_creation_input_tokens"),
+            cache_creation_input_tokens=self._first_known_count(
+                values=(usage_metadata.get("cache_creation_input_tokens"), details.get("cache_creation"))
             ),
-            cache_read_input_tokens=int_or_none(
-                value=usage_metadata.get("cache_read_input_tokens"),
+            cache_read_input_tokens=self._first_known_count(
+                values=(usage_metadata.get("cache_read_input_tokens"), details.get("cache_read"))
             ),
         )
+
+    @staticmethod
+    def _first_known_count(*, values: tuple[object, ...]) -> Optional[int]:
+        """Return the first value that is a known token count, else None."""
+        return next((count for value in values if (count := int_or_none(value=value)) is not None), None)
 
     # ---- Run-lifecycle helpers (extracted from invoke) -------------------------
 
@@ -493,6 +520,10 @@ class SloAgent:
                 payload=AgentRuntimePayloadDAO(content=query),
             ),
         )
+
+    def bridge_is_retired(self) -> bool:
+        """Report whether this agent's bridge closed with confirmed cleanup."""
+        return self._bridge_owner is not None and self._bridge_owner.is_retired()
 
     def _build_initial_run_context(
         self,
@@ -718,19 +749,23 @@ class SloAgent:
         )
         try:
             while True:
-                raw_item: object | None = await watchdog_timer.invoke(graph_stream=graph_stream)
-                if raw_item is None:
+                try:
+                    raw_item: object | None = await watchdog_timer.invoke(graph_stream=graph_stream)
+                except Exception:
+                    if self._bridge_owner is None or not self._abort_event.is_set():
+                        raise
+                    yield await self._prepare_aborted_terminal(
+                        runtime_handler=runtime_handler,
+                        iteration=iteration,
+                    )
                     return
                 if self._abort_event.is_set():
-                    await self._emit_trace_event(
+                    yield await self._prepare_aborted_terminal(
                         runtime_handler=runtime_handler,
-                        event=AgentRuntimeEventDAO(kind="run_aborted", iteration=iteration),
-                    )
-                    yield AgentStreamEventDAO(
-                        kind="run_aborted",
                         iteration=iteration,
-                        content="<aborted>",
                     )
+                    return
+                if raw_item is None:
                     return
                 async for output_event in self._drain_tool_output_updates(iteration=iteration):
                     await self._emit_stream_trace_event(
@@ -921,6 +956,11 @@ class SloAgent:
                 self._active_turn = turn
                 break
             except Exception as exc:
+                # Native bridge submission is already owned and may be uncertain.
+                # Provider-neutral reconnect/continuation must never replay it,
+                # including a watchdog expiry before this graph turn emits text.
+                if self._bridge_owner is not None:
+                    raise
                 # SDK role/usage chunks commit the gateway stream even when the
                 # transcript normalizer emits no visible event for them.
                 if isinstance(exc, OpenRouterAPIError) and exc.partial_output_committed:
@@ -1043,6 +1083,8 @@ class SloAgent:
                 return  # run_aborted already yielded; skip stop evaluation and next iteration
 
             if not await self._should_loop_continue(accumulated_messages=accumulated_messages):
+                if self._bridge_owner is not None:
+                    await self._bridge_owner.finish_host_turn()
                 break
 
             iteration += 1
@@ -1184,6 +1226,8 @@ class SloAgent:
             AgentStreamEventDAO: ``recovery_exhausted`` (conditional) then
                 ``run_failed``.
         """
+        if self._bridge_owner is not None:
+            await self._bridge_owner.finish_host_turn()
         if recoveries_attempted:
             yield AgentStreamEventDAO(
                 kind="recovery_exhausted",
@@ -1351,6 +1395,35 @@ class SloAgent:
         msg: BaseMessage = HumanMessage(content=message) if isinstance(message, str) else message
         self._steering_queue.put_nowait(msg)
 
+    async def _prepare_aborted_terminal(
+        self,
+        *,
+        runtime_handler: Optional[AgentRuntimeHandler],
+        iteration: int,
+    ) -> AgentStreamEventDAO:
+        """Join native work before recording or returning an aborted terminal.
+
+        Both graph-read outcomes use this barrier. Failed cleanup propagates to
+        the run-failure path; the bridge retains its owner for explicit close.
+
+        Args:
+            runtime_handler: Optional trace persistence observer.
+            iteration: Current host iteration.
+
+        Returns:
+            The aborted event, only after owned native work has settled.
+
+        Raises:
+            Exception: Native closure could not be confirmed.
+        """
+        if self._bridge_owner is not None:
+            await self._bridge_owner.close()
+        await self._emit_trace_event(
+            runtime_handler=runtime_handler,
+            event=AgentRuntimeEventDAO(kind="run_aborted", iteration=iteration),
+        )
+        return AgentStreamEventDAO(kind="run_aborted", iteration=iteration, content="<aborted>")
+
     def abort(self) -> None:
         """Request graceful cancellation of the current run.
 
@@ -1358,6 +1431,13 @@ class SloAgent:
         a terminal ``run_aborted`` stream event.
         """
         self._abort_event.set()
+        if self._bridge_owner is not None:
+            self._bridge_owner.request_cancellation(reason="user_abort")
+
+    async def close(self) -> None:
+        """Await the retained model bridge without closing borrowed session resources."""
+        if self._bridge_owner is not None:
+            await self._bridge_owner.close()
 
     # ---- Private helpers --------------------------------------------------
 

@@ -24,10 +24,10 @@ class WorkflowNoticeAdapter:
 
     def __init__(self, *, tui: TranscriptNoticeTarget) -> None:
         """Save the supplied notice destination without taking ownership of it."""
-        self._tui = tui
-        self._delivery_closed = False
-        self._delivery_lock = asyncio.Lock()
-        self._workflow_notice_version = 0
+        self._tui: TranscriptNoticeTarget = tui
+        self._delivery_closed: bool = False
+        self._delivery_lock: asyncio.Lock = asyncio.Lock()
+        self._workflow_notice_version: int = 0
         self._loop: asyncio.AbstractEventLoop | None = None
 
     @classmethod
@@ -49,7 +49,7 @@ class WorkflowNoticeAdapter:
         """Convert a notice into a component command and wait for it to be applied."""
         self._ensure_workflow_notice_adapter_open()
         self._update_delivery_loop()
-        workflow_notice_version = self._workflow_notice_version
+        workflow_notice_version: int = self._workflow_notice_version
         async with self._delivery_lock:
             self._ensure_workflow_notice_adapter_open()
             self._update_delivery_loop()
@@ -71,7 +71,7 @@ class WorkflowNoticeAdapter:
         UI-loop authority. Raise RuntimeError before changing a borrowed target
         when a later call arrives on a different loop.
         """
-        loop = asyncio.get_running_loop()
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         if self._loop is None:
             self._loop = loop
         self._ensure_delivery_loop(loop=loop)
@@ -99,8 +99,8 @@ class WorkflowNoticeAdapter:
         if not self._delivery_lock.locked():
             await self._finish_retirement()
             return
-        task = asyncio.create_task(self._finish_retirement())
-        cancelled = False
+        task: asyncio.Task[None] = asyncio.create_task(self._finish_retirement())
+        cancelled: bool = False
         while not task.done():
             try:
                 await asyncio.shield(task)

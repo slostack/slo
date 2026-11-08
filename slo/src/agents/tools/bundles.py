@@ -5,10 +5,13 @@ The three pi-parity bundles (``create_coding_tools``,
 ``createCodingTools`` / ``createReadOnlyTools`` / ``createAllTools`` at
 ``pi/packages/coding-agent/src/core/tools/index.ts``.
 
-``create_extended_tools`` is a slo-specific bundle that layers
-``read_pdf`` + ``now`` + any configured connector tools on top of the
-kitchen-sink set for workflows that touch documents, need a timestamp, or
-need to reach Confluence and Jira.
+``create_local_tools`` is the slo-specific set of ten built-in tools
+(the kitchen-sink set plus ``read_pdf``, ``now`` and ``show_git_diff``). It
+never touches connector credentials, so routes that cannot use connectors
+(the Claude bridge) take it directly.
+
+``create_extended_tools`` is the local set plus any configured connector
+tools, for workflows that also need to reach Confluence and Jira.
 
 ``create_connector_tools`` returns only the connector tools whose provider
 credentials resolve at bundle-build time.  This keeps the prompt truthful:
@@ -108,18 +111,23 @@ def create_connector_tools() -> list[BaseTool]:
     return tools
 
 
-def create_extended_tools() -> list[BaseTool]:
-    """Pi-parity tools + slo-specific extensions (read_pdf, now, connectors).
+def create_local_tools() -> list[BaseTool]:
+    """The ten local tools: read, write, edit, bash, grep, find, ls, read_pdf, now, show_git_diff.
 
-    Layers ``read_pdf``, ``now``, ``show_git_diff``, and any configured
-    connector tools on top of ``create_all_tools``.  Use this bundle for
-    sessions that need document awareness, timestamps, HEAD-versus-worktree
-    diffs, and optional remote planning-system access.
+    Never touches connector credentials.
     """
     return [
         *create_all_tools(),
         read_pdf_tool,
         now_tool,
         show_git_diff_tool,
-        *create_connector_tools(),
     ]
+
+
+def create_extended_tools() -> list[BaseTool]:
+    """Local tools plus configured connector tools (behaviour and order unchanged).
+
+    Use this bundle for sessions that need document awareness, timestamps,
+    HEAD-versus-worktree diffs, and optional remote planning-system access.
+    """
+    return [*create_local_tools(), *create_connector_tools()]

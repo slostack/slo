@@ -813,6 +813,7 @@ async def test_attached_execution_replacement_during_capability_never_restores_a
     def capability() -> ChildControlCapabilityDAO | None:
         """Replace registry evidence at the final control boundary."""
         world.execution_id = _EXEC_B
+        assert world.capability is not None
         return world.capability
 
     service = DetachedWorkflowAppService(

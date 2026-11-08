@@ -309,13 +309,13 @@ async def test_bridge_selection_denied_when_native_auth_not_ready_without_slo_cr
     await session.close_agent_resources()
 
 
-async def test_bridge_startup_denied_when_optin_disabled_after_build_without_slo_credential(
+async def test_bridge_startup_denied_when_explicitly_disabled_after_build_without_slo_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A recognized route whose opt-in is removed before startup is denied by route validation.
+    """A recognized route explicitly disabled before startup is denied by route validation.
 
     Recognition is not route validation: the credential seam must validate
-    the recognized route before its early return, so a changed opt-in is
+    the recognized route before its early return, so an explicit opt-out is
     denied *before* the native status boundary is consulted. The injected
     recording boundary proves zero auth calls; no prompt is submitted and
     no candidate is adopted. No native process or query is involved.
@@ -341,9 +341,9 @@ async def test_bridge_startup_denied_when_optin_disabled_after_build_without_slo
             transport=transport, authentication_check=recording_status
         ),
     )
-    monkeypatch.delenv(name="SLO_CLAUDE_BRIDGE_ENABLED", raising=False)
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")
     try:
-        with pytest.raises(ValueError, match="Claude bridge is opt-in"):
+        with pytest.raises(ValueError, match="Claude bridge is disabled"):
             await session.prepare_startup()
         assert session.preparation_status == "failed"
         assert auth_calls == []

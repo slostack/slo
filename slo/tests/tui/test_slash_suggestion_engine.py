@@ -203,3 +203,9 @@ class TestSlashSuggestionEngine:
 
         assert state.visible is True
         assert any(row.label == "/workflows" for row in state.rows)
+
+
+@pytest.fixture(autouse=True)
+def provider_catalog_without_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep provider-only picker expectations independent of optional local routes."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")

@@ -91,8 +91,8 @@ def test_invalid_or_disabled_route_never_falls_back(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
     with pytest.raises(ValueError):
         resolve_model_name_with_fallback(model_name=route)
-    monkeypatch.delenv(name="SLO_CLAUDE_BRIDGE_ENABLED")
-    with pytest.raises(ValueError, match="opt-in"):
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")
+    with pytest.raises(ValueError, match="disabled"):
         provider_for_model(model_name="claude-bridge:claude-sonnet-4-6")
     assert not any(
         row.model_name.startswith(ClaudeBridgeRoute.PREFIX)
@@ -181,3 +181,38 @@ async def test_bridge_reasoning_reaches_native_effort(monkeypatch, tmp_path, lev
     assert options.effort == effort
     assert options.thinking == {"type": "disabled" if effort is None else "adaptive"}
     assert "bare" not in options.extra_args
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "true", "YES", "on", "  true  "])
+def test_bridge_enabled_unless_explicitly_disabled(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    """Default configuration exposes qualified routes without native authentication."""
+    from config.cfg import cfg
+
+    monkeypatch.delenv(name="SLO_CLAUDE_BRIDGE_ENABLED", raising=False)
+    monkeypatch.delenv(name="SLO_DEV_MODE", raising=False)
+    if value is not None:
+        monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value=value)
+    assert cfg("SLO_CLAUDE_BRIDGE_ENABLED") == ("1" if value is None else value)
+    assert ClaudeBridgeRoute.is_enabled()
+    assert provider_for_model(model_name="claude-bridge:claude-sonnet-4-6") is ProviderName.ANTHROPIC
+    assert any(
+        row.model_name == "claude-bridge:claude-sonnet-4-6"
+        for row in model_suggestion_entries(active_model_name="gpt-5.4")
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "false", "NO", "off", "  False  "])
+def test_explicit_disable_hides_and_rejects_bridge_routes(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Explicit opt-out removes discovery and rejects direct selection without fallback."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value=value)
+    assert not ClaudeBridgeRoute.is_enabled()
+    with pytest.raises(ValueError, match="disabled"):
+        resolve_model_name_with_fallback(model_name="claude-bridge:claude-sonnet-4-6")
+    assert not any(
+        row.model_name.startswith(ClaudeBridgeRoute.PREFIX)
+        for row in model_suggestion_entries(active_model_name="gpt-5.4")
+    )

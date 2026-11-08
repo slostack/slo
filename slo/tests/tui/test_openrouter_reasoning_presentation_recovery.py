@@ -44,3 +44,9 @@ def test_picker_distinguishes_supported_disable_from_provider_default(
     row = _project_rows(snapshot=snapshot, active_model_name=entry.model_name, statuses={})[0]
 
     assert expected_detail in SlashSuggestionEngine._model_detail(entry=row)
+
+
+@pytest.fixture(autouse=True)
+def provider_catalog_without_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep provider-only picker expectations independent of optional local routes."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")

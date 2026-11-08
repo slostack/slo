@@ -604,7 +604,7 @@ class TyperDispatch:
         Returns:
             Optional[str]: Saved route to keep, or None to use the default.
         """
-        if resumed_model_name is None or resumed_model_name.startswith(OPENROUTER_PREFIX):
+        if resumed_model_name is None or resumed_model_name.startswith((OPENROUTER_PREFIX, "claude-bridge:")):
             return resumed_model_name
         if cls._is_catalog_model(model_name=resumed_model_name):
             return resumed_model_name

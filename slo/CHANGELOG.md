@@ -78,6 +78,22 @@ this release also ships every 0.30.2 change listed below.
 
 ## [Unreleased]
 
+### Added
+
+- Claude bridge steering through the shared queue, including fresh native restart after a parked tool round without duplicate tool execution.
+- Typed orchestrator tools and Claude-backed children, including headless orchestrators and child authentication-failure reporting without fallback.
+- History-off parity: each new prompt starts with empty host context and a fresh native session.
+
+### Changed
+
+- Model replacement retains orchestrator tools, prompts and pool in both directions.
+- Rewrite the existing Claude bridge README section with current controls, shared-history behavior, offline verification boundaries and operator-only release limits.
+
+### Verification
+
+- Offline A1–A6/A18 cover steering, ordered admission, restart, failed cleanup, proven-unsent retry and abort; A7–A12 cover typed inventory, retained orchestration, scripted children and headless launch policy; A13–A16 cover reset/drain and history parity; A17 checks SDK pin and bundled CLI packaging without executing it.
+- These checks do not establish live account/native compatibility or D1 release approval.
+
 ### Fixed
 
 - **Launcher finalization no longer refuses real legacy console scripts.**

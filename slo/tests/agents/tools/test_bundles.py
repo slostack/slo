@@ -10,6 +10,7 @@ from src.agents.tools.bundles import (
     create_all_tools,
     create_connector_tools,
     create_extended_tools,
+    create_local_tools,
 )
 from src.agents.tools.prompt_snippets import TOOL_PROMPT_SNIPPETS
 
@@ -55,6 +56,42 @@ class TestCreateConnectorTools:
         monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
 
         assert len(create_connector_tools()) == 5
+
+
+class TestCreateLocalTools:
+    """``create_local_tools`` is the ten built-in tools, never connectors."""
+
+    def test_names_and_order(self) -> None:
+        assert [t.name for t in create_local_tools()] == [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "grep",
+            "find",
+            "ls",
+            "read_pdf",
+            "now",
+            "show_git_diff",
+        ]
+
+    def test_ignores_configured_connector_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
+        monkeypatch.setenv("SLO_ATLASSIAN_SITE_URL", "https://x.atlassian.net")
+        monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "x@x.com")
+        monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
+
+        assert len(create_local_tools()) == 10
+
+    def test_extended_is_local_plus_connectors(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("SLO_CONNECTORS_DIR", str(tmp_path))
+        monkeypatch.setenv("SLO_ATLASSIAN_SITE_URL", "https://x.atlassian.net")
+        monkeypatch.setenv("SLO_ATLASSIAN_EMAIL", "x@x.com")
+        monkeypatch.setenv("SLO_ATLASSIAN_API_TOKEN", "tok")
+
+        assert create_extended_tools() == [*create_local_tools(), *create_connector_tools()]
 
 
 class TestCreateExtendedTools:

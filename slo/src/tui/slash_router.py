@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Literal, Optional, Protocol
 from unittest.mock import Mock
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -139,10 +139,42 @@ class SlashCommandResultDAO(BaseModel):
         return self
 
 
+class SlashCommandAdmissionDAO(BaseModel):
+    """Pre-dispatch intent; the app retains preparation and activity lifetime."""
+
+    action: Literal["dispatch", "prepare", "reject"]
+    refresh_model_context: bool = False
+
+
 class SlashRouter:
     """Dispatch ``/<cmd> [args...]`` lines from the TUI."""
 
     _REGISTRY: SlashCommandRegistry = build_default_registry()
+
+    @classmethod
+    def admit(cls, *, line: str, preparation_status: str) -> SlashCommandAdmissionDAO:
+        """Classify input before the app acquires activity or starts preparation.
+
+        Preserve raw-token admission rather than expanding registry aliases.
+
+        Args:
+            line: Full slash input; outer whitespace is ignored.
+            preparation_status: Current session preparation status.
+
+        Returns:
+            App-owned preparation intent or permission to dispatch, with exact
+            model-refresh context invalidation intent on the ready path.
+        """
+        stripped: str = line.strip()
+        refresh: bool = stripped == "/model refresh"
+        if preparation_status == "ready":
+            return SlashCommandAdmissionDAO(action="dispatch", refresh_model_context=refresh)
+        if refresh:
+            return SlashCommandAdmissionDAO(action="prepare")
+        tokens: list[str] = stripped.split(maxsplit=1)
+        if tokens and tokens[0] in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
+            return SlashCommandAdmissionDAO(action="dispatch")
+        return SlashCommandAdmissionDAO(action="reject")
 
     @classmethod
     async def dispatch(

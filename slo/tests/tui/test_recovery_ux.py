@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.slo_agent.events.stream import AgentStreamEventDAO, StreamEventKind
 from src.tui.components.chat_transcript.adapters.transcript_projector import TranscriptProjectionAdapter
 
 from tests.tui.test_transcript_projector import FakeHost
@@ -129,41 +129,25 @@ class TestSawFailedEventSuppression:
 
 
 class TestApplyRecoverySpinnerUpdate:
-    """``SloTUI._apply_recovery_spinner_update`` structure verified via source inspection."""
+    """Recovery translation preserves status without consuming projector notices."""
 
-    def test_recovery_kinds_in_spinner_override_clear_exclusion_set(self) -> None:
-        """All three recovery kinds are in the spinner-override-clear exclusion set."""
-        import inspect
-        from src.tui.app import SloTUI
+    def test_recovery_status_copy_and_normal_reset(self) -> None:
+        """Each recovery transition overrides status until an ordinary event arrives."""
+        from src.tui.session_event_presentation import SessionEventPresentation
 
-        src = inspect.getsource(SloTUI._render_event)  # type: ignore[attr-defined]
-        assert "recovery_started" in src
-        assert "recovery_succeeded" in src
-        assert "recovery_exhausted" in src
-
-    def test_apply_recovery_spinner_update_method_exists(self) -> None:
-        """``SloTUI`` has a ``_apply_recovery_spinner_update`` method."""
-        from src.tui.app import SloTUI
-
-        assert hasattr(SloTUI, "_apply_recovery_spinner_update")
-
-    def test_apply_recovery_spinner_update_handles_all_recovery_kinds(self) -> None:
-        """The method source contains all three recovery kind branches."""
-        import inspect
-        from src.tui.app import SloTUI
-
-        src = inspect.getsource(SloTUI._apply_recovery_spinner_update)  # type: ignore[attr-defined]
-        assert "recovery_started" in src
-        assert "recovery_succeeded" in src
-        assert "recovery_exhausted" in src
-
-    def test_render_event_calls_apply_recovery_spinner_update(self) -> None:
-        """``_render_event`` calls ``_apply_recovery_spinner_update``."""
-        import inspect
-        from src.tui.app import SloTUI
-
-        src = inspect.getsource(SloTUI._render_event)  # type: ignore[attr-defined]
-        assert "_apply_recovery_spinner_update" in src
+        statuses: dict[StreamEventKind, str] = {
+            "recovery_started": "Recovering from error…",
+            "recovery_succeeded": "Recovered — continuing.",
+            "recovery_exhausted": "Could not recover automatically.",
+        }
+        for kind, expected in statuses.items():
+            presentation = SessionEventPresentation.build(event=AgentStreamEventDAO(kind=kind))
+            assert presentation.update_spinner
+            assert presentation.spinner_status == expected
+            assert not presentation.notice_only
+        ordinary = SessionEventPresentation.build(event=AgentStreamEventDAO(kind="text_delta", delta="ok"))
+        assert ordinary.update_spinner
+        assert ordinary.spinner_status is None
 
 
 # ── replay guard ──────────────────────────────────────────────────────────────

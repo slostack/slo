@@ -16,7 +16,10 @@
   commit/branch conventions, specification conventions, and the rule for
   keeping this README current. Exact values (timeouts, env-var defaults,
   caps, on-disk layouts, step-by-step how-tos) live in the knowledge base at
-  KB `slo/operational-reference.md`. The root `RESEARCH.md` is a gitignored, local project-memory file.
+  KB `slo/operational-reference.md`. Coding guidance is collected in
+  [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md).
+  Historical local research is preserved with provenance in KB
+  `slo/codebase-index.md` → “Local research snapshot — claude-bridge, 2026-11-07”.
 - Every code excerpt cites its source as `path/to/file.py:line-line`. Open
   the file in your editor; the citation is the contract.
 
@@ -38,10 +41,27 @@ Slo lives in a monorepo. This book covers the **`slo/` subdirectory only**
 specifications under `specifications/` and the Knowledge Base under
 `KB/slo/` are referenced where relevant but are not the subject.
 
-This README is the single maintained reference for the codebase (it
-replaces the former `AGENTS.md`). The repository instruction file that
+This README is the maintained architecture and runtime reference (it
+replaces the former `AGENTS.md`). [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md)
+owns coding conventions; source findings and review gates are in the
+[conventions assessment](../../specifications/projects/slo/specifications/101-slo-claude-bridge/refactor/01-refactor.md). The repository instruction file that
 Slo auto-loads into every agent session is `SLO.md`; durable,
 value-level project knowledge lives in KB `slo/operational-reference.md`.
+
+### Presentation and output ownership
+
+`src/tui/session_event_presentation.py` contains `SessionEventPresentation` and
+its typed result, `SessionEventPresentationDAO`. They translate session notices
+and spinner status without owning subscriptions, tasks or widget lifetime.
+`SloTUI` retains those lifetimes and child routing; the existing transcript
+projector renders ordinary streamed text, thinking and tools.
+
+`SlashRouter.admit` returns `SlashCommandAdmissionDAO` for preparation admission
+and exact `/model refresh` intent. The app retains preparation, session replacement,
+abort, editor launch and shutdown. `/clear` clears presentation, not durable history.
+In `src/cli/headless.py`, `_HeadlessJSONLWriter` writes already-redacted events to
+a borrowed stream; `HeadlessRunner` retains redaction, bookkeeping and notification
+order. The writer never closes the stream.
 
 ### What Slo is
 
@@ -282,6 +302,112 @@ suite; `make smoke` runs only smoke tests; `make lint` checks **src and tests**.
 A passing test suite does not waive a failing static or live-acceptance gate.
 
 ---
+
+## Experimental Claude SDK bridge
+
+Explicit `claude-bridge:<model-name>` routes run through
+`SloAgentSession → SloAgent / existing graph → SloClaudeBridge(BaseChatModel) →
+SloClaudeBridgeAdapter → official ClaudeSDKClient → Claude Code`. Direct
+Anthropic routes are unchanged. The same bridge instance is retained separately
+through `SloBridgeProtocol` for final-context configuration, cancellation and close.
+The portable boundary lives in `src/bridges/claude/sdk`; it does not import Slo,
+LangChain or Textual.
+
+Native fragment reconciliation lives in `sdk/response.py`: streamed blocks are
+corroborated by response-scoped assistant fragments before tool publication.
+`sdk/transport.py` guards raw assistant block kinds before the official SDK can
+discard unknown kinds; supported blocks' extra vendor metadata is ignored.
+Only text, thinking and tool_use blocks are accepted. A per-invocation admission
+budget rejects excessive retained evidence rather than evicting late-conflict
+snapshots. This is not an exact heap or transient SDK allocation bound.
+
+Set `SLO_CLAUDE_BRIDGE_ENABLED=1` to opt in. In the TUI, use `/new`, type
+`/model claude-bridge:` and narrow the autocomplete, Tab to select, then Enter.
+With Slo history enabled, successive prompts resume native context when the
+consumed prefix still matches. Resume, model replacement and compaction hand off
+Slo history as a labelled transcript when a fresh native session is needed.
+Commands and startup notices are not conversation replay. Each completed native
+invocation disconnects before success; a matching follow-up uses its result's
+session ID through the SDK `resume` option. Native resume is a cache, not history.
+
+`/steer` uses the shared agent queue. After a text answer it continues natively;
+after a tool round it cancels and joins the parked native invocation, then starts
+fresh with the call/result transcript followed by the steer. Tools execute only
+once. This costs one fresh native session and re-sent transcript, losing that
+turn's native prompt cache. `/abort` joins native cleanup before its terminal;
+the next prompt rebuilds from Slo history. `/new` starts a clean host session.
+Unconfirmed cleanup retains the old owner: retry `/model` or `/new` explicitly.
+
+`/model` in either direction retains the same orchestrator tools and sub-agent
+pool, including custom system/append prompts. Claude orchestrators use
+`spawn_sub_agents`, `launch_workflow` and `workflow_status`; headless
+`--orchestrator` exposes spawn only to prevent nested detached workflows. Claude
+children keep their qualified route and report authentication failures as failed
+tasks, without fallback; the parent can continue. Each child starts its own Claude
+process using the shared login; subscription rate limits remain the operator's
+concern and `MAX_PARALLEL_TASKS` is unchanged. Children inherit `HOME` and the
+opt-in, but not `CLAUDE_CONFIG_DIR` or `ANTHROPIC_*` secrets. The pool's default
+child model stays fixed at attach time, for every route.
+
+History off means an empty message history and fresh native session for each new
+prompt, just like direct models; the bridge keeps no alternate live history.
+Within one host turn, tool-result continuation still uses the same native round.
+For headless use an explicit qualified route, for example:
+
+```bash
+SLO_CLAUDE_BRIDGE_ENABLED=1 slo run --model claude-bridge:claude-haiku-5-5 -p 'Hello'
+```
+
+Exact local route families are `claude-bridge:claude-{haiku,sonnet,opus,fable}-<version>`.
+The inclusive requested range is interpreted as `4-8`, `4-9`, `5-0`, `5-1`, `5-2`,
+`5-3`, `5-4`, `5-5`, not every imaginable decimal version. For example,
+`claude-bridge:claude-opus-4-8` and `claude-bridge:claude-haiku-5-5` are selectable.
+Existing catalog identifiers `claude-bridge:claude-sonnet-4-6`,
+`claude-bridge:claude-haiku-4-5`, `claude-bridge:claude-fable` and
+`claude-bridge:claude-fable-5` are retained. These are **local routes**, not a claim
+that each name exists upstream or is available to your native account. Existing
+names come from Slo's committed catalog; the family/version expansion is explicit
+operator-requested routing. No discovery or entitlement inference is performed.
+Upstream rejection remains a failure (safe native subtype/HTTP status when supplied),
+with no silent fallback. Unqualified `claude-*` names still use normal Anthropic.
+
+All route IDs remain qualified through configuration, picker, factory and portable
+session options; only the native SDK model argument removes `claude-bridge:`.
+The existing catalog shape requires numeric host planning values: 200K context,
+4096 output and 60 local RPM, no host retries or known TPM.
+Slo's `/reasoning` controls native effort: `minimal` maps to `low`;
+`low`, `medium`, `high`, `xhigh`, and `max` pass through to SDK `effort`
+with adaptive thinking. `off` disables extended thinking and omits effort.
+The default reasoning level is `high`; the native model may reject unsupported effort values.
+These are Slo planning policy, **not measured provider capacity, reasoning support,
+entitlement, availability, rate limits or billing guarantees**. Unknown native
+properties remain unchecked. Local rows are derived for presentation/admission and
+never inserted into shared catalog snapshots or cache serialization.
+`SLO_CLAUDE_BRIDGE_EXECUTABLE` optionally selects a trusted absolute Claude Code
+executable; otherwise the pinned SDK bundle is used. No PATH probing, token copy
+or Slo OAuth refresh is part of this route. Sign in using Claude Code `/login`
+outside Slo before selecting the route. Changing that login affects shared native
+account state. **Native transcripts may persist even when Slo history is off.**
+
+Supported Python SDK pin: 0.2.176, declared bundled CLI 2.1.316, Python 3.11.
+SDK disconnect acknowledgement is not guaranteed process reap. No stronger
+sandbox, zero-native-retry, billing or account-access guarantee is made.
+Inherited native API-key/token/gateway/cloud overrides are rejected; supported
+empty tools/MCP/settings/skills/plugins controls and bare mode are requested.
+
+Local coding tools, images, continuation, shared-history resume and compaction
+use the existing graph/executor/history owners. Plugin and connector tools remain
+unavailable on Claude routes; model pools and fallback stay refused. Tool results
+over the CLI's 500,000-character ceiling arrive as a stub.
+
+Offline tests use the real session, graph, filesystem history, SDK and sub-agent
+pool with scripted vendor transport and child-process boundaries. They never run
+a real managed child or the real Claude binary. Static packaging proofs check the
+SDK pin and bundled executable/version without executing it. These are not
+native/account verification; no live account test has been authorized or run.
+The operator's installed-build/manual checklist and D1 billing/permission sign-off
+remain separate: engineering cannot close D1 or authorize a version bump/tag.
+The opt-in remains required pending that checklist.
 
 ## Optional Herdr integration
 
@@ -876,15 +1002,15 @@ The participants, roughly in order of appearance:
 
 | Object | Lives at | What it does |
 |---|---|---|
-| `PromptInput` | `src/tui/app.py:33` | The text-area widget that captures the user's typing |
-| `SloTUI` | `src/tui/app.py:78` | The `App` subclass; routes events; owns the transcript + fixed spinner; is the projector's mount **host** |
-| `SloAgentSession` | `src/agents/slo_agent/session.py` | One agent per process; in-flight guard; persistent-history orchestration; subscriber fan-out |
+| `PromptInputComponent` | `src/tui/components/prompt_input/component.py` | The text-area widget that captures the user's typing |
+| `SloTUI` | `src/tui/app.py` | The `App` subclass; routes events; owns the transcript + fixed spinner; composes the transcript component |
+| `SloAgentSession` | `src/agents/slo_agent/sessions/service.py` | One agent per process; in-flight guard; persistent-history orchestration; subscriber fan-out |
 | `SloAgent` | `src/agents/slo_agent/agent.py` | The stateful ReAct loop; runs the dual-mode graph stream (`react_streaming`) |
-| LangGraph `StateGraph` | `src/agents/slo_agent/graph.py:build_slo_agent` | The compiled state machine that drives the loop |
+| LangGraph `StateGraph` | `src/agents/slo_agent/graph/service.py:build_slo_agent` | The compiled state machine that drives the loop |
 | `AssistantChunkNormalizer` | `src/agents/slo_agent/assistant_chunk_normalizer.py` | Per-turn; turns raw `AIMessageChunk`s into ordered `AgentStreamEventDAO`s |
 | `TurnStreamAccumulator` | `src/agents/slo_agent/turn_stream_accumulator.py` | Per-turn; holds completed-node truth (final text, stop-hook input) |
-| `AgentStreamEventDAO` | `src/agents/slo_agent/stream_event_dao.py` | The normalized stream-event contract — 13 `kind`s |
-| `TranscriptProjector` | `src/tui/transcript_projector.py` | Projects live events **and** replay entries into per-message transcript widgets |
+| `AgentStreamEventDAO` | `src/agents/slo_agent/events/stream.py` | The normalized stream-event contract; `StreamEventKind` defines its supported kinds |
+| `TranscriptProjectionAdapter` | `src/tui/components/chat_transcript/adapters/transcript_projector.py` | Projects live events **and** replay entries into per-message transcript widgets |
 | `UserMessageBlock` | `src/tui/widgets/user_message_block.py` | One user turn, rendered as padded markdown |
 | `AssistantStreamThinkingBlock` | `src/tui/widgets/assistant_stream_thinking_block.py` | One thinking segment, keyed by normalized `block_id`; sealed by its repair end or a terminal sweep |
 | `AssistantStreamBlock` | `src/tui/widgets/assistant_stream_block.py` | One assistant iteration, answer-only (thinking lives on the sibling thinking block) |
@@ -2897,20 +3023,18 @@ return `None`.
 
 ### 8.4 Coverage Discipline
 
-The repo follows a strict **one test per decision point** policy:
-
-- Every `if`/`elif`/`try`/`except` branch in production code has a test
-  that exercises it.
-- Test names follow `test_<method>_<expected_outcome>_<when_condition>`.
-- Tests are organised by class, one class per method-under-test.
-
-`make test` runs the full suite (currently 1300+ tests). A new feature
-that doesn't ship with tests is not done.
+Follow [test-verification-policy](skills/coding/test-verification-policy/SKILL.md)
+and [the verification conventions](CODING_CONVENTIONS.md#7-verification-and-safe-delivery).
+Prove meaningful decisions, changed boundaries and critical failure paths through
+observable journeys; this is not a one-test-per-branch or per-method quota.
+For example, one prompt-to-history journey can prove submission, execution and
+persisted ordering together. `make test` is the full non-e2e gate.
 
 ### 8.5 Suite Rules
 
-- **Never real keys in the default gate.** Tests use `FauxChatModel`
-  (`src/agents/providers/faux.py`) for every LLM call.
+- **Never real keys in the default gate.** Use scripted provider boundaries,
+  such as `FauxChatModel` (`src/agents/providers/faux.py`), or an injected SDK
+  transport for a Claude bridge journey; keep internal owners real.
 - **Default gate:** `pytest -m "not e2e"` (set in `pyproject.toml`
   `addopts`). Run `pytest -m e2e` only when real provider credentials are
   intentionally in scope.
@@ -2925,8 +3049,8 @@ that doesn't ship with tests is not done.
 - **Never real terminal windows.** `VisualizerLauncher.launch()` opens a real
   Terminal/iTerm window running `slo visualize --follow` that outlives the
   suite. Any test path that reaches it (a `sub_agent_spawned` event or a
-  `launch_workflow` tool result through `SloTUI._render_event`) must patch
-  `VisualizerLauncher.launch` or inject `spawn=`. Two suite-wide guards back
+  `launch_workflow` tool result through `SloTUI._render_event`) must use an injected
+  safe `spawn=` collaborator, not patch internal methods. Two suite-wide guards back
   this up: `environments/tests.env` sets `SLO_AUTO_VISUALIZE=0` (covers
   `make test`), and the autouse `_never_spawn_real_terminals` fixture in
   `tests/conftest.py` stubs `VisualizerLauncher._default_spawn` (covers bare
@@ -3459,7 +3583,7 @@ into replay.
 | **ReAct** | Reason-and-act — the agent loop pattern: think → call a tool → observe → think again. |
 | **`StateGraph`** | LangGraph's state-machine builder. Compiles to a runnable. |
 | **Dual-mode stream** | `graph.astream(stream_mode=["messages","updates"])` — token-level deltas (`messages`) plus completed node truth (`updates`), reconciled per turn. |
-| **`AgentStreamEventDAO`** | The normalized stream-event contract (13 `kind`s). Replaces `ProgressEventDAO` on the interactive path. |
+| **`AgentStreamEventDAO`** | The normalized stream-event contract; `StreamEventKind` defines its supported kinds. Replaces `ProgressEventDAO` on the interactive path. |
 | **`AssistantChunkNormalizer`** | Per-turn; turns raw `AIMessageChunk`s into ordered `*_start`/`*_delta`/`*_end` events. |
 | **`TurnStreamAccumulator`** | Per-turn; holds completed-node truth (final text, tool messages) for the stop-hook and final answer. |
 | **`TranscriptProjector`** | Stateful event→widget machine. Mounts live stream events *and* replay entries: one `UserMessageBlock` per user turn, one `AssistantStreamBlock` per iteration, one `ToolExecutionBlock` per tool call. |
@@ -4153,27 +4277,19 @@ model-visible tool result.
 
 ### Style rules
 
-- **Google-style docstrings** on every public function and method.
-- **Named arguments** at every call site with two or more arguments:
-  `foo(bar=baz, qux=quux)`.
-- **Explicit type hints** on every parameter and return value;
-  `Optional[T]` with `= None` for nullable parameters; specific containers
-  (`list[str]`).
-- **Black** formatting, line length 110 (`black src/ tests/`).
-- **No bare `Any`** — prefer `BaseChatModel`, `BaseTool`, `BaseMessage`, etc.
-- **Declarative method structure** — one decision per method; orchestrators
-  read like a table of contents; no nested conditionals past two levels.
-- **Class convention** — core logic lives in a class with `@classmethod`
-  methods; the public entry is `invoke` (or `build` / `load` / `create`).
-  Free functions are reserved for `@tool` bridges, LangGraph nodes, and test
-  helpers.
+[CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) owns the rules and governing skill
+links: Tell, Don't Ask; test-first development; named arguments; explicit types;
+and no regression apply project-wide. It also defines Python decomposition,
+class/instance ownership and scoped TUI contracts. For example,
+`await adapter.handle(event=notice)` does not transfer ownership of its borrowed
+target. Historical excerpts in this guide are not blanket coding precedent.
 
 ### Testing rules
 
-The suite rules (FauxChatModel only, the `not e2e` default gate,
+The suite rules (scripted provider boundaries, the `not e2e` default gate,
 `environments/tests.env`, the no-real-terminal-windows guards, test layout,
 `asyncio_mode = "auto"`) are in [§8.5](#85-suite-rules); the
-one-test-per-decision policy is in [§8.4](#84-coverage-discipline).
+behavior-oriented coverage policy is linked from [§8.4](#84-coverage-discipline).
 
 ### Release proof
 

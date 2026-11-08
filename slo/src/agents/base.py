@@ -11,8 +11,14 @@ precedence chain. ``LLMFactory`` retains the model-name → provider-class
 dispatch and the ``MODEL_DEFAULTS`` fallback chain.
 """
 
+import os
+from pathlib import Path
+
 import dataclasses
-from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeAlias, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Optional, Protocol, TypeAlias, cast, runtime_checkable
+
+from src.bridges.protocol import SloBridgeProtocol
+from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
 
 import httpx
 
@@ -89,6 +95,11 @@ class LLMBuildProduct(Protocol):
         ...
 
     @property
+    def bridge_owner(self) -> Optional[SloBridgeProtocol]:
+        """Return the same model as its retained lifecycle owner, or None."""
+        ...
+
+    @property
     def supports_explicit_caching(self) -> bool:
         """Return whether the provider needs explicit ``cache_control`` markers."""
         ...
@@ -111,6 +122,7 @@ class LLMBuildResult:
 
     llm: LLM
     supports_explicit_caching: bool
+    bridge_owner: Optional[SloBridgeProtocol] = None
 
 
 # Compatibility re-exports. Route ownership lives in ``provider_for_model``.
@@ -147,6 +159,8 @@ class LLMFactory:
         reasoning_level: ReasoningLevel = "off",
         http_async_client: Optional[httpx.AsyncClient] = None,
         snapshot: Optional[ModelCatalogSnapshotDAO] = None,
+        bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
+        bridge_adapter: Optional[SloBridgeAdapterProtocol] = None,
     ) -> LLMBuildResult:
         """Create a LangChain chat model from a model name.
 
@@ -180,6 +194,39 @@ class LLMFactory:
             ValueError: When ``model_name`` matches no supported prefix, or
                 when ``CredentialResolver.require`` cannot resolve a credential.
         """
+        if model_name.startswith("claude-bridge:"):
+            from src.bridges.claude.bridge import SloClaudeBridge
+            from src.bridges.claude.routes import ClaudeBridgeRoute
+            from src.bridges.claude.sdk.adapter import SloClaudeBridgeAdapter
+            from src.bridges.claude.sdk.dao import ClaudeBridgeConfigurationDAO
+
+            ClaudeBridgeRoute.validate(model_name=model_name)
+            if model_kwargs:
+                raise ValueError("Claude bridge does not support arbitrary model kwargs.")
+            resolved_bridge_reasoning = resolve_reasoning_config(
+                model_name=model_name, requested_level=reasoning_level, snapshot=snapshot
+            )
+            if bridge_adapter is not None and bridge_adapter_class is not None:
+                raise ValueError("Supply a prepared adapter or an adapter class, not both.")
+            adapter_class = bridge_adapter_class or SloClaudeBridgeAdapter
+            bridge = SloClaudeBridge(
+                model_name=model_name,
+                effort=cast(
+                    Optional[Literal["low", "medium", "high", "xhigh", "max"]],
+                    resolved_bridge_reasoning.provider_effort,
+                ),
+                bridge_adapter=bridge_adapter
+                or adapter_class.register(
+                    configuration=ClaudeBridgeConfigurationDAO(
+                        executable=(
+                            Path(executable)
+                            if (executable := os.environ.get("SLO_CLAUDE_BRIDGE_EXECUTABLE"))
+                            else None
+                        )
+                    )
+                ),
+            )
+            return LLMBuildResult(llm=bridge, supports_explicit_caching=False, bridge_owner=bridge)
         provider: ProviderName = (
             ModelCatalogService.entry_for_model(model_name=model_name, snapshot=snapshot).provider
             if snapshot is not None
@@ -1119,6 +1166,8 @@ class LLMFactory:
         from src.agents.providers.model_pool import ModelPool
         from src.agents.slo_agent.graph import adapt_chatgpt_backend_request
 
+        if any(entry.model_name.startswith("claude-bridge:") for entry in pool_dao.entries):
+            raise ValueError("Claude bridge does not support model pools or fallback.")
         models: dict[str, BaseChatModel] = {}
         for entry in pool_dao.entries:
             build_result: LLMBuildResult = cls.create(

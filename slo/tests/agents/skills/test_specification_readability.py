@@ -53,6 +53,7 @@ def test_overview_keeps_interfaces_and_sub_specs_keep_complete_contracts() -> No
     ):
         assert requirement in breakdown
 
+
 def test_review_checks_semantic_preservation_not_fixed_heading_count() -> None:
     """Shortening must preserve failure, compatibility, and acceptance contracts."""
     text = (SKILLS / REVIEW).read_text(encoding="utf-8")
@@ -77,6 +78,7 @@ def test_breakdown_and_workflow_preserve_ownership_and_review_gates() -> None:
     assert "consolidation the overview committed to" in workflow
     assert "retest and re-review" in workflow
     assert "independent, adversarial review" in workflow
+
 
 def test_sample_demonstrates_overview_contract_and_verifiable_python() -> None:
     """The shipped example must demonstrate—not just describe—the new format."""

@@ -593,6 +593,7 @@ class _DispatchingSession:
         self.abort: MagicMock = MagicMock()
         # Reporting seam: explicit None activation result and real typed safe/drained
         # close outcomes for this resource-free fixture (never bare auto-mocks).
+        self.close_agent_resources: AsyncMock = AsyncMock(return_value=None)
         self.start_external_reporting: AsyncMock = AsyncMock(return_value=None)
         self.close_external_reporting: AsyncMock = AsyncMock(
             return_value=HerdrReporterCloseOutcomeDAO(replacement="safe", resources="drained")
@@ -770,6 +771,7 @@ class TestHeadlessRunnerChildControl:
         assert drained_with_capability and drained_with_capability[0] is not None
         assert drained_with_capability[0].accepting is False  # closed before the final fleet drain
         # Reporting lifetime was genuinely joined at the normal exit boundary.
+        harness.session.close_agent_resources.assert_awaited_once_with()
         harness.session.start_external_reporting.assert_awaited_once_with()
         harness.session.close_external_reporting.assert_awaited_once_with()
         harness.session.finish_retired_reporting_cleanup.assert_awaited_once_with()
@@ -879,6 +881,7 @@ class TestHeadlessRunnerChildControl:
 
         assert receipt.outcome == "aborted"
         # Runner cancellation still awaited activation and both close gateways.
+        harness.session.close_agent_resources.assert_awaited_once_with()
         harness.session.start_external_reporting.assert_awaited_once_with()
         harness.session.close_external_reporting.assert_awaited_once_with()
         harness.session.finish_retired_reporting_cleanup.assert_awaited_once_with()

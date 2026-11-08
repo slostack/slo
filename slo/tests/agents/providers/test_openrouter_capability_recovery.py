@@ -75,9 +75,12 @@ def test_reasoning_control_distinguishes_unknown_from_disabled(
     available: bool, effort: str | None, expected: dict[str, object]
 ) -> None:
     """Send explicit disable only when the prepared catalog establishes controls."""
-    assert OpenRouterReasoningPolicy.build(
-        controls_available=available, reasoning_effort=effort, disable_available=True
-    ) == expected
+    assert (
+        OpenRouterReasoningPolicy.build(
+            controls_available=available, reasoning_effort=effort, disable_available=True
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(

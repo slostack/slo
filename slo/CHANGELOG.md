@@ -78,6 +78,12 @@ this release also ships every 0.30.2 change listed below.
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-11-08
+
+### Changed
+
+- Enable Claude bridge routes by default in configuration for development and production. Set `SLO_CLAUDE_BRIDGE_ENABLED=0`, `false`, `no`, or `off` to disable explicitly; native authentication and release sign-off remain separate.
+
 ### Added
 
 - Claude bridge steering through the shared queue, including fresh native restart after a parked tool round without duplicate tool execution.

@@ -321,7 +321,10 @@ Only text, thinking and tool_use blocks are accepted. A per-invocation admission
 budget rejects excessive retained evidence rather than evicting late-conflict
 snapshots. This is not an exact heap or transient SDK allocation bound.
 
-Set `SLO_CLAUDE_BRIDGE_ENABLED=1` to opt in. In the TUI, use `/new`, type
+Claude bridge routes are enabled by default in development and installed production builds.
+Set `SLO_CLAUDE_BRIDGE_ENABLED=0` (also `false`, `no`, or `off`, case-insensitive)
+to disable them explicitly. Native Claude authentication is still required; enabling
+the bridge does not select a model or start a native process. In the TUI, use `/new`, type
 `/model claude-bridge:` and narrow the autocomplete, Tab to select, then Enter.
 With Slo history enabled, successive prompts resume native context when the
 consumed prefix still matches. Resume, model replacement and compaction hand off
@@ -407,7 +410,7 @@ SDK pin and bundled executable/version without executing it. These are not
 native/account verification; no live account test has been authorized or run.
 The operator's installed-build/manual checklist and D1 billing/permission sign-off
 remain separate: engineering cannot close D1 or authorize a version bump/tag.
-The opt-in remains required pending that checklist.
+Default route availability does not replace that checklist or establish native/account verification.
 
 ## Optional Herdr integration
 

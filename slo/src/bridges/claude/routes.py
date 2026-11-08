@@ -1,6 +1,6 @@
 """Qualified local Claude Code routes, not a provider availability catalog."""
 
-import os
+from config.cfg import cfg
 
 from src.agents.model_catalog.dao import (
     ModelCatalogEntryDAO,
@@ -31,7 +31,7 @@ class ClaudeBridgeRoute:
         readiness owners consult it instead of repeating the raw prefix, so a
         malformed or disabled route can be denied before any native work or
         state mutation. An ordinary direct-provider name always returns
-        ``False``; route *support* (opt-in and family/version) is validated
+        ``False``; route *support* (configuration and family/version) is validated
         separately by :meth:`validate`.
 
         Args:
@@ -45,8 +45,8 @@ class ClaudeBridgeRoute:
 
     @staticmethod
     def is_enabled() -> bool:
-        """Return the explicit opt-in state without inspecting native authentication."""
-        return os.environ.get("SLO_CLAUDE_BRIDGE_ENABLED", "").lower() in {"1", "true", "yes"}
+        """Enable local routes by default unless configuration explicitly disables them."""
+        return (cfg("SLO_CLAUDE_BRIDGE_ENABLED") or "").strip().lower() not in {"0", "false", "no", "off"}
 
     @classmethod
     def model_names(cls) -> tuple[str, ...]:
@@ -74,10 +74,10 @@ class ClaudeBridgeRoute:
             model_name: Exact qualified identifier from configuration or selection.
 
         Raises:
-            ValueError: Opt-in is absent or the identifier is not locally supported.
+            ValueError: The bridge is explicitly disabled or the identifier is not locally supported.
         """
         if not cls.is_enabled():
-            raise ValueError("Claude bridge is opt-in; set SLO_CLAUDE_BRIDGE_ENABLED=1.")
+            raise ValueError("Claude bridge is disabled; unset SLO_CLAUDE_BRIDGE_ENABLED or set it to 1.")
         if model_name not in cls.model_names():
             raise ValueError(
                 "Unsupported Claude bridge model; use claude-bridge:claude-<family>-<version> "

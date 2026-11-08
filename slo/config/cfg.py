@@ -340,6 +340,8 @@ __cfg__: dict[str, str | None] = {
     "CONNECTOR_PREFER_ENV": "1" if CONNECTOR_PREFER_ENV else "0",
     "DEBUGPY": DEBUGPY,
     "DEBUGPY_PORT": str(DEBUGPY_PORT),
+    # Read the environment at call time; an absent bridge flag enables discovery.
+    "SLO_CLAUDE_BRIDGE_ENABLED": "1",
     "DEFAULT_MODEL_NAME": DEFAULT_MODEL_NAME,
     "DEPLOY_TOKEN": DEPLOY_TOKEN,
     "DEPLOY_TOKEN_USERNAME": DEPLOY_TOKEN_USERNAME,

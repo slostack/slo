@@ -274,3 +274,9 @@ def test_load_and_compatibility_views_never_start_discovery() -> None:
         assert len(MODEL_DEFAULTS) == len(snapshot.entries)
         assert len(MODEL_REASONING_CAPABILITIES) == len(snapshot.entries)
         assert len(MODEL_CATALOG) > 0
+
+
+@pytest.fixture(autouse=True)
+def provider_catalog_without_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep provider-only picker expectations independent of optional local routes."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")

@@ -117,3 +117,9 @@ def test_auth_dismissal_does_not_verify_missing_or_rotated_key(effective: str | 
     assert ModelSuggestionProjection._statuses[ProviderName.OPENROUTER] == (
         "credential changed; refresh required" if effective else "requires /auth"
     )
+
+
+@pytest.fixture(autouse=True)
+def provider_catalog_without_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep provider-only picker expectations independent of optional local routes."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")

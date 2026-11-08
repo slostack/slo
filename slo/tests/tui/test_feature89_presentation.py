@@ -555,3 +555,9 @@ async def test_direct_picker_keyboard_paints_and_selects_exact_route(
         await pilot.press("enter")
         await pilot.pause()
         assert session.active_model_name == "gpt-6-luna"
+
+
+@pytest.fixture(autouse=True)
+def provider_catalog_without_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep provider-only picker expectations independent of optional local routes."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="0")

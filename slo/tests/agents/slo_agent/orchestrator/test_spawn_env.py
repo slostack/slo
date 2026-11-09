@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from src.agents.slo_agent.orchestrator.spawn_env import (
+    AgentLaunchPolicy,
     build_headless_child_env,
     open_capture_file_append,
 )
@@ -23,6 +24,38 @@ def test_child_env_includes_exact_allowlist(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert child_env["PATH"] == "/bin"
     assert child_env["HOME"] == "/home/slo"
+
+
+@pytest.mark.parametrize(argnames="username", argvalues=["bridge-user", "", None])
+def test_child_env_preserves_user_when_present_without_inventing_one(
+    monkeypatch: pytest.MonkeyPatch, username: str | None
+) -> None:
+    """Keep the supplied Keychain account name; absence must not select another account."""
+    monkeypatch.delenv(name="USER", raising=False)
+    if username is not None:
+        monkeypatch.setenv(name="USER", value=username)
+
+    child_env: dict[str, str] = build_headless_child_env()
+
+    assert child_env.get("USER") == username
+    assert ("USER" in child_env) == (username is not None)
+
+
+def test_launch_policy_preserves_user_snapshot_without_forwarding_related_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Account metadata survives launch snapshots without expanding to USER-prefixed secrets."""
+    monkeypatch.setenv(name="USER", value="bridge-user")
+    monkeypatch.setenv(name="USER_TOKEN", value="synthetic-secret")
+    monkeypatch.setenv(name="SLO_USER_PASSWORD", value="synthetic-secret")
+    launch_policy = AgentLaunchPolicy()
+    monkeypatch.setenv(name="USER", value="changed-after-snapshot")
+
+    child_env: dict[str, str] = launch_policy.build_environment()
+
+    assert child_env["USER"] == "bridge-user"
+    assert "USER_TOKEN" not in child_env
+    assert "SLO_USER_PASSWORD" not in child_env
 
 
 def test_child_env_includes_nonsecret_slo_vars(monkeypatch: pytest.MonkeyPatch) -> None:

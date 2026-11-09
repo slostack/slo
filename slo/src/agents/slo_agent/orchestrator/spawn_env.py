@@ -30,7 +30,18 @@ __all__ = [
 # Includes the explicit Feature 75 kill switch ``SLO_PLUGINS_DISABLED`` so
 # headless children deterministically inherit the parent's plugin policy.
 _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("SLO_",)
-_ENV_ALLOWLIST_EXACT: tuple[str, ...] = ("PATH", "HOME", "LANG", "TERM", "PYENV_ROOT", "PYENV_VERSION")
+# Claude Code uses USER to locate its macOS Keychain account. Preserve this
+# non-secret account name at every managed launch boundary, including detached
+# orchestrators and relaunches, so their descendants retain the same login.
+_ENV_ALLOWLIST_EXACT: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "TERM",
+    "PYENV_ROOT",
+    "PYENV_VERSION",
+)
 _ENV_SECRET_MARKERS: tuple[str, ...] = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 

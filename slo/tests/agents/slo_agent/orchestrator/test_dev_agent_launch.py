@@ -35,9 +35,9 @@ class ImportOnlySpawn:
         """Run imports, not a CLI agent, and reap the finite child even on timeout."""
         self.argv, self.env = argv, env
         script = (
-            "import json,sys,src,config,src.cli; "
+            "import json,sys,os,src,config,src.cli; "
             "print(json.dumps({'origins':[src.__file__,config.__file__,src.cli.__file__],"
-            "'safe_path':sys.flags.safe_path,'no_user_site':sys.flags.no_user_site}))"
+            "'safe_path':sys.flags.safe_path,'no_user_site':sys.flags.no_user_site,'username':os.environ.get('USER')}))"
         )
         process = await asyncio.create_subprocess_exec(
             *argv[: argv.index("-m")],
@@ -64,6 +64,7 @@ async def test_detached_development_launch_imports_running_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The real tool persists identity and captures imports despite hostile cwd/env."""
+    monkeypatch.setenv(name="USER", value="bridge-user")
     root_owned = tmp_path.resolve(strict=True)
     foreign = tmp_path / "foreign"
     assert foreign.resolve().is_relative_to(root_owned)
@@ -115,6 +116,7 @@ async def test_detached_development_launch_imports_running_checkout(
     assert spawn.env["PYTHONPATH"] == str(root)
     capture = history / handle.orchestrator_session_id / "stdout.jsonl"
     observed = json.loads(capture.read_text(encoding="utf-8"))
+    assert observed["username"] == "bridge-user"
     assert observed["origins"] == [
         str(root / p) for p in ("src/__init__.py", "config/__init__.py", "src/cli/__init__.py")
     ]
@@ -141,8 +143,8 @@ class ManagedImportSpawn:
         """Start only imports; the real process owner drains and reaps it."""
         self.argv, self.env = argv, env
         script = (
-            "import json,sys,src,config,src.cli; "
-            "print(json.dumps({'origins':[src.__file__,config.__file__,src.cli.__file__]}))"
+            "import json,sys,os,src,config,src.cli; "
+            "print(json.dumps({'origins':[src.__file__,config.__file__,src.cli.__file__],'username':os.environ.get('USER')}))"
         )
         return await asyncio.create_subprocess_exec(
             *argv[: argv.index("-m")],
@@ -161,6 +163,7 @@ async def test_managed_development_launch_imports_and_persists_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Managed run reaches real subprocess imports and writes its terminal evidence."""
+    monkeypatch.setenv(name="USER", value="bridge-user")
     monkeypatch.setenv(name="SLO_DEV_MODE", value="1")
     history = tmp_path / "history"
     assert history.resolve().is_relative_to(tmp_path.resolve())
@@ -209,6 +212,7 @@ async def test_managed_development_launch_imports_and_persists_capture(
     root = Path(spawn_env.__file__).resolve().parents[4]
     assert spawn.env["PYTHONPATH"] == str(root)
     observed = json.loads((capture / "stdout.jsonl").read_text())
+    assert observed["username"] == "bridge-user"
     assert observed["origins"] == [
         str(root / p) for p in ("src/__init__.py", "config/__init__.py", "src/cli/__init__.py")
     ]
@@ -220,6 +224,7 @@ async def test_resume_imports_with_current_parent_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adoption: bool
 ) -> None:
     """Both resume boundaries preserve durable inputs and append real import output."""
+    monkeypatch.setenv(name="USER", value="bridge-user")
     monkeypatch.setenv(name="SLO_DEV_MODE", value="1")
     history = tmp_path / "history"
     assert history.resolve().is_relative_to(tmp_path.resolve())
@@ -272,6 +277,7 @@ async def test_resume_imports_with_current_parent_policy(
     assert spawn.env["SLO_WORKFLOW_ID"] == "wf-probe"
     root = Path(spawn_env.__file__).resolve().parents[4]
     observed = json.loads((history / "original" / "stdout.jsonl").read_text())
+    assert observed["username"] == "bridge-user"
     assert observed["origins"] == [
         str(root / p) for p in ("src/__init__.py", "config/__init__.py", "src/cli/__init__.py")
     ]
@@ -334,13 +340,15 @@ async def test_development_descendant_imports_running_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A finite child builds its own policy and imports the same code in a grandchild."""
+    monkeypatch.setenv(name="USER", value="bridge-user")
     monkeypatch.setenv(name="SLO_DEV_MODE", value="1")
     policy = spawn_env.AgentLaunchPolicy()
     leaf = (
         "import json,sys,os,src,config,src.cli; "
         "print(json.dumps({'origins':[src.__file__,config.__file__,src.cli.__file__],"
         "'mode':os.environ.get('SLO_DEV_MODE'),'safe':sys.flags.safe_path,"
-        "'user':sys.flags.no_user_site,'isolated':sys.flags.isolated}))"
+        "'user':sys.flags.no_user_site,'isolated':sys.flags.isolated,"
+        "'username':os.environ.get('USER')}))"
     )
     script = (
         "import subprocess; from src.agents.slo_agent.orchestrator.spawn_env import AgentLaunchPolicy; "
@@ -370,6 +378,7 @@ async def test_development_descendant_imports_running_source(
     root = Path(spawn_env.__file__).resolve().parents[4]
     assert observed == {
         "origins": [str(root / p) for p in ("src/__init__.py", "config/__init__.py", "src/cli/__init__.py")],
+        "username": "bridge-user",
         "mode": "1",
         "safe": True,
         "user": 1,

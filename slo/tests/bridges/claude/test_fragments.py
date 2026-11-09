@@ -14,7 +14,7 @@ from src.cli.headless import HeadlessRunner
 from claude_agent_sdk._internal.message_parser import parse_message
 import pytest
 
-from src.bridges.claude.sdk.response import NativeResponseAssembly
+from src.bridges.claude.sdk.response import NativeBlock, NativeResponseAssembly
 from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
 
 
@@ -452,3 +452,289 @@ def test_malformed_message_deltas_are_protocol_failures(delta: Any) -> None:
     with pytest.raises(ClaudeBridgeError) as failure:
         assembly.consume(event={"type": "message_delta", "delta": delta})
     assert failure.value.code == "stream_protocol_failed"
+
+
+def builtin_attempt_block(
+    *, index: int, call_id: str = "native", partial_json: str = ""
+) -> list[dict[str, Any]]:
+    """Return the native events of one complete built-in ``Bash`` tool_use block."""
+    events: list[dict[str, Any]] = [
+        {
+            "type": "content_block_start",
+            "index": index,
+            "content_block": {"type": "tool_use", "id": call_id, "name": "Bash", "input": {}},
+        }
+    ]
+    if partial_json:
+        events.append(
+            {
+                "type": "content_block_delta",
+                "index": index,
+                "delta": {"type": "input_json_delta", "partial_json": partial_json},
+            }
+        )
+    events.append({"type": "content_block_stop", "index": index})
+    return events
+
+
+def test_refused_builtin_tool_is_not_published_with_slo_calls() -> None:
+    """A2: a built-in tool_use is ignored; the Slo tool_use is the only published call."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    for event in builtin_attempt_block(index=0, partial_json='{"command": "ls"}'):
+        assembly.consume(event=event)
+    assembly.consume(
+        event={
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {
+                "type": "tool_use",
+                "id": "slo",
+                "name": "mcp__slo__read",
+                "input": {"path": "a"},
+            },
+        }
+    )
+    assembly.consume(event={"type": "content_block_stop", "index": 1})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    assert not assembly.calls  # Nothing is published before the message_stop boundary.
+    fragment = assembly.consume(event={"type": "message_stop"})
+    assert fragment.boundary is True
+    assert [call.tool_call_id for call in assembly.calls] == ["slo"]
+    assert [call.name for call in assembly.calls] == ["read"]
+    assert [call.arguments for call in assembly.calls] == [{"path": "a"}]
+
+
+def test_builtin_only_tool_use_boundary_publishes_no_calls() -> None:
+    """A3: a built-in-only tool_use response completes the boundary with no calls."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    for event in builtin_attempt_block(index=0, partial_json='{"command": "ls"}'):
+        assembly.consume(event=event)
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    fragment = assembly.consume(event={"type": "message_stop"})
+    assert fragment.boundary is True
+    assert assembly.calls == ()
+    assembly.validate_terminal()
+
+
+def builtin_response(
+    *, partial_json: str = '{"command": "ls"}', call_id: str = "native", stop_reason: str = "tool_use"
+) -> NativeResponseAssembly:
+    """Build a stopped built-in tool_use response awaiting its message_stop boundary."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    for event in builtin_attempt_block(index=0, call_id=call_id, partial_json=partial_json):
+        assembly.consume(event=event)
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": stop_reason}})
+    return assembly
+
+
+@pytest.mark.parametrize(
+    "partial_json",
+    ["{", "[]", '"text"', "null", '{"a": NaN}', '{"a": [Infinity]}', '{"a": [-Infinity]}', '{"a": 1e400}'],
+)
+def test_builtin_attempt_keeps_native_argument_validation(partial_json: str) -> None:
+    """Built-in attempts are ignored only after their JSON passes native validation."""
+    assembly = builtin_response(partial_json=partial_json)
+    with pytest.raises(ClaudeBridgeError) as caught:
+        assembly.consume(event={"type": "message_stop"})
+    assert caught.value.code == "stream_protocol_failed"
+    assert assembly.calls == ()
+
+
+@pytest.mark.parametrize("call_id", ["", "x" * 257])
+def test_builtin_attempt_keeps_native_id_validation(call_id: str) -> None:
+    """The 1..256 native ID bound applies to built-in attempts, not just Slo calls."""
+    assembly = builtin_response(call_id=call_id)
+    with pytest.raises(ClaudeBridgeError):
+        assembly.consume(event={"type": "message_stop"})
+    assert assembly.calls == ()
+
+
+@pytest.mark.parametrize("second_name", ["Bash", "mcp__slo__read"])
+def test_duplicate_native_ids_reject_across_builtin_and_slo_blocks(second_name: str) -> None:
+    """Duplicate tool_use IDs fail whatever their class and nothing is published."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    for event in builtin_attempt_block(index=0, call_id="same"):
+        assembly.consume(event=event)
+    assembly.consume(
+        event={
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "same", "name": second_name, "input": {}},
+        }
+    )
+    assembly.consume(event={"type": "content_block_stop", "index": 1})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    with pytest.raises(ClaudeBridgeError):
+        assembly.consume(event={"type": "message_stop"})
+    assert assembly.calls == ()
+
+
+def test_builtin_attempt_still_requires_a_tool_use_stop_reason() -> None:
+    """Stop-reason checks cover built-in attempts: tool_use blocks cannot end a turn."""
+    assembly = builtin_response(stop_reason="end_turn")
+    with pytest.raises(ClaudeBridgeError):
+        assembly.consume(event={"type": "message_stop"})
+    assert assembly.calls == ()
+
+
+def test_builtin_attempt_must_be_stopped_before_the_boundary() -> None:
+    """An unfinished built-in block is a protocol failure, not an ignorable attempt."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    assembly.consume(event=builtin_attempt_block(index=0)[0])
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    with pytest.raises(ClaudeBridgeError):
+        assembly.consume(event={"type": "message_stop"})
+    assert assembly.calls == ()
+
+
+BUILTIN_ECHO: dict[str, Any] = {
+    "type": "tool_use",
+    "id": "native",
+    "name": "Bash",
+    "input": {"command": "ls"},
+}
+
+
+def test_valid_builtin_echoes_corroborate_early_late_and_duplicate() -> None:
+    """Built-in echoes are corroborated like any block and publish no call or output."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    assembly.consume(event={"type": "content_block_start", "index": 0, "content_block": BUILTIN_ECHO})
+    early = echo(response_id="one", content=[BUILTIN_ECHO], uuid="early")
+    assembly.reconcile_echo(message=early)
+    assembly.reconcile_echo(message=early)
+    assembly.consume(event={"type": "content_block_stop", "index": 0})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    assembly.consume(event={"type": "message_stop"})
+    assembly.reconcile_echo(message=echo(response_id="one", content=[BUILTIN_ECHO], uuid="late"))
+    assert assembly.calls == ()
+    assert assembly.text == ""
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        {"name": "Read"},
+        {"id": "other"},
+        {"input": {"command": "pwd"}},
+        {"input": {"command": "ls", "extra": True}},
+    ],
+)
+@pytest.mark.parametrize("timing", ["early", "late"])
+def test_conflicting_builtin_echo_rejects(conflict: dict[str, Any], timing: str) -> None:
+    """A built-in echo that differs in name, ID or arguments is never silently accepted."""
+    conflicting = {**BUILTIN_ECHO, **conflict}
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    assembly.consume(event={"type": "content_block_start", "index": 0, "content_block": BUILTIN_ECHO})
+    assembly.consume(event={"type": "content_block_stop", "index": 0})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    with pytest.raises(ClaudeBridgeError):
+        if timing == "early":
+            assembly.reconcile_echo(message=echo(response_id="one", content=[conflicting]))
+            assembly.consume(event={"type": "message_stop"})
+        else:
+            assembly.consume(event={"type": "message_stop"})
+            assembly.reconcile_echo(message=echo(response_id="one", content=[conflicting]))
+
+
+@pytest.mark.parametrize("value,replay", [(True, 1), (False, 0)])
+def test_builtin_echo_keeps_json_boolean_distinct_from_number(value: bool, replay: int) -> None:
+    """Exact JSON identity applies to built-in echoes: True is not 1 and False is not 0."""
+    streamed = {**BUILTIN_ECHO, "input": {"flag": value}}
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    assembly.consume(event={"type": "content_block_start", "index": 0, "content_block": streamed})
+    assembly.consume(event={"type": "content_block_stop", "index": 0})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    assembly.consume(event={"type": "message_stop"})
+    with pytest.raises(ClaudeBridgeError):
+        assembly.reconcile_echo(
+            message=echo(response_id="one", content=[{**streamed, "input": {"flag": replay}}])
+        )
+
+
+def test_complete_call_still_rejects_non_slo_tools() -> None:
+    """The invariant remains: a built-in block can never be turned into a Slo call."""
+    assembly = builtin_response()
+    assembly.consume(event={"type": "message_stop"})
+    block = NativeBlock.model_validate({**BUILTIN_ECHO})
+    assert block.is_slo_tool() is False
+    with pytest.raises(ClaudeBridgeError):
+        block.complete_call()
+
+
+SLO_ECHO: dict[str, Any] = {
+    "type": "tool_use",
+    "id": "slo",
+    "name": "mcp__slo__read",
+    "input": {"path": "a"},
+}
+
+
+def mixed_response(*, builtin_json: str = '{"command": "ls"}', echoes: tuple[Any, ...] = ()) -> Any:
+    """Build a stopped Bash + Slo read response; echoes arrive before the boundary."""
+    assembly = NativeResponseAssembly()
+    assembly.consume(event={"type": "message_start", "message": {"id": "one"}})
+    for event in builtin_attempt_block(index=0, partial_json=builtin_json):
+        assembly.consume(event=event)
+    assembly.consume(event={"type": "content_block_start", "index": 1, "content_block": SLO_ECHO})
+    for message in echoes:
+        assembly.reconcile_echo(message=message)
+    assembly.consume(event={"type": "content_block_stop", "index": 1})
+    assembly.consume(event={"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    return assembly
+
+
+@pytest.mark.parametrize(
+    "builtin_json", ["{", "[]", "null", '{"a": NaN}', '{"a": [-Infinity]}', '{"a": 1e400}']
+)
+def test_malformed_builtin_attempt_withholds_valid_slo_call(builtin_json: str) -> None:
+    """ER106-02: one invalid built-in rejects the whole response; the valid Slo call is not published."""
+    assembly = mixed_response(builtin_json=builtin_json)
+    with pytest.raises(ClaudeBridgeError) as caught:
+        assembly.consume(event={"type": "message_stop"})
+    assert caught.value.code == "stream_protocol_failed"
+    assert assembly.calls == ()
+
+
+@pytest.mark.parametrize("conflict", [{"name": "Read"}, {"id": "other"}, {"input": {"command": "pwd"}}])
+def test_conflicting_pending_builtin_echo_withholds_valid_slo_call(conflict: dict[str, Any]) -> None:
+    """ER106-02: a pending built-in echo that conflicts blocks the Slo call at the boundary."""
+    conflicting = echo(response_id="one", content=[{**BUILTIN_ECHO, **conflict}])
+    assembly = mixed_response(echoes=(conflicting,))
+    with pytest.raises(ClaudeBridgeError) as caught:
+        assembly.consume(event={"type": "message_stop"})
+    assert caught.value.code == "stream_protocol_failed"
+    assert assembly.calls == ()
+
+
+def test_valid_pending_builtin_and_slo_echo_publish_only_the_slo_call() -> None:
+    """ER106-02: a corroborated mixed echo yields exactly the Slo call, in native order."""
+    corroborated = echo(response_id="one", content=[BUILTIN_ECHO, SLO_ECHO])
+    assembly = mixed_response(echoes=(corroborated,))
+    assert assembly.calls == ()
+    assembly.consume(event={"type": "message_stop"})
+    assert [(c.tool_call_id, c.name, c.arguments) for c in assembly.calls] == [("slo", "read", {"path": "a"})]
+
+
+def test_mixed_echo_accepts_ordered_subsets_but_rejects_reversed_order() -> None:
+    """Echoes are ordered subsets of the native snapshot: one block each is fine, reversed order is not."""
+    subsets = (
+        echo(response_id="one", content=[BUILTIN_ECHO], uuid="builtin-only"),
+        echo(response_id="one", content=[SLO_ECHO], uuid="slo-only"),
+    )
+    assembly = mixed_response(echoes=subsets)
+    assembly.consume(event={"type": "message_stop"})
+    assert [call.tool_call_id for call in assembly.calls] == ["slo"]
+
+    reversed_order = echo(response_id="one", content=[SLO_ECHO, BUILTIN_ECHO], uuid="reversed")
+    rejected = mixed_response(echoes=(reversed_order,))
+    with pytest.raises(ClaudeBridgeError):
+        rejected.consume(event={"type": "message_stop"})
+    assert rejected.calls == ()

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.31.1] — 2026-11-08
+
+Changes since v0.31.0.
+
+### Fixed
+
+- **Claude bridge runs survive refused native tool attempts.** When Claude
+  requests a disabled built-in tool such as `Bash`, the native CLI owns its
+  refusal. The bridge now continues reading instead of treating the tool name
+  as a malformed response and terminating the run.
+- **Only Slo-owned calls are published.** Mixed native/Slo batches and a native
+  refusal followed by a Slo call preserve the normal Slo execution path without
+  executing or recording the refused built-in as a Slo tool.
+- **Protocol safety remains strict.** All native tool blocks are checked before
+  filtering, including JSON arguments, finite values, call IDs, duplicate IDs,
+  and assistant echoes. Malformed blocks still prevent call publication;
+  non-Slo tools remain invalid inputs to `complete_call()`.
+
+### Verification
+
+- Add built-in-only and mixed-tool regression tests, echo validation and
+  malformed-block safety cases.
+- Add real-file, persisted-history journeys for refusal-to-answer,
+  mixed-tool execution and refusal followed by a valid Slo tool call.
+- Keep native CLI built-ins disabled and retain uncertain-submission safeguards.
+  This release does not change the Claude Code system prompt or enable native tools.
+
+
 ## [0.30.3] — 2026-11-08
 
 The first tag since v0.30.1. Version 0.30.2 was prepared but never tagged, so

@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .dao import ClaudeToolCallDAO, ClaudeUsageDAO
 from .exceptions import ClaudeBridgeError
 
+# Names the CLI routes to Slo-owned MCP tools; any other tool_use is a built-in attempt.
+SLO_TOOL_PREFIX: str = "mcp__slo__"
+
 
 class NativeFragment(NamedTuple):
     """New answer text, new thinking text for one native block, and boundary status."""
@@ -67,19 +70,55 @@ class NativeBlock(BaseModel):
             return ""
         raise ClaudeBridgeError.protocol_error()
 
-    def complete_call(self) -> ClaudeToolCallDAO:
-        """Parse a complete object without repairing incomplete native JSON."""
-        if not self.name.startswith("mcp__slo__"):
+    def is_slo_tool(self) -> bool:
+        """Return True when this block is a tool_use addressed to a Slo-owned MCP tool.
+
+        Any other tool_use is a built-in attempt that the native CLI itself refuses.
+        """
+        return self.type == "tool_use" and self.name.startswith(SLO_TOOL_PREFIX)
+
+    def validated_arguments(self) -> dict[str, Any]:
+        """Return this tool_use's decoded arguments after the validation every native call needs.
+
+        Built-in attempts and Slo tools share this check: it never repairs incomplete
+        native JSON and it never depends on whether Slo will execute the call.
+
+        Raises:
+            ClaudeBridgeError: Not a tool_use, invalid ID length, malformed JSON,
+                nonfinite numbers (including exponent overflow) or non-object arguments.
+        """
+        if self.type != "tool_use" or not 1 <= len(self.id) <= 256:
             raise ClaudeBridgeError.protocol_error()
         try:
             arguments = json.loads(self.partial_json) if self.partial_json else self.input
             # Delta strings bypass admission's JSON check; validate decoded values,
             # including exponent overflow, independently of optional assistant echoes.
             NativeResponseAssembly.json_identity(value=arguments)
+        except (ValueError, RecursionError):
+            raise ClaudeBridgeError.protocol_error() from None
+        if not isinstance(arguments, dict):
+            raise ClaudeBridgeError.protocol_error()
+        return arguments
+
+    def tool_use_identity(self) -> str:
+        """Encode the validated native ID, name and arguments for exact corroboration.
+
+        Compares the native tool_use itself, so a built-in echo needs no Slo call.
+        """
+        return NativeResponseAssembly.json_identity(
+            value={"tool_call_id": self.id, "name": self.name, "arguments": self.validated_arguments()}
+        )
+
+    def complete_call(self) -> ClaudeToolCallDAO:
+        """Build the Slo call for a validated Slo tool; built-in attempts are never calls."""
+        if not self.is_slo_tool():
+            raise ClaudeBridgeError.protocol_error()
+        arguments = self.validated_arguments()
+        try:
             return ClaudeToolCallDAO(
-                tool_call_id=self.id, name=self.name.removeprefix("mcp__slo__"), arguments=arguments
+                tool_call_id=self.id, name=self.name.removeprefix(SLO_TOOL_PREFIX), arguments=arguments
             )
-        except (ValueError, ValidationError):
+        except ValidationError:
             raise ClaudeBridgeError.protocol_error() from None
 
 
@@ -245,9 +284,13 @@ class NativeResponseAssembly:
             raise ClaudeBridgeError.protocol_error()
         if not tools and self._stop_reason not in {"end_turn", "stop_sequence", "max_tokens"}:
             raise ClaudeBridgeError.protocol_error()
-        calls = tuple(b.complete_call() for b in tools)
-        if len({call.tool_call_id for call in calls}) != len(calls):
+        # Every native call is validated, and IDs are unique across built-ins and Slo tools,
+        # before anything is published; only Slo tools then become executable calls.
+        for tool in tools:
+            tool.validated_arguments()
+        if len({tool.id for tool in tools}) != len(tools):
             raise ClaudeBridgeError.protocol_error()
+        calls = tuple(tool.complete_call() for tool in tools if tool.is_slo_tool())
         snapshot = tuple(self._blocks.values())
         for echo in self._echoes:
             self._validate_fragment(fragment=echo, snapshot=snapshot)
@@ -330,9 +373,7 @@ class NativeResponseAssembly:
         if echoed.type != streamed.type:
             return False
         if echoed.type == "tool_use":
-            return NativeResponseAssembly.json_identity(
-                value=echoed.complete_call().model_dump()
-            ) == NativeResponseAssembly.json_identity(value=streamed.complete_call().model_dump())
+            return echoed.tool_use_identity() == streamed.tool_use_identity()
         if echoed.type == "text":
             return echoed.text == streamed.text
         return echoed.thinking == streamed.thinking and echoed.signature == streamed.signature

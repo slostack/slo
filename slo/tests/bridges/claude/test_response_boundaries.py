@@ -12,6 +12,10 @@ from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.cli.headless import HeadlessRunner
+from langchain_core.messages import AIMessage, HumanMessage
+from src.bridges.claude.bridge import SloClaudeBridge
+from src.bridges.claude.sdk.dao import ClaudeBridgeConfigurationDAO, ClaudeTextDAO
+from src.bridges.dao import SloBridgeSessionOptionsDAO
 
 BUILTIN_INPUT: dict[str, Any] = {"command": "ls"}
 
@@ -395,6 +399,11 @@ async def test_incomplete_tool_response_never_executes_or_completes(
 class RefusedBuiltinTransport(ScriptedClaudeTransport):
     """Script a refused built-in attempt, the CLI's error tool result, then a text answer."""
 
+    def __init__(self, *, prefix_kind: str = "none") -> None:
+        """Choose optional visible progress before the refused native tool attempt."""
+        super().__init__()
+        self.prefix_kind = prefix_kind
+
     async def write(self, data: str) -> None:
         """Answer control requests; on the user prompt emit the refusal then continuation."""
         message = json.loads(data)
@@ -403,7 +412,14 @@ class RefusedBuiltinTransport(ScriptedClaudeTransport):
             return
         self.prompts.append(message["message"]["content"])
         refused: list[dict[str, Any]] = [
-            {"type": "message_start", "message": {"id": "refused", "role": "assistant"}},
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "refused",
+                    "role": "assistant",
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                },
+            },
             {
                 "type": "content_block_start",
                 "index": 0,
@@ -418,8 +434,28 @@ class RefusedBuiltinTransport(ScriptedClaudeTransport):
             {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
             {"type": "message_stop"},
         ]
+        if self.prefix_kind != "none":
+            for event in refused:
+                if "index" in event:
+                    event["index"] = 1
+            prefix_field = "text" if self.prefix_kind == "text" else "thinking"
+            refused[1:1] = [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": self.prefix_kind, prefix_field: "Before refusal. "},
+                },
+                {"type": "content_block_stop", "index": 0},
+            ]
         answered: list[dict[str, Any]] = [
-            {"type": "message_start", "message": {"id": "answered", "role": "assistant"}},
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "answered",
+                    "role": "assistant",
+                    "usage": {"input_tokens": 20, "output_tokens": 3},
+                },
+            },
             {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
             {
                 "type": "content_block_delta",
@@ -473,12 +509,13 @@ class RefusedBuiltinTransport(ScriptedClaudeTransport):
         )
 
 
+@pytest.mark.parametrize("prefix_kind", ["none", "text", "thinking"])
 async def test_refused_builtin_attempt_completes_run_without_tool_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    prefix_kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A1/A3: a refused built-in attempt is not a Slo call; the run continues and completes once."""
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
-    transport = RefusedBuiltinTransport()
+    transport = RefusedBuiltinTransport(prefix_kind=prefix_kind)
     config = SessionConfigDAO(
         workdir=tmp_path,
         model_name="claude-bridge:claude-haiku-5-5",
@@ -505,10 +542,45 @@ async def test_refused_builtin_attempt_completes_run_without_tool_call(
     assert not any(e.kind in {"tool_call", "tool_result", "run_failed"} for e in events), events
     assert not any(e["kind"] in {"tool_call", "tool_result", "run_failed"} for e in output), output
     assert sum(e.kind == "run_completed" for e in events) == 1
-    assert [e.payload.content for e in events if e.kind == "assistant_message"] == ["NO_BASH"]
+    expected_text = "Before refusal. NO_BASH" if prefix_kind == "text" else "NO_BASH"
+    assert [e.payload.content for e in events if e.kind == "assistant_message"] == [expected_text]
+    assert sum(e.kind == "run_started" for e in events) == 1
+    assert not any(e.kind == "stream_reconnecting" for e in events)
+    if prefix_kind == "thinking":
+        assert "Before refusal. " in stdout
     assert "NO_BASH" in stdout
     assert transport.prompts == ["Run ls"]
     assert transport.close_calls == 1
+
+
+async def test_refusal_prefix_preserves_native_resume_context_and_counts_usage_once(tmp_path: Path) -> None:
+    """A2: the host answer includes all emitted text; message usage is counted only once."""
+    transport = RefusedBuiltinTransport(prefix_kind="text")
+    model = SloClaudeBridge(
+        model_name="claude-bridge:claude-haiku-5-5",
+        bridge_adapter=scripted_adapter_class(transport=transport).register(
+            configuration=ClaudeBridgeConfigurationDAO()
+        ),
+    )
+    model.configure_session(
+        session_options=SloBridgeSessionOptionsDAO(
+            session_id="host", working_directory=tmp_path, instructions="test"
+        )
+    )
+    human = HumanMessage(content="Run ls")
+    try:
+        async with asyncio.timeout(10):
+            answer = await model.ainvoke(input=[human])
+        assert isinstance(answer, AIMessage)
+        assert answer.content == "Before refusal. NO_BASH"
+        assert answer.usage_metadata == {"input_tokens": 30, "output_tokens": 5, "total_tokens": 35}
+        plan = model.plan_submission(messages=[human, answer, HumanMessage(content="Next")])
+        assert plan is not None
+        assert not plan.fresh_native_session, "previously emitted text must remain in consumed history"
+        assert plan.content == (ClaudeTextDAO(text="Next"),)
+        assert transport.close_calls == 1
+    finally:
+        await model.close()
 
 
 class BuiltinAttemptToolRoundTransport(ToolRoundTransport):
@@ -523,11 +595,13 @@ class BuiltinAttemptToolRoundTransport(ToolRoundTransport):
     BUILTIN_ID = "builtin-call"
     SLO_ID = "slo-call"
 
-    def __init__(self, *, path: Path, scenario: str, sentinel: Path) -> None:
+    def __init__(self, *, path: Path, scenario: str, sentinel: Path, prefix: bool = False) -> None:
         """Record the real file to read and a path the refused Bash command would create."""
         super().__init__(path=path)
         self.scenario = scenario
         self.sentinel = sentinel
+        self.prefix = prefix
+        self.start_usage = {"input_tokens": 20, "output_tokens": 3} if prefix else None
 
     async def _emit_tool_round(self) -> None:
         """Emit the scripted native responses, echoes and CLI refusal before the MCP call."""
@@ -544,7 +618,10 @@ class BuiltinAttemptToolRoundTransport(ToolRoundTransport):
             await self._emit_response(response_id="mixed", blocks=[builtin, slo])
             await self._emit_refusal()
         else:
-            await self._emit_response(response_id="refused", blocks=[builtin])
+            await self._emit_response(
+                response_id="refused",
+                blocks=[*([{"type": "text", "text": "Before refusal. "}] if self.prefix else []), builtin],
+            )
             await self._emit_refusal()
             await self._emit_response(response_id="read", blocks=[slo])
         self._tool_request = {
@@ -569,9 +646,22 @@ class BuiltinAttemptToolRoundTransport(ToolRoundTransport):
     async def _emit_response(self, *, response_id: str, blocks: list[dict[str, Any]]) -> None:
         """Stream complete tool_use blocks, then one SDK assistant echo per block."""
         events: list[dict[str, Any]] = [
-            {"type": "message_start", "message": {"id": response_id, "role": "assistant"}}
+            {
+                "type": "message_start",
+                "message": {
+                    "id": response_id,
+                    "role": "assistant",
+                    **({"usage": {"input_tokens": 10, "output_tokens": 2}} if self.prefix else {}),
+                },
+            }
         ]
         for index, block in enumerate(blocks):
+            if block["type"] == "text":
+                events += [
+                    {"type": "content_block_start", "index": index, "content_block": block},
+                    {"type": "content_block_stop", "index": index},
+                ]
+                continue
             events += [
                 {
                     "type": "content_block_start",
@@ -674,3 +764,49 @@ async def test_refused_builtin_with_real_slo_read_executes_only_the_slo_call(
     assert streamed_tool_ids == {"slo-call"}, output
     assert not any(e["kind"] == "run_failed" for e in output), output
     assert transport.close_calls == 1
+
+
+async def test_refusal_prefix_then_slo_tool_preserves_text_context_and_usage_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EF04: real session read and continuation retain the prefix once, without a native restart."""
+    monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
+    project = tmp_path / "value.txt"
+    assert project.resolve().is_relative_to(tmp_path.resolve())
+    project.write_text("receipt", encoding="utf-8")
+    transport = BuiltinAttemptToolRoundTransport(
+        path=project,
+        scenario="refusal-then-slo",
+        sentinel=tmp_path / "never-created",
+        prefix=True,
+    )
+    session = await SloAgentSession.prepare(
+        config=SessionConfigDAO(
+            workdir=tmp_path,
+            model_name="claude-bridge:claude-haiku-5-5",
+            reasoning_level="off",
+            session_id="prefix-tool",
+            enable_history=True,
+            history_root=tmp_path / "history",
+        ),
+        bridge_adapter_class=scripted_adapter_class(transport=transport),
+    )
+    try:
+        async with asyncio.timeout(10):
+            result = [event async for event in session.invoke(text="read value")]
+        assert result[-1].kind == "run_completed"
+        history = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
+            session_id="prefix-tool"
+        )
+        assert [e.payload.content for e in history if e.kind == "tool_call"] == ["Before refusal. "]
+        assert [e.payload.content for e in history if e.kind == "assistant_message"] == ["Hello bridge"]
+        assert sum(e.kind == "tool_result" for e in history) == 1
+        assert len(transport.tool_results) == 1
+        assert transport.prompts == ["read value"]
+        assert transport.close_calls == 1
+        usage = session.usage_snapshot().session_totals
+        assert usage.input_tokens == 40
+        assert usage.output_tokens == 7
+    finally:
+        await session.close_agent_resources()

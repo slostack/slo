@@ -14,7 +14,11 @@ from src.bridges.claude.sdk.dao import (
     ClaudeSessionOptionsDAO,
 )
 from tests.bridges.claude.test_lifecycle import ready_status
-from src.bridges.claude.sdk.events import ClaudeResponseCompletedDAO, ClaudeTextEventDAO
+from src.bridges.claude.sdk.events import (
+    ClaudeResponseClosedDAO,
+    ClaudeResponseCompletedDAO,
+    ClaudeTextEventDAO,
+)
 from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport
 
@@ -270,7 +274,10 @@ async def test_read_response_raises_queued_failure_and_rejects_second_reader(tmp
     events = [event async for event in reader]
     assert isinstance(events[-1], ClaudeResponseCompletedDAO)
     assert events[-1].stop_reason == "stop"
-    assert [item.sequence for item in [event, *events]] == [1, 2, 3]
+    assert [item.sequence for item in [event, *events]] == [1, 2, 3, 4]
+    assert isinstance(events[-2], ClaudeResponseClosedDAO)
+    assert events[-2].response_id == events[-1].response_id
+    assert events[-1].usage is None, "terminal acknowledgement must not repeat message usage"
     assert all(
         item.session_id == "host" and item.invocation_id == "one" and item.response_id == "response-test"
         for item in events

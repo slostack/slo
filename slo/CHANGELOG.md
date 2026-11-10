@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.31.2] — 2026-11-10
+
+Changes since v0.31.1.
+
+### Fixed
+
+- **Claude response boundaries no longer interrupt tool recovery.** Text or
+  thinking before a refused native tool now closes its native message without
+  prematurely finishing the invocation. Claude can continue to a valid Slo tool
+  or final answer without an unfinished-assembly error.
+- **Safe transient connection recovery.** Connection failures proven to occur
+  before submission can retry up to three total attempts after cleanup settles.
+  Authentication, configuration, and uncertain query or tool-result delivery
+  failures are not automatically replayed.
+- **Progress survives failed turns.** Partial assistant text is retained for
+  subsequent prompts without duplicating completed tool-round history.
+- **Cancellation and cleanup remain authoritative.** Cancellation prevents retry
+  successors, and failed cleanup retains its owner rather than starting another
+  native invocation. Response ordering, tool execution, and usage accounting
+  remain consistent across native message boundaries.
+
 ## [0.31.1] — 2026-11-08
 
 Changes since v0.31.0.

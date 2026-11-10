@@ -322,9 +322,9 @@ class PromptAttemptPlanDAO(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    attempt_kind: Literal["initial", "overflow_retry", "stream_reconnect", "stream_continuation"] = Field(
-        description="Whether this is the first attempt or a same-prompt retry after a failure."
-    )
+    attempt_kind: Literal[
+        "initial", "overflow_retry", "stream_reconnect", "stream_continuation", "claude_unsent_retry"
+    ] = Field(description="Whether this is the first attempt or a same-prompt retry after a failure.")
     text: str = Field(description="The user prompt text to send to the agent.")
     persist_user_message: bool = Field(
         default=True,
@@ -421,6 +421,7 @@ class PromptAttemptTrackerDAO(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     turn_id: str = Field(description="Turn id this tracker is watching.")
+    iteration: int = Field(default=0, description="Latest public graph iteration for terminal routing.")
     interrupted_text_blocks: dict[str, str] = Field(
         default_factory=dict,
         description="Unfinished visible text, retained only after committed interruption.",
@@ -3862,6 +3863,14 @@ class SloAgentSession:
                     yield AgentStreamEventDAO(kind="run_aborted", content="<aborted>")
                     return
                 if next_plan is not None:
+                    if next_plan.attempt_kind == "claude_unsent_retry":
+                        pending_session_events.append(
+                            self._retrying_status_event(
+                                message="Claude prompt was not submitted; retrying the same native route.",
+                                wait_seconds=1,
+                                attempt_number=next_plan.submission_attempt_number,
+                            )
+                        )
                     if next_plan.attempt_kind == "stream_reconnect":
                         pending_session_events.append(self._build_stream_reconnecting_event(result=result))
                     if next_plan.attempt_kind == "stream_continuation":
@@ -3870,6 +3879,14 @@ class SloAgentSession:
                         )
                     plan = next_plan
                     continue
+                if result.error is not None and self.active_model_name.startswith("claude-bridge:"):
+                    failure_event = AgentStreamEventDAO(
+                        kind="run_failed",
+                        iteration=tracker.iteration,
+                        content=self._safe_attempt_error_message(error=result.error),
+                    )
+                    await self._dispatch_event(event=failure_event)
+                    yield failure_event
                 self._raise_if_attempt_failed(
                     result=result,
                 )
@@ -4370,8 +4387,15 @@ class SloAgentSession:
             tracker.interrupted_text_blocks[block] = tracker.interrupted_text_blocks.get(block, "") + (
                 event.delta or ""
             )
-        elif event.kind == "text_end":
-            tracker.interrupted_text_blocks.pop(event.block_id or "text", None)
+        elif event.kind == "text_end" and event.content is not None:
+            # A contentless end is only a presentation transition (for example
+            # text -> thinking), not completed-node truth. Keep that text until
+            # canonical history commits the whole assistant iteration.
+            tracker.interrupted_text_blocks.clear()
+        elif event.kind == "tool_result":
+            # Results follow a completed assistant/tool-call trace even when its
+            # last text block closed implicitly into thinking without a repair.
+            tracker.interrupted_text_blocks.clear()
         if SloAgent._is_committed_output_event(event=event):
             tracker.committed_visible_output = True
         if event.kind == "run_completed":
@@ -4472,7 +4496,14 @@ class SloAgentSession:
             turn_id=turn_id,
         )
         await self._persist_routed_model_if_changed()
-        if isinstance(error, ProviderStreamFailure) and error.partial_output_committed:
+        from src.bridges.claude.sdk.exceptions import ClaudeBridgeError
+
+        # Completed graph messages (including tool rounds) already have canonical
+        # history. Flush only still-open text, without granting native failures
+        # provider-neutral reconnect or tool-result replay eligibility.
+        if isinstance(error, ClaudeBridgeError) or (
+            isinstance(error, ProviderStreamFailure) and error.partial_output_committed
+        ):
             partial_text = "".join(tracker.interrupted_text_blocks.values())
             if partial_text:
                 await self._append_history_event(
@@ -4690,6 +4721,8 @@ class SloAgentSession:
             Optional[PromptAttemptPlanDAO]: Retry plan when overflow recovery
                 should continue, otherwise ``None``.
         """
+        if self.active_model_name.startswith("claude-bridge:"):
+            return await self._derive_claude_unsent_retry_plan(plan=plan, result=result)
         stream_reconnect_plan: Optional[PromptAttemptPlanDAO] = (
             await self._derive_stream_reconnect_attempt_plan(
                 plan=plan,
@@ -4740,6 +4773,61 @@ class SloAgentSession:
         return self._build_overflow_retry_attempt_plan(
             text=plan.text,
             failed_turn_id=result.turn_id,
+        )
+
+    async def _derive_claude_unsent_retry_plan(
+        self, *, plan: PromptAttemptPlanDAO, result: PromptAttemptResultDAO
+    ) -> Optional[PromptAttemptPlanDAO]:
+        """Pace at most two retries of a provably unsent transient native failure.
+
+        The bridge owns the proof and has already joined cleanup before exposing
+        this error. Never generalize it to query writes, tool-result delivery or
+        partial progress: replay of those may repeat side effects. The same bridge
+        and qualified route are retained; failed attempts remain durable audit,
+        but only the original user message is persisted.
+
+        Args:
+            plan: Attempt whose budget and prompt are retained.
+            result: Captured terminal failure, after resource settlement.
+
+        Returns:
+            A same-route attempt plan, or None for explicit-only/exhausted failures.
+
+        Raises:
+            asyncio.CancelledError: Abort or cancellation prevents retry admission.
+        """
+        from src.bridges.claude.sdk.exceptions import ClaudeSubmissionNotStartedError
+
+        failure = result.error
+        if (
+            not isinstance(failure, ClaudeSubmissionNotStartedError)
+            or not failure.retryable
+            or result.aborted
+            or result.committed_visible_output
+            or plan.submission_attempt_number >= 3
+        ):
+            return None
+        if self._recovery_abort_requested:
+            raise asyncio.CancelledError
+        retry_event = self._retrying_status_event(
+            message="Claude prompt was not submitted; retrying the same native route.",
+            wait_seconds=1,
+            attempt_number=plan.submission_attempt_number + 1,
+        )
+        await self._persist_run_retrying_event(event=retry_event, turn_id=result.turn_id)
+        await self._dispatch_event(event=retry_event)
+        await self._recovery_wait(1.0)
+        if self._recovery_abort_requested:
+            raise asyncio.CancelledError
+        return plan.model_copy(
+            update={
+                "attempt_kind": "claude_unsent_retry",
+                "persist_user_message": False,
+                "excluded_turn_ids": plan.excluded_turn_ids | frozenset({result.turn_id}),
+                "preflight_compaction_mode": "skip",
+                "source_failed_turn_id": result.turn_id,
+                "submission_attempt_number": plan.submission_attempt_number + 1,
+            }
         )
 
     async def _derive_stream_reconnect_attempt_plan(
@@ -5280,6 +5368,11 @@ class SloAgentSession:
                         "main agent stream produced no events for "
                         f"{stream_timeout_seconds:.0f}s; treated as hung"
                     ) from exc
+                # Native attempt failure is durable below, but the submission's
+                # terminal notification must wait for bounded retry admission.
+                if is_bridge and event.kind == "run_failed":
+                    tracker.iteration = event.iteration
+                    continue
                 self._sync_usage_snapshot_commit()
                 self._mirror_retry_cooldown(event=event)
                 await self._dispatch_event(event=event)

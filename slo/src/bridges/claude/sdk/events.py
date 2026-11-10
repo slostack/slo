@@ -31,8 +31,20 @@ class ClaudeThinkingEventDAO(ClaudeResponseEventDAO):
     block_index: int = Field(ge=0, description="Native block position, so interleaved blocks stay apart.")
 
 
+class ClaudeResponseClosedDAO(ClaudeResponseEventDAO):
+    """Validated native message closure, not a tool handoff or invocation completion.
+
+    The invocation may produce more messages, including after a refused native
+    built-in tool. Usage belongs to this message and must not be counted again
+    when its terminal result arrives after SDK cleanup.
+    """
+
+    kind: Literal["response_closed"] = "response_closed"
+    usage: Optional[ClaudeUsageDAO] = None
+
+
 class ClaudeResponseCompletedDAO(ClaudeResponseEventDAO):
-    """Validated response boundary; terminal success additionally requires cleanup."""
+    """Host tool handoff or invocation completion after successful SDK cleanup."""
 
     kind: Literal["response_completed"] = "response_completed"
     stop_reason: Literal["stop", "length", "tool_calls"]
@@ -49,4 +61,6 @@ class ClaudeResponseCompletedDAO(ClaudeResponseEventDAO):
         return self
 
 
-ClaudeBridgeEvent = ClaudeTextEventDAO | ClaudeThinkingEventDAO | ClaudeResponseCompletedDAO
+ClaudeBridgeEvent = (
+    ClaudeTextEventDAO | ClaudeThinkingEventDAO | ClaudeResponseClosedDAO | ClaudeResponseCompletedDAO
+)

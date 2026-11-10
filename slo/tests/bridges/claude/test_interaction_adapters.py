@@ -7,7 +7,12 @@ import pytest
 from src.bridges.claude.response import AIAgentResponseAdapter, ClaudeResponseTranslationDAO
 from src.bridges.claude.tool_call import ToolCallAdapter, ClaudeCompletedCallBatchDAO
 from src.bridges.claude.sdk.dao import ClaudeInteractionBindingDAO, ClaudeToolDefinitionDAO, ClaudeToolCallDAO
-from src.bridges.claude.sdk.events import ClaudeBridgeEvent, ClaudeResponseCompletedDAO, ClaudeTextEventDAO
+from src.bridges.claude.sdk.events import (
+    ClaudeBridgeEvent,
+    ClaudeResponseClosedDAO,
+    ClaudeResponseCompletedDAO,
+    ClaudeTextEventDAO,
+)
 
 
 async def test_response_adapter_correlates_orders_and_retains_accepted_events() -> None:
@@ -47,6 +52,56 @@ async def test_response_adapter_correlates_orders_and_retains_accepted_events() 
     with pytest.raises(RuntimeError):
         await adapter.handle(event=next_text)
     assert accepted == [text, done, next_text]
+
+
+async def test_native_closure_retains_text_and_allows_only_latest_terminal_once() -> None:
+    """Native closure retires IDs, not host text; old terminal/text cannot mutate history."""
+    accepted: list[ClaudeResponseTranslationDAO] = []
+
+    async def receive(translation: ClaudeResponseTranslationDAO) -> None:
+        """Record host text snapshots at the real response-owner boundary."""
+        accepted.append(translation)
+
+    adapter = AIAgentResponseAdapter.register(
+        binding=ClaudeInteractionBindingDAO(session_id="s", invocation_id="i", binding_version=0),
+        response_receiver=receive,
+        tool_call_receiver=receive,
+    )
+    prefix = ClaudeTextEventDAO(
+        session_id="s", invocation_id="i", response_id="refused", sequence=1, text="before "
+    )
+    closed = ClaudeResponseClosedDAO(session_id="s", invocation_id="i", response_id="refused", sequence=2)
+    answer = prefix.model_copy(update={"response_id": "answer", "sequence": 3, "text": "after"})
+    answer_closed = closed.model_copy(update={"response_id": "answer", "sequence": 4})
+    terminal = ClaudeResponseCompletedDAO(
+        session_id="s", invocation_id="i", response_id="answer", sequence=5, stop_reason="stop"
+    )
+    try:
+        for event in (prefix, closed, closed, answer, answer_closed):
+            await adapter.handle(event=event)
+        for invalid in (
+            prefix.model_copy(update={"sequence": 5}),
+            terminal.model_copy(update={"response_id": "refused"}),
+            terminal.model_copy(update={"invocation_id": "foreign"}),
+        ):
+            with pytest.raises(ValueError):
+                await adapter.handle(event=invalid)
+        await adapter.handle(event=terminal)
+        await adapter.handle(event=terminal)
+        with pytest.raises(ValueError):
+            await adapter.handle(event=terminal.model_copy(update={"sequence": 6}))
+        assert [translation.text for translation in accepted] == [
+            "before ",
+            "before ",
+            "before after",
+            "before after",
+            "before after",
+        ]
+        # A later host generation starts empty even within the same invocation.
+        await adapter.handle(event=prefix.model_copy(update={"response_id": "next", "sequence": 7}))
+        assert accepted[-1].text == "before "
+    finally:
+        await adapter.close()
 
 
 async def test_call_adapter_translates_complete_batch_once_and_joins_receiver() -> None:

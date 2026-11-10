@@ -8,11 +8,16 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict
 
 from .sdk.dao import ClaudeInteractionBindingDAO
-from .sdk.events import ClaudeBridgeEvent, ClaudeResponseCompletedDAO, ClaudeTextEventDAO
+from .sdk.events import (
+    ClaudeBridgeEvent,
+    ClaudeResponseClosedDAO,
+    ClaudeResponseCompletedDAO,
+    ClaudeTextEventDAO,
+)
 
 
 class ClaudeResponseTranslationDAO(BaseModel):
-    """Accepted event and per-response assembled text for a borrowed host builder."""
+    """Accepted event and host-generation text spanning any intermediate native closures."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     event: ClaudeBridgeEvent
@@ -58,6 +63,7 @@ class AIAgentResponseAdapter:
         self._latest_digest: bytes | None = None
         self._completed: set[str] = set()
         self._response_id: str | None = None
+        self._closed_response_id: str | None = None
         self._text = ""
         self._sequence = 0
         self._delivery: asyncio.Task[None] | None = None
@@ -77,6 +83,8 @@ class AIAgentResponseAdapter:
             self._latest_digest = digest
             self._sequence = event.sequence
             translated = ClaudeResponseTranslationDAO(event=event.model_copy(deep=True), text=self._text)
+            if isinstance(event, ClaudeResponseCompletedDAO):
+                self._text = ""
             self._delivery = asyncio.create_task(coro=self._deliver(translation=translated))
             await asyncio.shield(self._delivery)
 
@@ -88,28 +96,44 @@ class AIAgentResponseAdapter:
             if self._latest_digest != digest:
                 raise ValueError("Claude response echo contradicts accepted event.")
             return True
-        if event.sequence <= self._sequence or event.response_id in self._completed:
+        terminal_after_closure = (
+            isinstance(event, ClaudeResponseCompletedDAO)
+            and not event.tool_calls
+            and event.response_id == self._closed_response_id
+        )
+        if event.sequence <= self._sequence or (
+            event.response_id in self._completed and not terminal_after_closure
+        ):
             raise ValueError("Claude response sequence or completion order changed.")
         if self._response_id is not None and event.response_id != self._response_id:
             raise ValueError("Claude response overlaps unfinished assembly.")
-        if self._response_id is None and len(self._completed) >= self.RESPONSE_LIMIT:
+        if (
+            self._response_id is None
+            and not terminal_after_closure
+            and len(self._completed) >= self.RESPONSE_LIMIT
+        ):
             raise ValueError("Claude response identity limit exceeded.")
         return False
 
     def _assemble(self, *, event: ClaudeBridgeEvent) -> None:
-        """Keep text isolated per response and retire only validated completions."""
-        previous_text = "" if self._response_id is None else self._text
+        """Retire native correlation without discarding text already emitted to the host.
+
+        Several native messages can form one host generation. Only a tool handoff
+        or terminal completion ends that generation; intermediate closure keeps
+        its semantic text and permits the latest closed ID's terminal result once.
+        """
         if isinstance(event, ClaudeTextEventDAO):
-            if len(previous_text.encode()) + len(event.text.encode()) > 32 * 1024 * 1024:
+            if len(self._text.encode()) + len(event.text.encode()) > 32 * 1024 * 1024:
                 raise ValueError("Claude response text limit exceeded.")
-        if self._response_id is None:
-            self._response_id = event.response_id
-            self._text = ""
-        if isinstance(event, ClaudeTextEventDAO):
             self._text += event.text
-        if isinstance(event, ClaudeResponseCompletedDAO):
+        self._closed_response_id = None
+        if isinstance(event, (ClaudeResponseClosedDAO, ClaudeResponseCompletedDAO)):
             self._completed.add(event.response_id)
             self._response_id = None
+            if isinstance(event, ClaudeResponseClosedDAO):
+                self._closed_response_id = event.response_id
+            return
+        self._response_id = event.response_id
 
     async def _deliver(self, *, translation: ClaudeResponseTranslationDAO) -> None:
         """Route a completed tool response separately from text/terminal acceptance."""

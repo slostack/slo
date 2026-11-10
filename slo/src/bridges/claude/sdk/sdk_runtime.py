@@ -25,7 +25,6 @@ from .dao import (
     ClaudeSessionOptionsDAO,
     ClaudeInteractionBindingDAO,
     ClaudeToolResultBatchDAO,
-    ClaudeUsageDAO,
 )
 from .tool_bridge import ClaudeToolBridge
 from .inventory import ClaudeToolInventory
@@ -34,6 +33,7 @@ from .transport import ValidatedClaudeTransport
 from .events import (
     ClaudeBridgeEvent,
     ClaudeResponseEventDAO,
+    ClaudeResponseClosedDAO,
     ClaudeResponseCompletedDAO,
     ClaudeTextEventDAO,
     ClaudeThinkingEventDAO,
@@ -302,7 +302,11 @@ class ClaudeSDKRuntime:
             if failure is not None and not self._cancel_requested.is_set():
                 if not self._query_attempted:
                     failure = ClaudeSubmissionNotStartedError(
-                        safe_message="Claude prompt was not submitted. Fix native login/connectivity and retry explicitly."
+                        safe_message="Claude prompt was not submitted. Check native login/connectivity and retry explicitly if recovery is exhausted.",
+                        retryable=(
+                            isinstance(failure, ClaudeBridgeError)
+                            and failure.code == "transient_connect_failed"
+                        ),
                     )
                 else:
                     failure = ClaudeBridgeError(
@@ -449,11 +453,10 @@ class ClaudeSDKRuntime:
             message=message,
             text=assembly.text,
             response_id=assembly.response_id,
-            usage=assembly.usage,
         )
 
     def _interpret_stream_event(self, *, message: StreamEvent, assembly: NativeResponseAssembly) -> None:
-        """Queue validated content and complete tool batches after init admission.
+        """Queue content, native message closures and host tool handoffs after init admission.
 
         Args:
             message: Borrowed SDK stream event.
@@ -493,6 +496,13 @@ class ClaudeSDKRuntime:
                     usage=assembly.usage,
                 )
             )
+        elif boundary:
+            self._queue_event(
+                event=ClaudeResponseClosedDAO(
+                    **self._event_binding(response_id=assembly.response_id).model_dump(),
+                    usage=assembly.usage,
+                )
+            )
 
     async def submit_tool_results(
         self, *, invocation_id: str, tool_result_batch: ClaudeToolResultBatchDAO
@@ -526,7 +536,7 @@ class ClaudeSDKRuntime:
 
     def _release_event(self, *, event: ClaudeBridgeEvent | BaseException | None) -> None:
         """Release aggregate byte capacity when a reader consumes an event."""
-        if isinstance(event, (ClaudeTextEventDAO, ClaudeThinkingEventDAO, ClaudeResponseCompletedDAO)):
+        if isinstance(event, ClaudeResponseEventDAO):
             self._queued_bytes -= len(event.model_dump_json().encode())
 
     def _event_binding(self, *, response_id: str) -> ClaudeResponseEventDAO:
@@ -541,7 +551,7 @@ class ClaudeSDKRuntime:
         )
 
     def _validate_result(
-        self, *, message: ResultMessage, text: str, response_id: str, usage: ClaudeUsageDAO
+        self, *, message: ResultMessage, text: str, response_id: str
     ) -> ClaudeResponseCompletedDAO:
         """Require explicit successful native result and consistent final echo."""
         if message.is_error or message.subtype != "success":
@@ -572,6 +582,8 @@ class ClaudeSDKRuntime:
             )
         return ClaudeResponseCompletedDAO(
             stop_reason="length" if message.stop_reason == "max_tokens" else "stop",
-            usage=usage,
+            # Native message_stop already published this response's usage. The
+            # result only authorizes terminal context after successful cleanup.
+            usage=None,
             **self._event_binding(response_id=response_id).model_dump(),
         )

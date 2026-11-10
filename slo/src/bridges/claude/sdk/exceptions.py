@@ -24,6 +24,18 @@ class ClaudeBridgeError(RuntimeError):
 class ClaudeSubmissionNotStartedError(ClaudeBridgeError):
     """Proven no query attempt and settled cleanup; an explicit new attempt is safe."""
 
-    def __init__(self, *, safe_message: str, code: str = "submission_not_started") -> None:
-        """Keep the original safe category while marking explicit retry as safe."""
+    def __init__(
+        self,
+        *,
+        safe_message: str,
+        code: str = "submission_not_started",
+        retryable: bool = False,
+    ) -> None:
+        """Separate safe submission proof from permission for automatic recovery.
+
+        Authentication and configuration failures remain explicit-only. The SDK
+        runtime enables automatic recovery only for a demonstrated transient
+        connect failure after joining cleanup; callers must still enforce a budget.
+        """
+        self.retryable: bool = retryable
         super().__init__(code=code, safe_message=safe_message)

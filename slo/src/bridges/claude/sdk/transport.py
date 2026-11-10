@@ -33,7 +33,16 @@ class ValidatedClaudeTransport(Transport):
 
     async def connect(self) -> None:
         """Let the SDK open its underlying transport."""
-        await self._transport.connect()
+        try:
+            await self._transport.connect()
+        except (ConnectionError, TimeoutError):
+            # Only this pre-query transport operation proves a transient connect
+            # failure. Arbitrary OSError/config/auth errors do not qualify, nor
+            # do failures after a write might have delivered a query or receipt.
+            raise ClaudeBridgeError(
+                code="transient_connect_failed",
+                safe_message="Claude native connection temporarily unavailable.",
+            ) from None
 
     async def write(self, data: str) -> None:
         """Forward unchanged frames and signal uncertain writes without replay.

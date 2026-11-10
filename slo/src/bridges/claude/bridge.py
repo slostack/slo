@@ -36,7 +36,12 @@ from .sdk.dao import (
     ClaudeToolResultSubmissionDAO,
     ClaudeTextDAO,
 )
-from .sdk.events import ClaudeResponseCompletedDAO, ClaudeTextEventDAO, ClaudeThinkingEventDAO
+from .sdk.events import (
+    ClaudeResponseClosedDAO,
+    ClaudeResponseCompletedDAO,
+    ClaudeTextEventDAO,
+    ClaudeThinkingEventDAO,
+)
 from .sdk.protocol import SloBridgeAdapterProtocol
 from .sdk.exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
 from .sdk.inventory import ClaudeToolInventory
@@ -304,6 +309,18 @@ class SloClaudeBridge(BaseChatModel):
             thinking_block = {"type": "thinking", "thinking": event.text, "index": event.block_index}
             self._translated_chunks.append(
                 ChatGenerationChunk(message=AIMessageChunk(content=[thinking_block]))
+            )
+            return
+        if isinstance(event, ClaudeResponseClosedDAO):
+            # A native refusal can continue within this same host generation.
+            # Report message usage without changing consumed history or granting
+            # terminal success; only the cleanup-settled result may do that.
+            self._translated_chunks.append(
+                ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        content="", usage_metadata=ClaudeHostUsage.translate(usage=event.usage)
+                    )
+                )
             )
             return
         self._record_terminal_context(messages=self._response_messages, response_text=translation.text)

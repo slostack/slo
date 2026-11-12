@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from claude_agent_sdk import ClaudeSDKClient
 from pathlib import Path
 from typing import Any, Self
 
@@ -241,6 +242,7 @@ def scripted_adapter_class(
     *,
     transport: ScriptedClaudeTransport,
     session_options: list[ClaudeSessionOptionsDAO] | None = None,
+    client_factory: Callable[..., ClaudeSDKClient] | None = None,
 ) -> type[SloClaudeBridgeAdapter]:
     """Inject just native auth observation and wire transport into the concrete adapter."""
 
@@ -264,7 +266,10 @@ def scripted_adapter_class(
         def register(cls, *, configuration: ClaudeBridgeConfigurationDAO) -> Self:
             """Retain the same concrete implementation with controlled external I/O."""
             return cls(
-                configuration=configuration, transport=transport, authentication_check=subscription_status
+                configuration=configuration,
+                transport=transport,
+                authentication_check=subscription_status,
+                client_factory=client_factory,
             )
 
     return ScriptedAdapter

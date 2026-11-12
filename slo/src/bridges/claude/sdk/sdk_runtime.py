@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import anyio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Optional
 
 from claude_agent_sdk import (
@@ -16,12 +16,14 @@ from claude_agent_sdk import (
     SystemMessage,
 )
 from claude_agent_sdk._internal.transport import Transport
+from pydantic import ValidationError
 from .native_transport import ClaudeNativeTransport
 
 from .authentication import ClaudeNativeAuthentication
 from .dao import (
     ClaudeBridgeConfigurationDAO,
     ClaudeInvocationOptionsDAO,
+    ClaudeQuotaRejectionDAO,
     ClaudeSessionOptionsDAO,
     ClaudeInteractionBindingDAO,
     ClaudeToolResultBatchDAO,
@@ -38,7 +40,7 @@ from .events import (
     ClaudeTextEventDAO,
     ClaudeThinkingEventDAO,
 )
-from .exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
+from .exceptions import ClaudeBridgeError, ClaudeQuotaExceededError, ClaudeSubmissionNotStartedError
 
 
 class ClaudeSDKRuntime:
@@ -50,10 +52,12 @@ class ClaudeSDKRuntime:
         transport: Optional[Transport] = None,
         configuration: Optional[ClaudeBridgeConfigurationDAO] = None,
         resume_session_id: Optional[str] = None,
+        client_factory: Optional[Callable[..., ClaudeSDKClient]] = None,
         cleanup_grace_seconds: float = 5,
         cleanup_force_seconds: float = 5,
     ) -> None:
         """Store an optional SDK transport without opening it or capturing a loop."""
+        self._client_factory = client_factory
         self._transport = transport
         self._cleanup_grace_seconds = cleanup_grace_seconds
         self._cleanup_force_seconds = cleanup_force_seconds
@@ -200,7 +204,7 @@ class ClaudeSDKRuntime:
                     force_seconds=self._cleanup_force_seconds,
                 )
             validated_transport = ValidatedClaudeTransport(transport=self._transport)
-            client = ClaudeSDKClient(options=options, transport=validated_transport)
+            client = (self._client_factory or ClaudeSDKClient)(options=options, transport=validated_transport)
             await self._connect_and_query(client=client, prompt=invocation_options.native_prompt())
             completion = await self._read_native_response(client=client, transport=validated_transport)
         except asyncio.CancelledError:
@@ -299,7 +303,12 @@ class ClaudeSDKRuntime:
                 self._retry_cleanup.clear()
                 continue
             self._cleanup_error = None
-            if failure is not None and not self._cancel_requested.is_set():
+            if self._cancel_requested.is_set():
+                failure = ClaudeBridgeError(
+                    code="cancelled", safe_message="Claude bridge invocation cancelled."
+                )
+                completion = None
+            elif failure is not None and not isinstance(failure, ClaudeQuotaExceededError):
                 if not self._query_attempted:
                     failure = ClaudeSubmissionNotStartedError(
                         safe_message="Claude prompt was not submitted. Check native login/connectivity and retry explicitly if recovery is exhausted.",
@@ -414,6 +423,20 @@ class ClaudeSDKRuntime:
                     assembly.validate_scope(session_id=native_session_id, parent_tool_use_id=None)
                     inventory_admitted = True
                     continue
+                if isinstance(message, SystemMessage) and message.subtype == "slo_quota_rejected":
+                    if not inventory_admitted:
+                        raise ClaudeToolInventory.initialization_error()
+                    try:
+                        rejection = ClaudeQuotaRejectionDAO.model_validate(
+                            message.data.get("quota_rejection")
+                        )
+                    except ValidationError:
+                        raise ClaudeBridgeError.protocol_error() from None
+                    assembly.validate_scope(
+                        session_id=rejection.native_session_id,
+                        parent_tool_use_id=rejection.parent_tool_use_id,
+                    )
+                    raise ClaudeQuotaExceededError(reset_at=rejection.reset_at)
                 if not inventory_admitted and isinstance(
                     message, (ResultMessage, StreamEvent, AssistantMessage)
                 ):

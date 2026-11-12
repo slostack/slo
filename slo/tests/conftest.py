@@ -77,6 +77,16 @@ def _isolate_config_defaults(*, root: Path, monkeypatch: pytest.MonkeyPatch) -> 
         monkeypatch (pytest.MonkeyPatch): Restores constants and mappings on teardown.
     """
     configuration = importlib.import_module("config.cfg")
+    # reload() can capture a previous test's synthetic key after its environment
+    # patch is undone. Each test must opt in through its own environment/store,
+    # never inherit credentials from another test's cached short-name fallback.
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "KIMI_FOR_CODING_API_KEY",
+    ):
+        monkeypatch.setitem(dic=configuration.__cfg__, name=name, value=None)
     defaults: dict[str, Path | str] = {
         "SLO_HOME": root,
         "SLO_AUTH_FILE": root / "global/authentication.json",

@@ -87,8 +87,9 @@ class WatchDogTimer:
 
         WHAT: Counts each newly opened tool call and suspends provider timing while
             LangGraph may execute those calls locally.
-        WHO: ``SloAgent._stream_graph_turn`` calls this after normalizing a messages-mode chunk.
-        WHEN: Runs after each provider message chunk and before the next graph read.
+        WHO: ``SloAgent._stream_graph_turn`` calls this after normalizing a messages-mode chunk;
+            ``observe_update_events`` calls it for starts emitted from completed messages.
+        WHEN: Runs after each provider message or update chunk and before the next graph read.
 
         Args:
             events (list[AgentStreamEventDAO]): Normalized events from one messages-mode chunk.
@@ -100,16 +101,22 @@ class WatchDogTimer:
         self._provider_read_pending = False
 
     def observe_update_events(self, *, events: list[AgentStreamEventDAO]) -> None:
-        """Record completed local tool calls from LangGraph update events.
+        """Record local tool calls opened and completed by LangGraph update events.
 
-        WHAT: Decrements the local-tool count for each result and re-enables provider
-            timing only after all observed local tool calls have completed.
+        WHAT: First counts any ``tool_call_start`` in the chunk, as
+            ``observe_message_events`` does: a completed-only or late-named call
+            receives its single start when the completed ``AIMessage`` is finalized,
+            which arrives on the updates channel. Then decrements the local-tool
+            count for each result and re-enables provider timing only after all
+            observed local tool calls have completed. Each call id gets exactly one
+            start across both channels, so no call is counted twice.
         WHO: ``SloAgent._stream_graph_turn`` calls this after processing an updates-mode chunk.
         WHEN: Runs before the agent asks LangGraph for the following item.
 
         Args:
             events (list[AgentStreamEventDAO]): Normalized events from one updates-mode chunk.
         """
+        self.observe_message_events(events=events)
         local_tool_result_count: int = self._tool_result_count(events=events)
         if local_tool_result_count == 0:
             return

@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.31.3] — 2026-11-12
+
+Changes since v0.31.2.
+
+### Fixed
+
+- **One transcript block per tool call.** Blocks are keyed by the provider's
+  opaque call ID and mounted only by a named start. Arguments, completion and
+  results update that block; orphan updates and events after a result cannot
+  create a second empty block. New prompts can reuse call IDs.
+- **Single-source, close-once streaming.** The normalizer reads tool-call chunks
+  when present, otherwise supported content blocks, and routes nameless argument
+  fragments by their provider slot. It preserves IDs and argument pieces without
+  inventing fallback calls. Completed messages and iteration-end confirmation
+  close each call once while retaining the text/thinking safety net.
+- **Late tool names keep watchdog timing correct.** Starts emitted from completed
+  messages pause provider timing just like streamed starts; timing resumes after
+  the last outstanding local tool result.
+- **OAuth streaming names match bound tools.** The Claude Code Anthropic adapter
+  normalizes decoded names on synchronous and asynchronous streaming paths before
+  aggregation, consistently with non-streaming responses. Exact bound spelling
+  wins, unique case-insensitive matches and existing aliases are supported, and
+  ambiguous or unknown names remain unchanged. Streamed `Read` can execute the
+  registered `read` and continue with its actual result.
+
+### Verification and test infrastructure
+
+- Add provider HTTP decoder, real graph/executor/display, official SDK bridge and
+  filesystem-history journeys covering fragmented, parallel and empty-argument
+  calls, result continuation, ordering and single-source agreement. Durable history
+  format and exact-match tool execution are unchanged.
+- Clear cached synthetic provider credentials between tests so negative managed
+  launch tests cannot inherit keys captured by an earlier configuration reload.
+- Retain primary FIFO journey errors alongside bounded writer-open diagnostics;
+  cleanup failures without a primary error still fail. This is diagnostic coverage,
+  not a claim that an intermittent FIFO failure's cause has been repaired.
+- Scripted provider/SDK evidence is not live-provider or account certification.
+  Hosted installer publication and release recovery gates remain tag-CI evidence.
+
 ## [0.31.2] — 2026-11-10
 
 Changes since v0.31.1.

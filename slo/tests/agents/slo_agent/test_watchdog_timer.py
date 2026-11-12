@@ -93,6 +93,93 @@ class TestWatchDogTimer:
             await watchdog_timer.invoke(graph_stream=stream)
 
     @pytest.mark.asyncio
+    async def test_resumes_idle_deadline_after_last_result_when_starts_arrive_in_update_events(
+        self,
+    ) -> None:
+        """A17: completed-message starts pause timing until the last parallel result arrives.
+
+        Spec 107 §9: a completed-only or late-named call gets its ``tool_call_start``
+        on the updates channel, together with its ``tool_call_end``.
+        """
+
+        async def completed_message_then_slow_parallel_results_stream() -> AsyncIterator[object]:
+            """Yield delayed local results, then stall provider reads until timeout cancellation.
+
+            Yields:
+                object: Completed assistant progress followed by each parallel result.
+            """
+            yield "completed assistant message"
+            await asyncio.sleep(0.03)
+            yield "first tool result"
+            await asyncio.sleep(0.03)
+            yield "second tool result"
+            await asyncio.Event().wait()
+            yield "unreachable"
+
+        watchdog_timer: WatchDogTimer = WatchDogTimer.build(
+            first_progress_timeout_seconds=1.0,
+            idle_timeout_seconds=0.01,
+        )
+        stream: AsyncIterator[object] = completed_message_then_slow_parallel_results_stream()
+
+        assert await watchdog_timer.invoke(graph_stream=stream) == "completed assistant message"
+        watchdog_timer.observe_update_events(
+            events=[
+                AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-1", tool_name="read"),
+                AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="read"),
+                AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-2", tool_name="grep"),
+                AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-2", tool_name="grep"),
+            ]
+        )
+
+        assert await watchdog_timer.invoke(graph_stream=stream) == "first tool result"
+        watchdog_timer.observe_update_events(
+            events=[AgentStreamEventDAO(kind="tool_result", tool_call_id="call-1")]
+        )
+
+        assert await watchdog_timer.invoke(graph_stream=stream) == "second tool result"
+        watchdog_timer.observe_update_events(
+            events=[AgentStreamEventDAO(kind="tool_result", tool_call_id="call-2")]
+        )
+
+        with pytest.raises(ProviderStreamProgressTimeout, match="idle"):
+            await watchdog_timer.invoke(graph_stream=stream)
+
+    @pytest.mark.asyncio
+    async def test_counts_starts_before_results_when_update_batch_contains_both(self) -> None:
+        """A17 supplemental: mixed updates subtract results only after counting every new start."""
+
+        async def delayed_remaining_result() -> AsyncIterator[object]:
+            """Outlive the provider deadline while one local call remains.
+
+            Yields:
+                object: The remaining local result, followed by a provider stall.
+            """
+            await asyncio.sleep(0.03)
+            yield "last result"
+            await asyncio.Event().wait()
+            yield "unreachable"
+
+        watchdog_timer: WatchDogTimer = WatchDogTimer.build(
+            first_progress_timeout_seconds=0.01, idle_timeout_seconds=0.01
+        )
+        watchdog_timer.observe_update_events(
+            events=[
+                AgentStreamEventDAO(kind="tool_call_start", tool_call_id="first", tool_name="read"),
+                AgentStreamEventDAO(kind="tool_call_start", tool_call_id="last", tool_name="read"),
+                AgentStreamEventDAO(kind="tool_result", tool_call_id="first"),
+            ]
+        )
+        stream: AsyncIterator[object] = delayed_remaining_result()
+        async with asyncio.timeout(1):
+            assert await watchdog_timer.invoke(graph_stream=stream) == "last result"
+        watchdog_timer.observe_update_events(
+            events=[AgentStreamEventDAO(kind="tool_result", tool_call_id="last")]
+        )
+        with pytest.raises(ProviderStreamProgressTimeout, match="idle"):
+            await watchdog_timer.invoke(graph_stream=stream)
+
+    @pytest.mark.asyncio
     async def test_invoke_when_graph_stream_ends_returns_none(self) -> None:
         """A completed graph stream is not reported as a provider failure."""
 

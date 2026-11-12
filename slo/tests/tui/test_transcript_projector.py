@@ -698,10 +698,10 @@ class TestTranscriptProjectionAdapter:
 
     @pytest.mark.asyncio
     async def test_tool_call_start_does_not_mount_block(self) -> None:
-        """tool_call_start alone must not mount a ToolExecutionBlock.
+        """An unnamed tool_call_start must not mount a ToolExecutionBlock.
 
-        The block must only be created when real tool data arrives
-        via tool_call_delta or tool_call_end.
+        Spec 107 §8.2: only a *named* start mounts a block; delta and end
+        never create one.
         """
         host = FakeHost()
         projector = TranscriptProjectionAdapter.register(host=host)
@@ -724,9 +724,9 @@ class TestTranscriptProjectionAdapter:
         """An announcement-only tool_call_delta must not mount a blank block.
 
         The normalizer can emit a tool_call_delta carrying neither arguments
-        nor parsed input (the provider's tool-call announcement chunk). The
-        block must only appear once real tool data arrives, via a contentful
-        tool_call_delta or tool_call_end.
+        nor parsed input (the provider's tool-call announcement chunk). Spec
+        107 §8.2: the block appears only on the named tool_call_start, and the
+        later tool_call_end updates that same block.
         """
         host = FakeHost()
         projector = TranscriptProjectionAdapter.register(host=host)
@@ -745,6 +745,14 @@ class TestTranscriptProjectionAdapter:
         assert host.lines == []
         assert host.recorded == []
 
+        await projector.handle(
+            event=AgentStreamEventDAO(
+                kind="tool_call_start",
+                tool_call_id="call_1",
+                tool_name="read",
+                iteration=0,
+            ),
+        )
         await projector.handle(
             event=AgentStreamEventDAO(
                 kind="tool_call_end",
@@ -1115,6 +1123,14 @@ class TestThinkingSegmentRouting:
         )
         await projector.handle(
             event=AgentStreamEventDAO(
+                kind="tool_call_start",
+                tool_call_id="call_1",
+                tool_name="read",
+                iteration=0,
+            ),
+        )
+        await projector.handle(
+            event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
                 tool_name="read",
@@ -1143,6 +1159,7 @@ class TestThinkingSegmentRouting:
         # The newer segment is untouched by the older id's end event.
         assert host.thinking_blocks[1].thinking == "verify"
         assert host.thinking_blocks[1].sealed is False
+        assert list(host.tool_blocks) == ["call_1"]
 
     @pytest.mark.asyncio
     async def test_thinking_end_with_unknown_block_id_cannot_mutate_a_newer_block(self) -> None:
@@ -1202,6 +1219,14 @@ class TestThinkingSegmentRouting:
         )
         await projector.handle(
             event=AgentStreamEventDAO(
+                kind="tool_call_start",
+                tool_call_id="call_1",
+                tool_name="read",
+                iteration=0,
+            ),
+        )
+        await projector.handle(
+            event=AgentStreamEventDAO(
                 kind="tool_call_end",
                 tool_call_id="call_1",
                 tool_name="read",
@@ -1211,6 +1236,7 @@ class TestThinkingSegmentRouting:
         )
 
         assert host.thinking_blocks[0].sealed is False
+        assert list(host.tool_blocks) == ["call_1"]
 
     @pytest.mark.asyncio
     async def test_run_completed_seals_every_retained_thinking_block(self) -> None:
@@ -1618,3 +1644,249 @@ class TestProjectReplayNote:
         )
 
         assert recorded_before == [1]
+
+
+def build_tool_event(
+    *,
+    kind: str,
+    tool_call_id: str | None = "call_1",
+    tool_name: str | None = "read",
+    tool_arguments_delta: str | None = None,
+    tool_input: dict[str, object] | None = None,
+    content: str | None = None,
+    block_id: str | None = None,
+) -> AgentStreamEventDAO:
+    """Build one iteration-0 tool lifecycle event for projector journeys.
+
+    Args:
+        kind (str): Stream event kind.
+        tool_call_id (str | None): Call id, or ``None`` for an idless event.
+        tool_name (str | None): Tool name carried by the event.
+        tool_arguments_delta (str | None): Streamed argument text for deltas.
+        tool_input (dict[str, object] | None): Parsed input for ends.
+        content (str | None): Result or live-output text.
+        block_id (str | None): Normalized block id, used when the call id is absent.
+
+    Returns:
+        AgentStreamEventDAO: The event to feed into ``handle(event=...)``.
+    """
+    return AgentStreamEventDAO.model_validate(
+        {
+            "kind": kind,
+            "iteration": 0,
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "tool_arguments_delta": tool_arguments_delta,
+            "tool_input": tool_input,
+            "content": content,
+            "block_id": block_id,
+        }
+    )
+
+
+class TestTranscriptProjectionToolCallLifecycle:
+    """Spec 107 Change 3: one block per call id, mounted only by a named request start."""
+
+    @pytest.mark.asyncio
+    async def test_mounts_one_block_when_end_arrives_after_result(self) -> None:
+        """A13: start, delta, end, result, then a late end/delta/output keep exactly one block."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        for event in [
+            build_tool_event(kind="tool_call_start"),
+            build_tool_event(kind="tool_call_delta", tool_arguments_delta='{"path": "a.py"}'),
+            build_tool_event(kind="tool_call_end", tool_input={"path": "a.py"}),
+            build_tool_event(kind="tool_result", content="one line"),
+            build_tool_event(kind="tool_call_end", tool_input={"path": "a.py"}),
+            build_tool_event(kind="tool_call_delta", tool_arguments_delta='{"x": 1}'),
+            build_tool_event(kind="tool_output_update", content="late output"),
+        ]:
+            await projector.handle(event=event)
+
+        assert host.mount_order == ["tool"]
+        tool_block: FakeToolBlock = host.tool_blocks["call_1"]
+        assert tool_block.tool_input == {"path": "a.py"}
+        assert tool_block.result_output == "one line"
+        assert host.lines == []
+        assert host.recorded == [("⏺ read a.py", "tool-line"), ("⎿ 1 lines · 0.0 KB", "tool-result")]
+
+    @pytest.mark.asyncio
+    async def test_mounts_one_block_when_named_start_and_result_repeat(self) -> None:
+        """A13 (also cover): duplicate named starts and duplicate results are no-ops."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        for event in [
+            build_tool_event(kind="tool_call_start"),
+            build_tool_event(kind="tool_call_start"),
+            build_tool_event(kind="tool_call_end", tool_input={"path": "a.py"}),
+            build_tool_event(kind="tool_result", content="first"),
+            build_tool_event(kind="tool_result", content="second"),
+            build_tool_event(kind="tool_call_start"),
+        ]:
+            await projector.handle(event=event)
+
+        assert host.mount_order == ["tool"]
+        assert host.tool_blocks["call_1"].result_output == "first"
+        assert host.lines == []
+        assert host.recorded == [("⏺ read a.py", "tool-line"), ("⎿ 1 lines · 0.0 KB", "tool-result")]
+
+    @pytest.mark.parametrize(
+        argnames="orphan_event",
+        argvalues=[
+            pytest.param(
+                build_tool_event(kind="tool_call_delta", tool_arguments_delta='{"path": "a.py"}'),
+                id="A14-delta",
+            ),
+            pytest.param(build_tool_event(kind="tool_call_end", tool_input={"path": "a.py"}), id="A14-end"),
+            pytest.param(build_tool_event(kind="tool_output_update", content="partial"), id="A14-output"),
+            pytest.param(build_tool_event(kind="tool_call_start", tool_name=None), id="A14-unnamed-start"),
+            pytest.param(build_tool_event(kind="tool_call_start", tool_call_id=None), id="A14-idless-start"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_mounts_nothing_when_update_arrives_without_block(
+        self, *, orphan_event: AgentStreamEventDAO
+    ) -> None:
+        """A14: a delta, end or live output with no block (or an unusable start) mounts nothing.
+
+        Args:
+            orphan_event (AgentStreamEventDAO): Unknown-call update or unusable start that must not mount a block.
+        """
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        await projector.handle(event=orphan_event)
+
+        assert host.mount_order == []
+        assert host.lines == []
+        assert host.recorded == []
+
+    @pytest.mark.parametrize(
+        argnames="orphan_event",
+        argvalues=[
+            pytest.param(
+                build_tool_event(kind="tool_call_delta", tool_arguments_delta='{"path": "a.py"}'),
+                id="A14-delta",
+            ),
+            pytest.param(
+                build_tool_event(kind="tool_output_update", content='{"path": "a.py"}'), id="A14-output"
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_keeps_arguments_empty_when_unknown_update_precedes_start(
+        self, *, orphan_event: AgentStreamEventDAO
+    ) -> None:
+        """A14 (also cover): updates for an unknown id never populate that id's argument buffer.
+
+        Args:
+            orphan_event (AgentStreamEventDAO): Unknown-call update or unusable start that must not mount a block.
+        """
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        await projector.handle(event=orphan_event)
+        await projector.handle(event=build_tool_event(kind="tool_call_start"))
+        await projector.handle(event=build_tool_event(kind="tool_call_end"))
+
+        assert host.mount_order == ["tool"]
+        assert host.tool_blocks["call_1"].tool_input == {}
+
+    @pytest.mark.asyncio
+    async def test_mounts_nothing_when_start_arrives_after_fallback_result(self) -> None:
+        """A15: a result with no block writes the fallback line; later events for the id mount nothing."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        for event in [
+            build_tool_event(kind="tool_result", content="one line"),
+            build_tool_event(kind="tool_call_start"),
+            build_tool_event(kind="tool_call_delta", tool_arguments_delta='{"path": "a.py"}'),
+            build_tool_event(kind="tool_call_end", tool_input={"path": "a.py"}),
+            build_tool_event(kind="tool_result", content="again"),
+        ]:
+            await projector.handle(event=event)
+
+        assert host.mount_order == []
+        assert host.lines == [("⎿ 1 lines · 0.0 KB", "tool-result")]
+        assert host.recorded == []
+
+    @pytest.mark.asyncio
+    async def test_mounts_block_when_idless_result_precedes_start(self) -> None:
+        """A15 (also cover): an idless result gets the fallback line but finishes no call id."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        await projector.handle(event=build_tool_event(kind="tool_result", tool_call_id=None, content="x"))
+        await projector.handle(event=build_tool_event(kind="tool_result", tool_call_id=None, content="y"))
+        await projector.handle(event=build_tool_event(kind="tool_call_start", tool_call_id="tool-call"))
+
+        assert host.lines == [("⎿ 1 lines · 0.0 KB", "tool-result"), ("⎿ 1 lines · 0.0 KB", "tool-result")]
+        assert host.mount_order == ["tool"]
+
+    @pytest.mark.asyncio
+    async def test_mounts_block_again_when_new_prompt_reuses_call_id(self) -> None:
+        """A16: after reset for a new prompt, a finished call id can mount a fresh block."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        await projector.handle(event=build_tool_event(kind="tool_call_start"))
+        await projector.handle(event=build_tool_event(kind="tool_result", content="first prompt"))
+        first_tool_block: FakeToolBlock = host.tool_blocks["call_1"]
+        await projector.reset()
+        await projector.handle(event=build_tool_event(kind="tool_call_start"))
+        await projector.handle(event=build_tool_event(kind="tool_result", content="second prompt"))
+
+        assert host.mount_order == ["tool", "tool"]
+        assert host.tool_blocks["call_1"] is not first_tool_block
+        assert first_tool_block.result_output == "first prompt"
+        assert host.tool_blocks["call_1"].result_output == "second prompt"
+
+    @pytest.mark.asyncio
+    async def test_preserves_empty_input_when_end_overrides_buffer(self) -> None:
+        """A13 (also cover): an explicit ``{}`` end input replaces a non-empty streamed preview."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        await projector.handle(event=build_tool_event(kind="tool_call_start"))
+        await projector.handle(
+            event=build_tool_event(kind="tool_call_delta", tool_arguments_delta='{"path": "a.py"}')
+        )
+        preview_input: dict[str, object] = dict(host.tool_blocks["call_1"].tool_input)
+        await projector.handle(event=build_tool_event(kind="tool_call_end", tool_input={}))
+
+        assert preview_input == {"path": "a.py"}
+        assert host.tool_blocks["call_1"].tool_input == {}
+
+    @pytest.mark.asyncio
+    async def test_updates_block_by_block_id_when_call_id_is_absent(self) -> None:
+        """A13 (also cover): request/delta/end/output fall back to ``block_id`` when the call id is absent."""
+        host: FakeHost = FakeHost()
+        projector: TranscriptProjectionAdapter = TranscriptProjectionAdapter.register(host=host)
+
+        for event in [
+            build_tool_event(kind="tool_call_start", tool_call_id=None, block_id="call_b"),
+            build_tool_event(
+                kind="tool_call_delta",
+                tool_call_id=None,
+                block_id="call_b",
+                tool_arguments_delta='{"path": "b',
+            ),
+            build_tool_event(
+                kind="tool_call_delta", tool_call_id=None, block_id="call_b", tool_arguments_delta='"}'
+            ),
+            build_tool_event(
+                kind="tool_output_update", tool_call_id=None, block_id="call_b", content="partial"
+            ),
+        ]:
+            await projector.handle(event=event)
+
+        assert host.mount_order == ["tool"]
+        assert host.tool_blocks["call_b"].tool_input == {"path": "b"}
+        await projector.handle(
+            event=build_tool_event(kind="tool_call_end", tool_call_id=None, block_id="call_b", tool_input={})
+        )
+        assert host.tool_blocks["call_b"].tool_input == {}
+        assert host.tool_blocks["call_b"].result_output is None

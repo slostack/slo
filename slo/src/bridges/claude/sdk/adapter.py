@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Optional, Self
 
+from claude_agent_sdk import ClaudeSDKClient
 from claude_agent_sdk._internal.transport import Transport
 
 from .authentication import ClaudeNativeAuthentication
@@ -16,7 +17,7 @@ from .dao import (
     ClaudeToolResultSubmissionDAO,
 )
 from .events import ClaudeBridgeEvent, ClaudeResponseCompletedDAO
-from .exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
+from .exceptions import ClaudeBridgeError, ClaudeQuotaExceededError, ClaudeSubmissionNotStartedError
 from .sdk_runtime import ClaudeSDKRuntime
 from .inventory import ClaudeToolInventory
 
@@ -30,6 +31,7 @@ class SloClaudeBridgeAdapter:
         configuration: ClaudeBridgeConfigurationDAO,
         transport: Optional[Transport] = None,
         authentication_check: Optional[Callable[[], Awaitable[ClaudeAuthenticationStatusDAO]]] = None,
+        client_factory: Optional[Callable[..., ClaudeSDKClient]] = None,
     ) -> None:
         """Store the supported external I/O seams without native activity.
 
@@ -37,12 +39,16 @@ class SloClaudeBridgeAdapter:
             configuration: Trusted native runtime configuration.
             transport: SDK-supported transport injection; None uses the native SDK default.
             authentication_check: Native status boundary substitute; None uses documented CLI status.
+            client_factory: SDK constructor seam; defaults to the official client.
         """
         self._authentication = ClaudeNativeAuthentication(configuration=configuration)
         self._authentication_check = authentication_check or self._authentication.check_authentication
+        self._client_factory = client_factory
         self._transport = transport
         self._configuration = configuration
-        self._runtime = ClaudeSDKRuntime(transport=transport, configuration=configuration)
+        self._runtime = ClaudeSDKRuntime(
+            transport=transport, configuration=configuration, client_factory=client_factory
+        )
         self._session_options: Optional[ClaudeSessionOptionsDAO] = None
         self._session_closed = False
         self._invocation_options: Optional[ClaudeInvocationOptionsDAO] = None
@@ -156,6 +162,7 @@ class SloClaudeBridgeAdapter:
             self._runtime = ClaudeSDKRuntime(
                 transport=self._transport,
                 configuration=self._configuration,
+                client_factory=self._client_factory,
                 resume_session_id=resume_session_id,
             )
         self._fresh_conversation_requested = False
@@ -183,11 +190,24 @@ class SloClaudeBridgeAdapter:
             async for event in self._runtime.read_response():
                 boundary = isinstance(event, ClaudeResponseCompletedDAO)
                 yield event
+        except ClaudeQuotaExceededError:
+            await self._runtime.close()
+            self._runtime = ClaudeSDKRuntime(
+                transport=self._transport,
+                configuration=self._configuration,
+                client_factory=self._client_factory,
+                resume_session_id=None,
+            )
+            self._invocation_options = None
+            self._resume_session_id = None
+            self._fresh_conversation_requested = True
+            raise
         except ClaudeSubmissionNotStartedError:
             await self._runtime.close()
             self._runtime = ClaudeSDKRuntime(
                 transport=self._transport,
                 configuration=self._configuration,
+                client_factory=self._client_factory,
                 resume_session_id=self._resume_session_id,
             )
             self._invocation_options = None

@@ -43,7 +43,7 @@ from .sdk.events import (
     ClaudeThinkingEventDAO,
 )
 from .sdk.protocol import SloBridgeAdapterProtocol
-from .sdk.exceptions import ClaudeBridgeError, ClaudeSubmissionNotStartedError
+from .sdk.exceptions import ClaudeBridgeError, ClaudeQuotaExceededError, ClaudeSubmissionNotStartedError
 from .sdk.inventory import ClaudeToolInventory
 from .history_transcript import ClaudeHistoryTranscript
 from .host_content import ClaudeHostContent
@@ -63,12 +63,14 @@ class SloClaudeBridge(BaseChatModel):
     model_name: str
     effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = None
     bridge_adapter: SloBridgeAdapterProtocol
+    response_adapter_class: type[AIAgentResponseAdapter] = AIAgentResponseAdapter
     _session_options: Optional[SloBridgeSessionOptionsDAO] = PrivateAttr(default=None)
     _invocation_id: Optional[str] = PrivateAttr(default=None)
     _cancellation_task: Optional[asyncio.Task[None]] = PrivateAttr(default=None)
     _closed: bool = PrivateAttr(default=False)
     _retired: bool = PrivateAttr(default=False)
     _startup_active: bool = PrivateAttr(default=False)
+    _quota_release_active: bool = PrivateAttr(default=False)
     _tools: tuple[ClaudeToolDefinitionDAO, ...] = PrivateAttr(default=())
     _pending: Optional[ClaudeResponseCompletedDAO] = PrivateAttr(default=None)
     _consumed: list[dict[str, object]] = PrivateAttr(default_factory=list)
@@ -168,11 +170,14 @@ class SloClaudeBridge(BaseChatModel):
         **kwargs: Any,
     ) -> AsyncGenerator[ChatGenerationChunk, None]:
         """Stream one new text answer; the final chunk follows SDK closure."""
+        if self._quota_release_active:
+            raise RuntimeError("Claude quota translator closure is active.")
         if self._closed or self._session_options is None:
             raise RuntimeError("Claude bridge is closed or unconfigured; start a new session.")
         plan = self._validated_plan(messages=messages, stop=stop, kwargs=kwargs)
         boundary = False
         proven_unsent = False
+        quota_released = False
         self._startup_active = True
         try:
             await self._admit_response(messages=messages, plan=plan)
@@ -192,6 +197,14 @@ class SloClaudeBridge(BaseChatModel):
                 messages=messages, native_session_dropped=bool(plan and plan.fresh_native_session)
             )
             raise
+        except ClaudeQuotaExceededError:
+            self._quota_release_active = True
+            try:
+                await self._release_quota_invocation()
+                quota_released = True
+            finally:
+                self._quota_release_active = False
+            raise
         except ClaudeBridgeError as error:
             # Only a validated missing subset is correctable. No result has been
             # reserved or sent, so leave this response's waiters parked for its caller.
@@ -199,7 +212,9 @@ class SloClaudeBridge(BaseChatModel):
                 boundary = True
             raise
         finally:
-            await self._finish_response_stream(boundary=boundary, proven_unsent=proven_unsent)
+            await self._finish_response_stream(
+                boundary=boundary, proven_unsent=proven_unsent, quota_released=quota_released
+            )
 
     async def _admit_response(
         self,
@@ -377,14 +392,43 @@ class SloClaudeBridge(BaseChatModel):
             )
         )
 
-    async def _finish_response_stream(self, *, boundary: bool, proven_unsent: bool) -> None:
+    async def _release_quota_invocation(self) -> None:
+        """Release failed-native translators after adapter retirement, retaining host configuration.
+
+        Only the quota catch calls this. Any cancellation or close failure leaves
+        finalization responsible for terminal closure rather than reusable admission.
+        """
+        if self._cancellation_task is not None:
+            raise asyncio.CancelledError
+        if self._tool_result_adapter is not None:
+            await self._tool_result_adapter.close()
+            self._tool_result_adapter = None
+        if self._call_adapter is not None:
+            await self._call_adapter.close()
+            self._call_adapter = None
+        if self._response_adapter is not None:
+            await self._response_adapter.close()
+            self._response_adapter = None
+        # Cancellation may arrive while any translator close is awaiting delivery.
+        # Do not publish reusable quota after that intent has acquired ownership.
+        if self._cancellation_task is not None:
+            raise asyncio.CancelledError
+        self._pending = None
+        self._invocation_id = None
+        self._consumed = []
+        self._translated_chunks = []
+        self._response_messages = []
+
+    async def _finish_response_stream(
+        self, *, boundary: bool, proven_unsent: bool, quota_released: bool
+    ) -> None:
         """Seal uncertain submissions; keep validated boundaries and safe retries reusable.
 
         The stream's finally block owns this cleanup decision. Adapter close errors
         propagate without discarding the SDK owner, allowing explicit cleanup retry.
         """
         self._startup_active = False
-        if boundary or proven_unsent:
+        if boundary or proven_unsent or quota_released:
             return
         await self.close()
 
@@ -484,7 +528,7 @@ class SloClaudeBridge(BaseChatModel):
         invocation_id = self._invocation_id
         if self._response_adapter is not None:
             await self._response_adapter.close()
-        self._response_adapter = AIAgentResponseAdapter.register(
+        self._response_adapter = self.response_adapter_class.register(
             binding=ClaudeInteractionBindingDAO(
                 session_id=options.session_id, invocation_id=invocation_id, binding_version=0
             ),

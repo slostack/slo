@@ -2,12 +2,30 @@
 
 import base64
 import binascii
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional
 
 from pydantic import field_validator
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+class ClaudeQuotaRejectionDAO(BaseModel):
+    """Minimal sanitized correlation for one ordered native quota notification."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    native_session_id: str | None = Field(default=None, strict=True, min_length=1, max_length=256)
+    parent_tool_use_id: str | None = Field(default=None, strict=True)
+    reset_at: datetime | None = None
+
+    @field_validator("reset_at")
+    @classmethod
+    def validate_reset_at(cls, value: datetime | None) -> datetime | None:
+        """Require an aware UTC instant, including after SDK JSON round-trip."""
+        if value is not None and value.utcoffset() != timedelta(0):
+            raise ValueError("Quota reset must be timezone-aware UTC.")
+        return value
 
 
 class ClaudeInteractionBindingDAO(BaseModel):

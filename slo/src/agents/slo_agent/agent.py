@@ -851,9 +851,12 @@ class SloAgent:
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Perform post-iteration housekeeping and yield any remaining closing events.
 
-        Usage is already captured at the update boundary. Finalizes any still-open
-        normalizer blocks (yielding their closing stream events and emitting
-        stream-level trace events), and updates ``self._last_assistant_text``.
+        Usage is already captured at the update boundary. Confirms that every
+        normalizer block is closed: ``finalize_open_blocks`` is idempotent, so this
+        safety net emits closing events (and their stream-level trace events) only
+        for blocks still open, such as text opened after the completed message.
+        Calls already closed when the completed ``AIMessage`` arrived emit nothing.
+        Also updates ``self._last_assistant_text``.
 
         Called once per outer-loop iteration, after the inner retry loop breaks
         on a successful graph turn.

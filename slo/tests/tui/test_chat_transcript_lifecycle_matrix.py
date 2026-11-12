@@ -128,6 +128,11 @@ async def test_partial_older_failure_preserves_active_tool_identity(tmp_path: Pa
         await transcript.handle(command=BeginTranscriptRunDAO())
         await transcript.present_event(
             event=AgentStreamEventDAO(
+                kind="tool_call_start", tool_call_id="active", tool_name="echo", iteration=1
+            )
+        )
+        await transcript.present_event(
+            event=AgentStreamEventDAO(
                 kind="tool_call_end", tool_call_id="active", tool_name="echo", iteration=1
             )
         )

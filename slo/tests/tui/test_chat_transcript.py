@@ -611,6 +611,11 @@ async def test_protected_saturation_does_not_busy_loop() -> None:
         for index in range(501):
             await transcript.present_event(
                 event=AgentStreamEventDAO(
+                    kind="tool_call_start", tool_call_id=f"tool-{index}", tool_name="read"
+                )
+            )
+            await transcript.present_event(
+                event=AgentStreamEventDAO(
                     kind="tool_call_end", tool_call_id=f"tool-{index}", tool_name="read", tool_input={}
                 )
             )

@@ -8,13 +8,15 @@ normalization in both directions.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cached_property
-from typing import Any, Optional, cast
+from typing import Any, AsyncIterator, Iterator, Optional, cast
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 from src.auth.credential_dao import CredentialDAO
@@ -155,6 +157,137 @@ class ClaudeCodeChatAnthropic(_ThinkingPatchedChatAnthropic):
             ]
         return payload
 
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        *,
+        stream_usage: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """Resolve names before public delivery and inherited stream aggregation.
+
+        Args:
+            messages: Input history (vendor positional protocol retained).
+            stop: Optional stop sequences.
+            run_manager: Vendor callback manager.
+            stream_usage: Whether usage chunks are requested.
+            **kwargs: Vendor invocation options, including original bound tools.
+
+        Yields:
+            ChatGenerationChunk: Canonical names with all other fields preserved.
+        """
+        names: list[str] = self._tool_name_candidates(tools=kwargs.get("tools"))
+        for chunk in super()._stream(
+            messages=messages, stop=stop, run_manager=run_manager, stream_usage=stream_usage, **kwargs
+        ):
+            yield chunk.model_copy(
+                update={
+                    "message": self._normalize_stream_message(
+                        message=chunk.message, available_tool_names=names
+                    )
+                }
+            )
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        *,
+        stream_usage: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Resolve names before asynchronous delivery and generation aggregation.
+
+        Args:
+            messages: Input history (vendor positional protocol retained).
+            stop: Optional stop sequences.
+            run_manager: Vendor callback manager.
+            stream_usage: Whether usage chunks are requested.
+            **kwargs: Vendor options carrying original, not outbound-renamed tools.
+
+        Yields:
+            ChatGenerationChunk: Canonical names without altering stream ordering.
+        """
+        names: list[str] = self._tool_name_candidates(tools=kwargs.get("tools"))
+        async for chunk in super()._astream(
+            messages=messages, stop=stop, run_manager=run_manager, stream_usage=stream_usage, **kwargs
+        ):
+            yield chunk.model_copy(
+                update={
+                    "message": self._normalize_stream_message(
+                        message=chunk.message, available_tool_names=names
+                    )
+                }
+            )
+
+    def _normalize_stream_message(
+        self, *, message: BaseMessage, available_tool_names: list[str]
+    ) -> BaseMessage:
+        """Keep decoded content, fragments and parsed calls in agreement.
+
+        No slot/name ledger is needed: absent names remain absent and later named
+        fragments use the same request-local policy. LangChain owns assembly.
+
+        Args:
+            message: Decoded vendor chunk, borrowed without mutation.
+            available_tool_names: Original bound registry spellings.
+
+        Returns:
+            BaseMessage: A copied chunk with only supplied local tool names resolved.
+        """
+        if not isinstance(message, AIMessageChunk):
+            return message
+        content = message.content
+        if isinstance(content, list):
+            content = [
+                (
+                    self._normalize_named_tool_fields(fields=block, available_tool_names=available_tool_names)
+                    if isinstance(block, dict) and block.get("type") == "tool_use"
+                    else block
+                )
+                for block in content
+            ]
+        return message.model_copy(
+            update={
+                "content": content,
+                "tool_call_chunks": [
+                    self._normalize_named_tool_fields(
+                        fields=fragment, available_tool_names=available_tool_names
+                    )
+                    for fragment in message.tool_call_chunks
+                ],
+                "tool_calls": [
+                    self._normalize_named_tool_fields(fields=call, available_tool_names=available_tool_names)
+                    for call in message.tool_calls
+                ],
+            }
+        )
+
+    def _normalize_named_tool_fields(
+        self, *, fields: Mapping[str, object], available_tool_names: list[str]
+    ) -> dict[str, object]:
+        """Copy vendor tool fields, resolving only nonempty string names.
+
+        Args:
+            fields: Heterogeneous vendor tool block/call/chunk boundary fields.
+            available_tool_names: Original bound tool names.
+
+        Returns:
+            dict[str, object]: Same vendor fields with a safely resolved name.
+        """
+        name: object = fields.get("name")
+        if not isinstance(name, str) or not name:
+            return dict(fields)
+        return {
+            **fields,
+            "name": self._normalize_inbound_tool_name(
+                tool_name=name, available_tool_names=available_tool_names
+            ),
+        }
+
     def _format_output(self, data: Any, **kwargs: Any) -> ChatResult:
         """Normalize inbound Claude Code tool names back to Slo names.
 
@@ -269,9 +402,13 @@ class ClaudeCodeChatAnthropic(_ThinkingPatchedChatAnthropic):
             str: The matching Slo tool name, or the original name when
                 no match exists.
         """
-        for candidate in available_tool_names:
-            if candidate.lower() == tool_name.lower():
-                return candidate
+        if tool_name in available_tool_names:
+            return tool_name
+        matches: set[str] = {name for name in available_tool_names if name.lower() == tool_name.lower()}
+        if len(matches) == 1:
+            return next(iter(matches))
+        if matches:
+            return tool_name
         for slo_name, canonical_name in _OUTBOUND_TOOL_NAME_MAP.items():
             if canonical_name.lower() == tool_name.lower():
                 for candidate in available_tool_names:

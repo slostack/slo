@@ -127,7 +127,11 @@ class TranscriptProjectionAdapter:
         self._open_thinking_block_ids: set[str] = set()
         """Normalized ids that may still receive their matching ``thinking_end``."""
         self._tool_blocks: dict[str, ToolExecutionBlock] = {}
+        """Call id to its shown block, from its named ``tool_call_start`` until its result."""
         self._tool_argument_buffers: dict[str, str] = {}
+        """Streamed argument text per shown call id; cleared when that call's result arrives."""
+        self._finished_tool_call_ids: set[str] = set()
+        """Call ids whose result arrived this prompt; every later event for them is ignored."""
         self._recorded_tool_calls: set[str] = set()
         self._replay_projectors: dict[str, ReplayEntryProjector] = {
             "user": self._project_replay_user,
@@ -231,6 +235,7 @@ class TranscriptProjectionAdapter:
         self._open_thinking_block_ids.clear()
         self._tool_blocks.clear()
         self._tool_argument_buffers.clear()
+        self._finished_tool_call_ids.clear()
         self._recorded_tool_calls.clear()
 
     async def _project(self, *, event: AgentStreamEventDAO) -> None:
@@ -282,59 +287,15 @@ class TranscriptProjectionAdapter:
             return
 
         if event.kind == "tool_call_start":
+            await self._project_tool_call_start(event=event)
             return
 
         if event.kind == "tool_call_delta":
-            if not event.tool_arguments_delta and not event.tool_input:
-                return  # empty announcement delta — do not mount a blank block
-            if not event.tool_name and event.tool_input is None:
-                # If the tool name is not known yet, save the arguments and
-                # wait for the name or the end of the call before adding a block.
-                # This avoids showing a generic ``tool(command=...)`` headline.
-                buffered_tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
-                if event.tool_arguments_delta:
-                    self._tool_argument_buffers[buffered_tool_call_id] = (
-                        self._tool_argument_buffers.get(buffered_tool_call_id, "")
-                        + event.tool_arguments_delta
-                    )
-                return
-            tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
-            delta_tool_block: ToolExecutionBlock = await self._get_or_create_tool_block(
-                tool_call_id=tool_call_id,
-                tool_name=event.tool_name,
-            )
-            if event.tool_arguments_delta:
-                self._tool_argument_buffers[tool_call_id] = (
-                    self._tool_argument_buffers.get(tool_call_id, "") + event.tool_arguments_delta
-                )
-            parsed_input: dict[str, object] = event.tool_input or self._best_effort_parse_tool_input(
-                raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
-            )
-            delta_tool_block.update_tool_call(
-                tool_name=event.tool_name,
-                tool_input=parsed_input,
-            )
+            await self._project_tool_call_delta(event=event)
             return
 
         if event.kind == "tool_call_end":
-            if not event.tool_name and event.tool_call_id not in self._tool_blocks:
-                # The call ended without a name and without a displayed
-                # block, so there is nothing to finish or show.
-                self._tool_argument_buffers.pop(event.tool_call_id or "", None)
-                return
-            tool_call_id = event.tool_call_id or event.block_id or "tool-call"
-            final_tool_block: ToolExecutionBlock = await self._get_or_create_tool_block(
-                tool_call_id=tool_call_id,
-                tool_name=event.tool_name,
-            )
-            parsed_input = event.tool_input or self._best_effort_parse_tool_input(
-                raw_arguments=self._tool_argument_buffers.get(tool_call_id, ""),
-            )
-            final_tool_block.update_tool_call(
-                tool_name=event.tool_name,
-                tool_input=parsed_input,
-            )
-            self._record_tool_call(block=final_tool_block)
+            await self._project_tool_call_end(event=event)
             return
 
         if event.kind == "tool_output_update":
@@ -412,13 +373,79 @@ class TranscriptProjectionAdapter:
             )
             return
 
-    async def _project_tool_output_update(self, *, event: AgentStreamEventDAO) -> None:
-        """Update the tool’s existing block with output received so far, before its final result arrives."""
-        tool_call_id: str = event.tool_call_id or event.block_id or "tool-call"
-        block: ToolExecutionBlock = await self._get_or_create_tool_block(
-            tool_call_id=tool_call_id,
+    async def _project_tool_call_start(self, *, event: AgentStreamEventDAO) -> None:
+        """Mount the one block for a newly requested, named tool call.
+
+        The normalizer guarantees a named ``tool_call_start`` precedes any delta
+        or end for its call id, so this is the only place a live tool block is
+        mounted. A start without a call id (or ``block_id``) or without a name,
+        a repeated start for a shown call, and a start for a call whose result
+        already arrived this prompt are all ignored.
+
+        Args:
+            event (AgentStreamEventDAO): A ``tool_call_start`` event.
+        """
+        tool_call_id: str | None = self._displayed_tool_call_id(event=event)
+        if tool_call_id is None or not event.tool_name:
+            return
+        if tool_call_id in self._tool_blocks or tool_call_id in self._finished_tool_call_ids:
+            return
+        await self._mount_tool_block(tool_call_id=tool_call_id, tool_name=event.tool_name)
+
+    async def _project_tool_call_delta(self, *, event: AgentStreamEventDAO) -> None:
+        """Append streamed argument text to a shown call and refresh its live preview.
+
+        Lookup only: a delta for a call with no shown block (never started, or
+        already finished) is ignored and does not populate an argument buffer.
+
+        Args:
+            event (AgentStreamEventDAO): A ``tool_call_delta`` event.
+        """
+        tool_call_id: str | None = self._displayed_tool_call_id(event=event)
+        tool_block: ToolExecutionBlock | None = self._find_tool_block(tool_call_id=tool_call_id)
+        if tool_call_id is None or tool_block is None:
+            return
+        if event.tool_arguments_delta:
+            self._tool_argument_buffers[tool_call_id] = (
+                self._tool_argument_buffers.get(tool_call_id, "") + event.tool_arguments_delta
+            )
+        tool_block.update_tool_call(
             tool_name=event.tool_name,
+            tool_input=self._displayed_tool_input(tool_call_id=tool_call_id, tool_input=event.tool_input),
         )
+
+    async def _project_tool_call_end(self, *, event: AgentStreamEventDAO) -> None:
+        """Show a shown call's final arguments and record its tool-call line once.
+
+        Lookup only: an end for a call with no shown block (never started, or
+        already finished, such as a late duplicate end) is ignored. An explicit
+        ``tool_input`` (including ``{}``) replaces the streamed preview.
+
+        Args:
+            event (AgentStreamEventDAO): A ``tool_call_end`` event.
+        """
+        tool_call_id: str | None = self._displayed_tool_call_id(event=event)
+        tool_block: ToolExecutionBlock | None = self._find_tool_block(tool_call_id=tool_call_id)
+        if tool_call_id is None or tool_block is None:
+            return
+        tool_block.update_tool_call(
+            tool_name=event.tool_name,
+            tool_input=self._displayed_tool_input(tool_call_id=tool_call_id, tool_input=event.tool_input),
+        )
+        self._record_tool_call(block=tool_block)
+
+    async def _project_tool_output_update(self, *, event: AgentStreamEventDAO) -> None:
+        """Update the tool’s existing block with output received so far, before its final result arrives.
+
+        Lookup only: live output for a call with no shown block is ignored.
+
+        Args:
+            event (AgentStreamEventDAO): A ``tool_output_update`` event.
+        """
+        tool_call_id: str | None = self._displayed_tool_call_id(event=event)
+        block: ToolExecutionBlock | None = self._find_tool_block(tool_call_id=tool_call_id)
+        if tool_call_id is None or block is None:
+            return
         metadata: dict[str, object] = event.metadata or {}
         block.update_partial(
             snapshot=ToolOutputUpdateDAO.model_validate(
@@ -672,34 +699,90 @@ class TranscriptProjectionAdapter:
                 continue
             block.seal()
 
-    async def _get_or_create_tool_block(
-        self,
-        *,
-        tool_call_id: str,
-        tool_name: Optional[str],
-    ) -> ToolExecutionBlock:
-        """Return the mounted tool block for ``tool_call_id``.
+    async def _mount_tool_block(self, *, tool_call_id: str, tool_name: str) -> ToolExecutionBlock:
+        """Mount and remember the live block for one newly requested call.
+
+        Mounting only, no lookup: ``_project_tool_call_start`` is the sole caller
+        and has already rejected shown and finished call ids.
 
         Args:
-            tool_call_id (str): Stable tool call id.
-            tool_name (Optional[str]): Tool name when known.
+            tool_call_id (str): Call id the block displays.
+            tool_name (str): Non-empty tool name from the named start.
 
         Returns:
-            ToolExecutionBlock: Mounted or cached tool block.
+            ToolExecutionBlock: The newly mounted block; host failures propagate.
         """
-        block: ToolExecutionBlock | None = self._tool_blocks.get(tool_call_id)
-        if block is not None:
-            return block
-        block = await self._host.mount_tool_execution_block(
+        block: ToolExecutionBlock = await self._host.mount_tool_execution_block(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
         )
         self._tool_blocks[tool_call_id] = block
         return block
 
+    def _find_tool_block(self, *, tool_call_id: str | None) -> ToolExecutionBlock | None:
+        """Return the shown block for a call id, or ``None`` when none is shown.
+
+        Args:
+            tool_call_id (str | None): Call id from a request, delta, end or output event.
+
+        Returns:
+            ToolExecutionBlock | None: The live block between start and result, else ``None``.
+        """
+        if tool_call_id is None:
+            return None
+        return self._tool_blocks.get(tool_call_id)
+
+    @staticmethod
+    def _displayed_tool_call_id(*, event: AgentStreamEventDAO) -> str | None:
+        """Return the call id a request, delta, end or output event displays under.
+
+        Args:
+            event (AgentStreamEventDAO): A tool request, delta, end or live-output event.
+
+        Returns:
+            str | None: ``tool_call_id``, else ``block_id``, else ``None`` (event ignored).
+        """
+        return event.tool_call_id or event.block_id or None
+
+    def _displayed_tool_input(
+        self,
+        *,
+        tool_call_id: str,
+        tool_input: dict[str, object] | None,
+    ) -> dict[str, object]:
+        """Choose the arguments a shown block displays.
+
+        Args:
+            tool_call_id (str): Shown call whose buffered argument text may be parsed.
+            tool_input (dict[str, object] | None): Event input; any non-``None``
+                value, including ``{}``, wins over the buffered preview.
+
+        Returns:
+            dict[str, object]: Event input, or the best-effort parse of buffered text.
+        """
+        if tool_input is not None:
+            return tool_input
+        return self._best_effort_parse_tool_input(
+            raw_arguments=self._tool_argument_buffers.get(tool_call_id, "")
+        )
+
     async def _project_tool_result(self, *, event: AgentStreamEventDAO) -> None:
-        """Update the tool’s existing block, or show a result notice when no matching block exists."""
+        """Attach a result to its shown block, or show a result notice when no block exists.
+
+        Runs once per call id per prompt: a result for a finished id is ignored.
+        Both paths mark the id finished (so late starts, deltas, ends and output
+        for it are ignored until ``_reset_for_new_run``) and clear its argument
+        buffer. An idless result only writes the notice line; it finishes nothing.
+
+        Args:
+            event (AgentStreamEventDAO): A ``tool_result`` event.
+        """
         tool_call_id: str | None = event.tool_call_id
+        if tool_call_id is not None and tool_call_id in self._finished_tool_call_ids:
+            return
+        if tool_call_id is not None:
+            self._finished_tool_call_ids.add(tool_call_id)
+            self._tool_argument_buffers.pop(tool_call_id, None)
         if tool_call_id is None or tool_call_id not in self._tool_blocks:
             await self._host.mount_transcript_line(
                 content=ToolExecutionBlockResultFormatter.format(
@@ -723,7 +806,6 @@ class TranscriptProjectionAdapter:
             ),
             classes="tool-result",
         )
-        self._tool_argument_buffers.pop(tool_call_id, None)
 
     def _record_tool_call(self, *, block: ToolExecutionBlock) -> None:
         """Record a tool-call text line once."""

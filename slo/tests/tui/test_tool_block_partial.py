@@ -1,8 +1,8 @@
 """Tests for the core ``tool_output_update`` TUI hop (75.a.5-CORE Hop 3).
 
 The projector patches the already-mounted ``ToolExecutionBlock`` in place:
-an update for a known id calls ``update_partial``; an update for an unknown id
-mounts a block via ``_get_or_create_tool_block`` first; only the terminal
+an update for a known id calls ``update_partial``; spec 107 A14 requires an
+unknown-id update to be ignored until a named start mounts the block; only the terminal
 ``tool_result`` pops the block from the mounted map.
 """
 
@@ -68,23 +68,30 @@ class _PartialHost(FakeHost):
 
 
 @pytest.mark.asyncio
-async def test_nameless_early_partial_retains_unknown_name_until_result() -> None:
-    """An early unnamed snapshot remains display-only and accepts later identity."""
+async def test_nameless_partial_retains_known_name_when_named_start_precedes_output() -> None:
+    """A13/A14: orphan output is ignored; nameless output after start retains the call name."""
     host = _PartialHost()
     projector = TranscriptProjectionAdapter(host=host)
     await projector.handle(
         event=AgentStreamEventDAO(kind="tool_output_update", tool_call_id="unnamed", content="early output")
     )
+    assert host.tool_blocks == {}
+    await projector.handle(
+        event=AgentStreamEventDAO(kind="tool_call_start", tool_call_id="unnamed", tool_name="bash")
+    )
+    await projector.handle(
+        event=AgentStreamEventDAO(kind="tool_output_update", tool_call_id="unnamed", content="early output")
+    )
     block = host.tool_blocks["unnamed"]
     assert isinstance(block, _PartialRecordingToolBlock)
-    assert block.tool_name is None
-    assert block.partials[0].tool_name == ""
+    assert block.tool_name == "bash"
+    assert block.partials[0].tool_name == "bash"
     assert block.partials[0].content_snapshot == "early output"
     assert block.result_output is None
     assert block._partial_output == "early output"
     headline = block._headline.render()
     assert isinstance(headline, Content)
-    assert headline.plain == ""
+    assert "bash" in headline.plain
     await projector.handle(
         event=AgentStreamEventDAO(
             kind="tool_result", tool_call_id="unnamed", tool_name="bash", content="final output"
@@ -102,7 +109,7 @@ async def test_partial_update_patches_mounted_block_in_place() -> None:
     host = _PartialHost()
     projector = TranscriptProjectionAdapter(host=host)
     await projector.handle(
-        event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="bash")
+        event=AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-1", tool_name="bash")
     )
     block = host.tool_blocks["call-1"]
     assert isinstance(block, _PartialRecordingToolBlock)
@@ -130,7 +137,7 @@ async def test_partial_name_uses_event_then_existing_block(event_name: str | Non
     host = _PartialHost()
     projector = TranscriptProjectionAdapter(host=host)
     await projector.handle(
-        event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="known", tool_name="bash")
+        event=AgentStreamEventDAO(kind="tool_call_start", tool_call_id="known", tool_name="bash")
     )
     block = host.tool_blocks["known"]
     assert isinstance(block, _PartialRecordingToolBlock)
@@ -148,8 +155,8 @@ async def test_partial_name_uses_event_then_existing_block(event_name: str | Non
 
 
 @pytest.mark.asyncio
-async def test_early_partial_update_mounts_block_first() -> None:
-    """An update arriving before normal mounting ensures the block exists."""
+async def test_early_partial_update_is_ignored_when_no_named_start_arrived() -> None:
+    """A14: orphan output mounts nothing; a named start admits later in-place output."""
     host = _PartialHost()
     projector = TranscriptProjectionAdapter(host=host)
 
@@ -162,6 +169,18 @@ async def test_early_partial_update_mounts_block_first() -> None:
         )
     )
 
+    assert host.tool_blocks == {}
+    await projector.handle(
+        event=AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-early", tool_name="bash")
+    )
+    await projector.handle(
+        event=AgentStreamEventDAO(
+            kind="tool_output_update",
+            tool_call_id="call-early",
+            tool_name="bash",
+            content="exit_code: 0\nearly",
+        )
+    )
     assert "call-early" in host.tool_blocks
     block = host.tool_blocks["call-early"]
     assert isinstance(block, _PartialRecordingToolBlock)
@@ -174,7 +193,7 @@ async def test_terminal_tool_result_supersedes_partial_and_pops_block() -> None:
     host = _PartialHost()
     projector = TranscriptProjectionAdapter(host=host)
     await projector.handle(
-        event=AgentStreamEventDAO(kind="tool_call_end", tool_call_id="call-1", tool_name="bash")
+        event=AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-1", tool_name="bash")
     )
     await projector.handle(
         event=AgentStreamEventDAO(
@@ -205,6 +224,9 @@ async def test_partial_update_never_pops_block() -> None:
     host = _PartialHost()
     projector = TranscriptProjectionAdapter(host=host)
 
+    await projector.handle(
+        event=AgentStreamEventDAO(kind="tool_call_start", tool_call_id="call-1", tool_name="bash")
+    )
     for index in range(3):
         await projector.handle(
             event=AgentStreamEventDAO(

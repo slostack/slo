@@ -1202,7 +1202,7 @@ class TestFinalizeIteration:
 
     @pytest.mark.asyncio
     async def test_yields_closing_events_for_open_blocks(self) -> None:
-        """Open normalizer blocks → closing events yielded during finalization."""
+        """A3 safety net (spec 107): iteration finalization still yields open-block closing events."""
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
         turn = TurnStreamAccumulator()
         turn.absorb_messages(messages=[AIMessage(content="answer")])

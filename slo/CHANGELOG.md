@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.31.4] — 2026-11-12
+
+Changes since v0.31.3. Includes the Claude quota/session recovery fix from MR !165,
+which was merged after the v0.31.3 tag and was not included in that release.
+
+### Fixed
+
+- **Claude quota limits are reported accurately.** Structured native rate-limit
+  notifications and failed HTTP 429 results now produce usage-limit guidance,
+  rather than a misleading malformed-response error or an instruction to start
+  a new Slo session. Optional reset times are validated and displayed in UTC;
+  missing or conflicting estimates are omitted.
+- **Explicit continuation keeps the Slo conversation.** After native cleanup
+  completes, a rejected invocation is retired without closing the host session.
+  A later explicit prompt starts a fresh native conversation using retained Slo
+  history. No automatic quota retry or provider fallback is introduced.
+- **Completed work is preserved, not replayed.** Partial output and completed
+  tool receipts remain in history. Reconstructing the conversation does not
+  automatically resend old queries, tool results or file-changing actions.
+- **Cancellation and delivery safety remain authoritative.** Ordered error
+  notifications cannot overtake initialization or earlier response events.
+  Native scope validation remains strict; cancellation, uncertain writes and
+  failed cleanup take precedence over a reusable quota outcome, including
+  cancellation during translator closure.
+
+### Verification and compatibility
+
+- Add real SDK/session/history journeys, mounted TUI recovery, composed
+  child-to-parent failure reporting, cleanup/cancellation race tests and
+  regression sensitivity checks.
+- Verify a disposable installed wheel and managed child outside the checkout,
+  including matching module provenance and rejection of checkout imports.
+  Installed version assertions follow candidate metadata rather than a stale
+  hard-coded release number.
+- Durable history schemas, model selection and packaging-owned launchers are
+  unchanged. This release requires no session migration.
+- Tests use controlled native I/O; they do not establish live-provider account
+  entitlement or unmodified CLI-auth behavior. Hosted publication and installer
+  recovery are verified by the protected-tag release pipeline.
+
 ## [0.31.3] — 2026-11-12
 
 Changes since v0.31.2.

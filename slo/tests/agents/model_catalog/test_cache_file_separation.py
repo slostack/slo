@@ -237,10 +237,14 @@ def test_load_provider_cache_when_valid_merges_seed_and_slice_without_logging(
         snapshot = ModelCatalogService.load()
 
     assert set(snapshot.entries) == set(SeedModelCatalog.load().entries) | {"openrouter:vendor/compat"}
-    assert (
-        snapshot.entries["openrouter:vendor/compat"]
-        == openrouter_cache_sample().provider_slices[0].entries[0]
-    )
+    expected = openrouter_cache_sample().provider_slices[0].entries[0]
+    loaded = snapshot.entries["openrouter:vendor/compat"]
+    # Bug 112: reads re-derive only the OpenRouter budget in memory (the sample
+    # carries no stored ceiling, so the 8,192 OpenRouter unreported fallback
+    # applies); the cache file is never rewritten and every other cached field is
+    # preserved verbatim.
+    assert loaded.runtime_profile.max_tokens == 8192
+    assert loaded.model_copy(update={"runtime_profile": expected.runtime_profile}) == expected
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
     assert not [record for record in caplog.records if record.name == "slo"]
 

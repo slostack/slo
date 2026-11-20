@@ -524,7 +524,7 @@ async def test_prepared_mixed_pool_tool_fallback(
                 assert body.get("max_output_tokens") == (None if oauth else 128000)
             else:
                 assert body["provider"] == {"require_parameters": True}
-                assert body["max_completion_tokens"] == 4096
+                assert body["max_completion_tokens"] == 8192
                 assert not {"input", "reasoning", "reasoning_effort", "max_output_tokens"}.intersection(body)
     second = json.loads((gateway_requests if other == ROUTE else direct_requests)[1].content)
     if other == ROUTE:
@@ -952,7 +952,7 @@ async def test_mounted_prepared_jev_tool_cycle_and_resume(
     assert len(requests) == 3
     for request in requests:
         assert request["model"] == "typesafe/jev-router"
-        assert request["stream"] is True and request["max_completion_tokens"] == 4096
+        assert request["stream"] is True and request["max_completion_tokens"] == 8192
         assert request["provider"] == {"require_parameters": True}
         assert not {"reasoning", "reasoning_effort", "input", "max_output_tokens"}.intersection(request)
         tools = request["tools"]

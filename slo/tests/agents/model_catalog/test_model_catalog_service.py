@@ -155,3 +155,26 @@ class TestApiModelNameFor:
 
         with pytest.raises(ValueError, match="Unsupported model_name"):
             ModelCatalogService.api_model_name_for(model_name="not-a-real-model")
+
+
+class TestMergeProviderCacheEntryScope:
+    """Bug 112: only OpenRouter cached entries re-derive the output budget on read."""
+
+    def test_non_openrouter_cache_entry_merges_byte_identically(self) -> None:
+        """A direct-provider cached entry passes through the merge unchanged."""
+        seed_snapshot: ModelCatalogSnapshotDAO = SeedModelCatalog.load()
+        seed_entry: ModelCatalogEntryDAO = seed_snapshot.entries["gpt-5.5"]
+        entries: dict[str, ModelCatalogEntryDAO] = {seed_entry.model_name: seed_entry}
+        cached_entry: ModelCatalogEntryDAO = seed_entry.model_copy(
+            update={"visible_in_picker": not seed_entry.visible_in_picker}
+        )
+
+        ModelCatalogService._merge_provider_cache_entry(entries=entries, entry=cached_entry)
+
+        assert (
+            entries[seed_entry.model_name].model_dump()
+            == ModelCatalogService._merge_entry(seed_entry=seed_entry, cached_entry=cached_entry).model_dump()
+        )
+        assert (
+            entries[seed_entry.model_name].runtime_profile.max_tokens == seed_entry.runtime_profile.max_tokens
+        )

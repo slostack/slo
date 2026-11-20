@@ -15,6 +15,7 @@ from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent, TranscriptScrollComponent
 from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 from src.tui.theme import SLO_DEFAULT_THEME, SLO_DARK_THEME
+from tests.tui.authentication._painted_output import wait_for_condition
 from tests.tui.test_chat_transcript import TranscriptTestApp
 
 
@@ -420,9 +421,15 @@ async def test_removed_reading_candidate_uses_clamped_numeric_fallback() -> None
         await pilot.pause()
         scroll = transcript.query_one(TranscriptScrollComponent)
         scroll.styles.overflow_x = "scroll"
+        await wait_for_condition(
+            pilot=pilot,
+            predicate=lambda: transcript._active_pin is None and not transcript._force_following_until_layout,
+            description="startup follow pins settled before the reader scrolls",
+        )
         scroll.scroll_to(y=40, animate=False, immediate=True)
         await pilot.pause()
         saved_y = scroll.scroll_y
+        assert saved_y == 40.0 and transcript._active_pin is None, (saved_y, transcript._active_pin)
         first = scroll.children[1]
         transcript.hold = {"_settle_native_navigation"}
         scroll.focus()

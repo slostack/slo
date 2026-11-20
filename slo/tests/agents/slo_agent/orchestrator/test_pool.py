@@ -1393,7 +1393,7 @@ class TestSubAgentPoolAdmissionState:
         with patch.object(pool, "_cancel_snapshot", new=gated_cancel):
             first_abort = asyncio.create_task(pool.abort_dispatches())
             await _until(lambda: pool.admission_state() is PoolAdmissionState.DRAINING)
-            second_abort: Optional[asyncio.Task[None]] = None
+            second_abort: asyncio.Task[None] | None = None
 
             child = FakeChildProcess(lines=[terminal_line(content="ok")], exit_code=0)
             child.exit()

@@ -1,9 +1,31 @@
 # Changelog
 
-## [Unreleased]
+## [0.32.0] — 2026-11-20
+
+Changes since v0.31.4. Raises the default per-request output budget for
+OpenRouter routes so reasoning-capable models can finish an ordinary coding
+turn instead of ending with "Output limit reached" (bug 112), and routes the
+Fable Claude bridge to real native model ids.
 
 ### Fixed
 
+- **OpenRouter routes get a usable default output budget.** Routes whose
+  catalog entry carries a reported output ceiling now default to
+  `min(reported, context // 2, 64,000)` instead of the 4,096
+  no-information floor. A route reporting 131,072 or 393,216 tokens now
+  sends a 64,000 budget; reasoning effort spends from the same budget, so
+  GLM-class models can reason and still answer.
+- **Unreported OpenRouter routes default to 8,192.** When the catalog
+  reports no output ceiling, the default budget is `min(8,192, context // 2)`.
+  The factory enforcement ceiling and the compaction summary cap use the
+  same fallback, so the default is never rejected before the request leaves,
+  and a compaction request cannot exceed the enforced ceiling.
+- **Existing cached catalogs heal without a refresh.** The persisted cache
+  holds the old clamped budget, so cached OpenRouter entries re-derive their
+  budget in memory from stored capability evidence on every read. The cache
+  file is never rewritten on read, and repeated admissions of an unchanged
+  old cache do not republish the catalog snapshot (generation stays
+  stable); real changed state still republishes exactly once.
 - **Fable bridge routes reach real Fable models.** `claude-bridge:claude-fable` now sends
   `claude-fable-5-1` to Claude Code. Before, the bridge sent the route text itself, which
   the native API rejected on every request. `claude-bridge:claude-fable-5-1` and
@@ -15,6 +37,21 @@
 - **Fable keeps thinking on.** Reasoning `off` on a Fable route sends native effort `low`
   with adaptive thinking. Fable rejects disabled thinking, so Slo no longer offers an
   "off" that the model cannot honour.
+
+### Verification and compatibility
+
+- Add real converter/catalog/factory journeys over temporary state with the
+  OpenRouter HTTP boundary mocked: fresh refresh persists a 64,000 budget,
+  a stale 4,096 cache serves 64,000 without a refresh, an unreported route
+  stays at 8,192 on the wire with an enforced ceiling of 8,192, and a
+  persisted operator override still wins over the recomputed default.
+- Non-OpenRouter providers are byte-identical through the cache merge; only
+  the OpenRouter slice re-derives budgets. Malformed catalog metadata still
+  fails closed and keeps the route ineligible.
+- OpenRouter may reject a budget the account balance cannot cover with an
+  HTTP 402; lowering `max_tokens` via an operator override always works.
+  Durable schemas, model selection and packaging-owned launchers are
+  unchanged; no cache migration is required.
 
 ### Changed
 

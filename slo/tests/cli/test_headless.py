@@ -654,6 +654,40 @@ class TestHeadlessRunnerWorkflowNotifications:
 class TestHeadlessRunnerWatchdogControls:
     """Cooperative shutdown and self-reporting helpers."""
 
+    async def test_pool_close_is_requested_before_the_session_turn_abort(self, tmp_path) -> None:
+        """A stop order closes the pool first, so the turn abort cannot reopen it.
+
+        Bug 109: if the turn abort ran first and the close second, the episode
+        could reopen the pool after the close's drain had already been scheduled
+        on a stale state read.
+        """
+        runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))
+        session = MagicMock()
+        runner._session = session
+        runner._abort_requested = None
+        import asyncio
+
+        real_ensure_future = asyncio.ensure_future
+        scheduling: list[str] = []
+        calls: list[str] = []
+
+        def record_schedule(coro):  # type: ignore[no-untyped-def]
+            scheduling.append("close")
+            return real_ensure_future(coro)
+
+        def record_turn_abort() -> None:
+            calls.append("turn_abort")
+
+        session.abort = record_turn_abort
+        with (
+            patch.object(runner, "_attached_pool", return_value=object()),
+            patch("src.cli.headless.asyncio.ensure_future", side_effect=record_schedule),
+        ):
+            runner._request_cooperative_abort(reason="operator_abort")
+
+        assert scheduling == ["close"]
+        assert calls == ["turn_abort"]  # close scheduled before the turn abort
+
     def test_request_cooperative_abort_first_reason_wins(self, tmp_path) -> None:
         """The first watchdog or signal reason owns the session abort request."""
         runner: HeadlessRunner = HeadlessRunner(config=_make_config(tmp_path))

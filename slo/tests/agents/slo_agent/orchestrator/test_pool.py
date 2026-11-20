@@ -13,12 +13,19 @@ import pytest
 from src.agents.slo_agent.history.filesystem_store import default_history_root
 from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
+    PoolAdmissionState,
     ResolvedDispatchTaskDAO,
     SubAgentResultDAO,
     SubAgentTaskDAO,
     terminal_reason_for_status,
 )
-from src.agents.slo_agent.orchestrator.pool import MAX_CONCURRENCY, MAX_PARALLEL_TASKS, SubAgentPool
+from src.agents.slo_agent.orchestrator.pool import (
+    _DISPATCH_ABORTED_ERROR,
+    _POOL_CLOSED_ERROR,
+    MAX_CONCURRENCY,
+    MAX_PARALLEL_TASKS,
+    SubAgentPool,
+)
 from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from tests.agents.slo_agent.orchestrator.fake_child import FakeChildProcess, terminal_line
@@ -611,49 +618,50 @@ class TestSubAgentPoolTerminalReasons:
 
 
 class TestSubAgentPoolAbortAndDrain:
-    """Ordered pool abort records and reports every active child."""
+    """Turn aborts drain and reopen; a close is the only terminal latch."""
 
-    async def test_dispatch_returns_sealed_error_after_abort(self) -> None:
-        """A sealed pool rejects a new task batch without spawning children."""
+    async def test_dispatch_returns_closed_error_after_close(self) -> None:
+        """A closed pool rejects a new task batch without spawning children."""
         pool, _ = _make_pool()
-        pool._sealed = True
+        await pool.close_and_drain()
         tasks: list[SubAgentTaskDAO] = [
             SubAgentTaskDAO(task_summary="Exercise child dispatch lifecycle", task_id="t1", prompt="x")
         ]
 
         result = await pool.dispatch(mode="single", tasks=tasks)
 
-        assert result.error == "pool sealed by abort; no new sub-agents will be spawned"
+        assert result.error == _POOL_CLOSED_ERROR
         assert result.failed_task_ids == ["t1"]
 
-    async def test_abort_and_drain_noops_when_already_sealed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A second ordered abort does not repeat child cancellation or recording."""
+    async def test_close_and_drain_noops_when_already_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A second ordered close does not repeat child cancellation or recording."""
         pool, _ = _make_pool()
-        pool._sealed = True
+        await pool.close_and_drain()
         cancel_mock = AsyncMock()
         monkeypatch.setattr(pool, "cancel_all", cancel_mock)
 
-        await pool.abort_and_drain()
+        await pool.close_and_drain()
 
         cancel_mock.assert_not_called()
 
-    async def test_abort_and_drain_concurrent_callers_join_one_shutdown(
+    async def test_close_and_drain_concurrent_callers_join_one_shutdown(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Concurrent abort callers wait for the same ordered pool shutdown."""
+        """Concurrent close callers wait for the same ordered pool shutdown."""
         pool, _ = _make_pool()
         started: asyncio.Event = asyncio.Event()
         release: asyncio.Event = asyncio.Event()
 
-        async def cancel_all() -> None:
+        async def cancel_all() -> list[SubAgentProcess]:
             started.set()
             await release.wait()
+            return []
 
         cancel_mock = AsyncMock(side_effect=cancel_all)
-        monkeypatch.setattr(pool, "cancel_all", cancel_mock)
-        first: asyncio.Task[None] = asyncio.create_task(pool.abort_and_drain())
+        monkeypatch.setattr(pool, "_cancel_snapshot", cancel_mock)
+        first: asyncio.Task[None] = asyncio.create_task(pool.close_and_drain())
         await started.wait()
-        second: asyncio.Task[None] = asyncio.create_task(pool.abort_and_drain())
+        second: asyncio.Task[None] = asyncio.create_task(pool.close_and_drain())
         await asyncio.sleep(0)
 
         assert second.done() is False
@@ -661,12 +669,12 @@ class TestSubAgentPoolAbortAndDrain:
         await asyncio.gather(first, second)
         cancel_mock.assert_awaited_once()
 
-    async def test_sealed_pool_does_not_spawn_task_waiting_for_capacity(self) -> None:
-        """A queued task is terminalized without spawning after the pool seals.
+    async def test_closed_pool_does_not_spawn_task_waiting_for_capacity(self) -> None:
+        """A queued task is terminalized without spawning after the pool closes.
 
-        WHAT: Seals the pool while a wrapper waits on its concurrency semaphore.
+        WHAT: Closes the pool while a wrapper waits on its concurrency semaphore.
         WHO: The cleanup-guarantee regression suite.
-        WHEN: Pre-spawn abort handling changes.
+        WHEN: Pre-spawn close handling changes.
         """
         pool, _ = _make_pool()
         pool._semaphore = asyncio.Semaphore(0)
@@ -680,7 +688,7 @@ class TestSubAgentPoolAbortAndDrain:
             )
             while not pool._active_by_session_id:
                 await asyncio.sleep(0)
-            await pool.abort_and_drain()
+            await pool.close_and_drain()
             pool._semaphore.release()
             result: SubAgentResultDAO = (await queued).results[0]
 
@@ -703,9 +711,9 @@ class TestSubAgentPoolAbortAndDrain:
         )
         execution_id: str = _register_child(pool=pool, task=task, session_id="child-1")
         pool.registry.mark_running(session_id="child-1", execution_id=execution_id, pid=123, started_at=1.0)
-        pool._cancel_outcomes = {"child-1": "unresolved"}
+        cancelled = [pool._active_by_session_id["child-1"]] if "child-1" in pool._active_by_session_id else []
 
-        await pool._record_abort_outcomes()
+        await pool._record_abort_outcomes(cancelled=cancelled, outcomes={"child-1": "unresolved"})
 
         entry = pool.registry.snapshot()[0]
         assert entry.status == "running"
@@ -728,7 +736,7 @@ class TestSubAgentPoolAbortAndDrain:
             terminated_by="natural",
         )
 
-        await pool._record_abort_outcomes()
+        await pool._record_abort_outcomes(cancelled=[], outcomes={})
 
         entry = pool.registry.snapshot()[0]
         assert entry.status == "completed"
@@ -742,9 +750,8 @@ class TestSubAgentPoolAbortAndDrain:
         )
         execution_id: str = _register_child(pool=pool, task=task, session_id="child-1")
         pool.registry.mark_running(session_id="child-1", execution_id=execution_id, pid=123, started_at=1.0)
-        pool._cancel_outcomes = {"child-1": "killed"}
 
-        await pool._record_abort_outcomes()
+        await pool._record_abort_outcomes(cancelled=[], outcomes={"child-1": "killed"})
 
         assert [event.kind for event in relayed] == ["sub_agent_reaped"]
         dispatch = pool.registry.dispatch_of(session_id="child-1", execution_id=execution_id)
@@ -782,16 +789,15 @@ class TestSubAgentPoolAbortAndDrain:
         pool.registry.mark_terminal(
             session_id="child-2", execution_id=old_execution, status="aborted", answer="", exit_code=2
         )
-        pool._cancel_outcomes = {"child-1": "killed", "child-2": "killed"}
 
-        await pool._record_abort_outcomes()
+        await pool._record_abort_outcomes(cancelled=[], outcomes={"child-1": "killed", "child-2": "killed"})
 
         assert [event.sub_agent_id for event in relayed] == ["child-1", "child-2"]
         assert relayed[1].metadata == {"execution_id": old_execution}
 
 
 class TestSubAgentPoolCancelAll:
-    """``cancel_all()`` calls ``cancel()`` on every active process."""
+    """``cancel_all()`` cancels every active wrapper and returns that exact snapshot."""
 
     async def test_cancel_all_invokes_cancel_on_each_process(self) -> None:
         """``cancel_all()`` calls ``cancel()`` on every wrapper in ``_active_by_session_id``."""
@@ -800,10 +806,11 @@ class TestSubAgentPoolCancelAll:
         mock_proc_2: AsyncMock = AsyncMock()
         pool._active_by_session_id = {"child-1": mock_proc_1, "child-2": mock_proc_2}
 
-        await pool.cancel_all()
+        cancelled = await pool.cancel_all()
 
         mock_proc_1.cancel.assert_called_once()
         mock_proc_2.cancel.assert_called_once()
+        assert cancelled == [mock_proc_1, mock_proc_2]
 
     async def test_cancel_all_tolerates_individual_cancel_failure(self) -> None:
         """``cancel_all()`` continues even when one process's ``cancel`` raises."""
@@ -813,12 +820,16 @@ class TestSubAgentPoolCancelAll:
         failing_proc.cancel = AsyncMock(side_effect=RuntimeError("cancel failed"))
         succeeding_proc: AsyncMock = AsyncMock()
         succeeding_proc.session_id = "child-succeeding"
+        succeeding_proc.cancel = AsyncMock(return_value="graceful")
         pool._active_by_session_id = {"child-failing": failing_proc, "child-succeeding": succeeding_proc}
 
-        await pool.cancel_all()  # must not raise
+        cancelled = await pool.cancel_all()  # must not raise
 
         succeeding_proc.cancel.assert_called_once()
-        assert pool._cancel_outcomes["child-failing"] == "unresolved"
+        assert cancelled == [failing_proc, succeeding_proc]
+        outcomes = pool._outcomes_of(cancelled=cancelled)
+        assert outcomes["child-failing"] == "unresolved"
+        assert outcomes["child-succeeding"] == "graceful"
 
 
 # ── Feature 94 T02: canonical winner, identity composition, abort cleanup ────
@@ -1001,8 +1012,8 @@ class TestSubAgentPoolCanonicalWinner:
 class TestSubAgentPoolAbortCanonicalCleanup:
     """Whole abort consumes canonical winners instead of writing terminal state itself."""
 
-    async def test_whole_abort_of_running_child_publishes_one_aborted_winner(self, tmp_path: Path) -> None:
-        """A confirmed reap commits operator abort; one lifecycle; status and fleet agree."""
+    async def test_turn_abort_of_running_child_publishes_one_aborted_winner(self, tmp_path: Path) -> None:
+        """A turn abort's confirmed reap commits operator abort; one lifecycle; status and fleet agree."""
         pool, relayed = _bound_pool(tmp_path)
         child = FakeChildProcess(lines=[], exit_code=-15)
 
@@ -1034,7 +1045,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
             await _until(
                 lambda: (e := pool.registry.get(session_id="child-1")) is not None and e.status == "running"
             )
-            await pool.abort_and_drain()
+            await pool.abort_dispatches()
             result = await dispatch
 
         entry = pool.registry.get(session_id="child-1")
@@ -1046,6 +1057,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
         )
         assert (result.results[0].status, result.results[0].exit_code) == ("aborted", 2)
         assert _terminal_kinds(relayed) == ["sub_agent_aborted"]
+        assert pool.admission_state() is PoolAdmissionState.OPEN
         status = ReleasedSubAgentResultDAO.model_validate_json(
             (tmp_path / "orch-1" / "children" / "child-1" / "status.json").read_bytes()
         )
@@ -1083,7 +1095,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
             await _until(
                 lambda: (e := pool.registry.get(session_id="child-1")) is not None and e.status == "running"
             )
-            await pool.abort_and_drain()
+            await pool.abort_dispatches()
             entry = pool.registry.get(session_id="child-1")
             assert entry is not None and entry.status == "running"
             child.exit()
@@ -1092,7 +1104,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
         assert result.results[0].status == "completed"
         assert _terminal_kinds(relayed) == ["sub_agent_completed"]
 
-    async def test_sealed_pending_child_publishes_once_without_spawn(self, tmp_path: Path) -> None:
+    async def test_aborted_pending_child_publishes_once_without_spawn(self, tmp_path: Path) -> None:
         """A queued child is aborted canonically at drain and emits one lifecycle later."""
         pool, relayed = _bound_pool(tmp_path)
         pool._semaphore = asyncio.Semaphore(0)
@@ -1113,7 +1125,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
                 )
             )
             await _until(lambda: bool(pool._active_by_session_id))
-            await pool.abort_and_drain()
+            await pool.abort_dispatches()
 
             entry = pool.registry.get(session_id="child-1")
             assert entry is not None
@@ -1132,10 +1144,10 @@ class TestSubAgentPoolAbortCanonicalCleanup:
         assert (result.status, result.exit_code, result.execution_id) == ("aborted", 2, entry.execution_id)
         assert _terminal_kinds(relayed) == ["sub_agent_aborted"]
 
-    async def test_whole_abort_completes_while_pre_spawn_failure_lifecycle_is_in_flight(
+    async def test_turn_abort_completes_while_pre_spawn_failure_lifecycle_is_in_flight(
         self, tmp_path: Path
     ) -> None:
-        """A wrapper that failed before spawn never wedges abort_and_drain."""
+        """A wrapper that failed before spawn never wedges abort_dispatches."""
         failed_seen: asyncio.Event = asyncio.Event()
         release_emit: asyncio.Event = asyncio.Event()
 
@@ -1176,7 +1188,7 @@ class TestSubAgentPoolAbortCanonicalCleanup:
             )
             await asyncio.wait_for(failed_seen.wait(), timeout=2.0)
             assert len(pool._active_by_session_id) == 1
-            await asyncio.wait_for(pool.abort_and_drain(), timeout=2.0)
+            await asyncio.wait_for(pool.abort_dispatches(), timeout=2.0)
             release_emit.set()
             result = await asyncio.wait_for(dispatch, timeout=2.0)
 
@@ -1195,8 +1207,362 @@ class TestSubAgentPoolAbortCanonicalCleanup:
         )
         pool.registry.mark_running(session_id="child-1", execution_id=execution_id, pid=123, started_at=1.0)
 
-        await pool._record_abort_outcomes()
+        await pool._record_abort_outcomes(cancelled=[], outcomes={})
 
         entry = pool.registry.get(session_id="child-1")
         assert entry is not None and (entry.status, entry.terminal_reason) == ("running", None)
         assert relayed == []
+
+
+class TestSubAgentPoolAdmissionState:
+    """Turn aborts reopen the pool; only a close is terminal (bug 109)."""
+
+    async def test_turn_abort_with_nothing_live_reopens_the_pool(self, tmp_path: Path) -> None:
+        """Abort with no live children only advances the generation; the next dispatch spawns.
+
+        Reproduces the evidence session: one ``^C`` on an idle pool must not end
+        sub-agent spawning for the session.
+        """
+        pool, _ = _bound_pool(tmp_path)
+
+        await pool.abort_dispatches()
+
+        assert pool.admission_state() is PoolAdmissionState.OPEN
+        child = FakeChildProcess(lines=[terminal_line(content="ok")], exit_code=0)
+        child.exit()
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=child)):
+            result = await pool.dispatch(
+                mode="single",
+                tasks=[
+                    SubAgentTaskDAO(
+                        task_summary="Exercise child dispatch lifecycle",
+                        task_id="t1",
+                        prompt="x",
+                        session_id="child-1",
+                    )
+                ],
+            )
+
+        assert result.results[0].status == "completed"
+
+    async def test_turn_abort_during_parallel_batch_cancels_and_reopens(self, tmp_path: Path) -> None:
+        """An abort during a running batch aborts every child; a new dispatch then succeeds."""
+        pool, relayed = _bound_pool(tmp_path)
+        children = [FakeChildProcess(lines=[], exit_code=-15), FakeChildProcess(lines=[], exit_code=-15)]
+
+        async def reap(*, pid: int) -> str:
+            for child in children:
+                child.exit()
+            return "graceful"
+
+        with (
+            patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=children)),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="matching",
+            ),
+            patch("src.agents.slo_agent.orchestrator.process.FleetReaper.reap", new=reap),
+        ):
+            dispatch = asyncio.create_task(
+                pool.dispatch(
+                    mode="parallel",
+                    tasks=[
+                        SubAgentTaskDAO(
+                            task_summary="Exercise child dispatch lifecycle",
+                            task_id="t1",
+                            prompt="x",
+                            session_id="child-1",
+                        ),
+                        SubAgentTaskDAO(
+                            task_summary="Exercise child dispatch lifecycle",
+                            task_id="t2",
+                            prompt="x",
+                            session_id="child-2",
+                        ),
+                    ],
+                )
+            )
+            await _until(lambda: len(pool._active_by_session_id) == 2)
+            await pool.abort_dispatches()
+            result = await dispatch
+
+        assert pool.admission_state() is PoolAdmissionState.OPEN
+        assert {r.session_id: r.status for r in result.results} == {
+            "child-1": "aborted",
+            "child-2": "aborted",
+        }
+        assert _terminal_kinds(relayed).count("sub_agent_aborted") == 2
+        child = FakeChildProcess(lines=[terminal_line(content="after")], exit_code=0)
+        child.exit()
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=child)):
+            later = await pool.dispatch(
+                mode="single",
+                tasks=[
+                    SubAgentTaskDAO(
+                        task_summary="Exercise child dispatch lifecycle",
+                        task_id="t3",
+                        prompt="x",
+                        session_id="child-3",
+                    )
+                ],
+            )
+        assert later.results[0].status == "completed"
+
+    async def test_abort_during_preparation_refuses_with_retryable_error(self, tmp_path: Path) -> None:
+        """A dispatch aborted while preparing reserves nothing and is told to resubmit."""
+        pool, relayed = _bound_pool(tmp_path)
+        resolve_gate = asyncio.Event()
+
+        async def resolve(*, task: SubAgentTaskDAO) -> str:
+            await resolve_gate.wait()
+            return task.session_id or "x"
+
+        with patch.object(pool, "_resolve_child_session_id", new=resolve):
+            pending = asyncio.create_task(
+                pool.dispatch(
+                    mode="single",
+                    tasks=[
+                        SubAgentTaskDAO(
+                            task_summary="Exercise child dispatch lifecycle",
+                            task_id="t1",
+                            prompt="x",
+                            session_id="a",
+                        )
+                    ],
+                )
+            )
+            await asyncio.sleep(0)
+            await pool.abort_dispatches()
+            resolve_gate.set()
+            result = await pending
+
+        assert (result.all_completed, result.failed_task_ids) == (False, ["t1"])
+        assert result.error == _DISPATCH_ABORTED_ERROR
+        assert relayed == [] and pool.attached_dispatch_snapshot().dispatch_sequence == 0
+        assert pool.admission_state() is PoolAdmissionState.OPEN
+        assert pool._reserved_session_ids == set()
+
+    async def test_dispatch_during_draining_joins_the_episode_then_is_admitted(self, tmp_path: Path) -> None:
+        """A dispatch arriving while DRAINING waits out the episode, then runs."""
+        pool, _ = _bound_pool(tmp_path)
+        gate = asyncio.Event()
+
+        async def gated_cancel() -> list[SubAgentProcess]:
+            await gate.wait()
+            return []
+
+        with patch.object(pool, "_cancel_snapshot", new=gated_cancel):
+            aborting = asyncio.create_task(pool.abort_dispatches())
+            await _until(lambda: pool.admission_state() is PoolAdmissionState.DRAINING)
+
+            child = FakeChildProcess(lines=[terminal_line(content="ok")], exit_code=0)
+            child.exit()
+            with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=child)):
+                pending = asyncio.create_task(
+                    pool.dispatch(
+                        mode="single",
+                        tasks=[
+                            SubAgentTaskDAO(
+                                task_summary="Exercise child dispatch lifecycle",
+                                task_id="t1",
+                                prompt="x",
+                                session_id="child-1",
+                            )
+                        ],
+                    )
+                )
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                assert not pending.done()
+                gate.set()
+                result = await asyncio.gather(aborting, pending)
+
+        assert result[1].results[0].status == "completed"
+
+    async def test_back_to_back_aborts_admit_dispatch_under_final_generation(self, tmp_path: Path) -> None:
+        """A dispatch waiting at intake across two episodes is admitted after the second."""
+        pool, _ = _bound_pool(tmp_path)
+        first_gate = asyncio.Event()
+        second_gate = asyncio.Event()
+        gates = [first_gate, second_gate]
+
+        async def gated_cancel() -> list[SubAgentProcess]:
+            await gates.pop(0).wait()
+            return []
+
+        with patch.object(pool, "_cancel_snapshot", new=gated_cancel):
+            first_abort = asyncio.create_task(pool.abort_dispatches())
+            await _until(lambda: pool.admission_state() is PoolAdmissionState.DRAINING)
+            second_abort: asyncio.Task[None] | None = None
+
+            child = FakeChildProcess(lines=[terminal_line(content="ok")], exit_code=0)
+            child.exit()
+            with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=child)):
+                pending = asyncio.create_task(
+                    pool.dispatch(
+                        mode="single",
+                        tasks=[
+                            SubAgentTaskDAO(
+                                task_summary="Exercise child dispatch lifecycle",
+                                task_id="t1",
+                                prompt="x",
+                                session_id="child-1",
+                            )
+                        ],
+                    )
+                )
+                await asyncio.sleep(0)
+                second_abort = asyncio.create_task(pool.abort_dispatches())
+                first_gate.set()
+                await _until(lambda: len(gates) == 0 or not second_abort.done())
+                await asyncio.sleep(0)
+                assert not pending.done()  # second episode still draining
+                second_gate.set()
+                result = (await pending).results[0]
+
+        await asyncio.gather(first_abort, second_abort)
+        assert result.status == "completed"
+        assert pool.admission_state() is PoolAdmissionState.OPEN
+
+    async def test_close_during_episode_wins_over_reopen(self, tmp_path: Path) -> None:
+        """A close requested while an episode drains ends in CLOSED, never OPEN."""
+        pool, _ = _bound_pool(tmp_path)
+        gate = asyncio.Event()
+
+        async def gated_cancel() -> list[SubAgentProcess]:
+            await gate.wait()
+            return []
+
+        with patch.object(pool, "_cancel_snapshot", new=gated_cancel):
+            aborting = asyncio.create_task(pool.abort_dispatches())
+            await _until(lambda: pool.admission_state() is PoolAdmissionState.DRAINING)
+            closing = asyncio.create_task(pool.close_and_drain())
+            gate.set()
+            await asyncio.gather(aborting, closing)
+
+        assert pool.admission_state() is PoolAdmissionState.CLOSED
+        refusal = await pool.dispatch(
+            mode="single",
+            tasks=[
+                SubAgentTaskDAO(task_summary="Exercise child dispatch lifecycle", task_id="t1", prompt="x")
+            ],
+        )
+        assert refusal.error == _POOL_CLOSED_ERROR
+        await pool.abort_dispatches()  # joins the finished close; stays closed
+        assert pool.admission_state() is PoolAdmissionState.CLOSED
+
+    async def test_cancelled_abort_caller_does_not_stop_the_episode(self, tmp_path: Path) -> None:
+        """Cancelling the coroutine awaiting abort_dispatches lets the episode finish."""
+        pool, _ = _bound_pool(tmp_path)
+        gate = asyncio.Event()
+
+        async def gated_cancel() -> list[SubAgentProcess]:
+            await gate.wait()
+            return []
+
+        with patch.object(pool, "_cancel_snapshot", new=gated_cancel):
+            caller = asyncio.create_task(pool.abort_dispatches())
+            await _until(lambda: pool.admission_state() is PoolAdmissionState.DRAINING)
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            assert pool.admission_state() is PoolAdmissionState.DRAINING  # episode continues
+            gate.set()
+            await _until(lambda: pool.admission_state() is PoolAdmissionState.OPEN)
+
+    async def test_episodes_never_report_a_reap_twice(self, tmp_path: Path) -> None:
+        """A second episode never re-reports the first episode's reaped child.
+
+        The first episode's recording is parked mid-reap while the first child is
+        still ``running``; the second episode starts and cancels the second child
+        in that window. If recording walked pool-wide state, the first child's
+        reap would be emitted again by the second episode.
+        """
+        pool, relayed = _bound_pool(tmp_path)
+        reaped_children: list[FakeChildProcess] = []
+
+        async def reap(*, pid: int) -> str:
+            for child in reaped_children:
+                child.exit()
+            return "killed"
+
+        first = FakeChildProcess(lines=[], exit_code=-9)
+        reaped_children.append(first)
+        with (
+            patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=first)),
+            patch(
+                "src.agents.slo_agent.orchestrator.process.FleetReaper.child_identity_outcome",
+                return_value="matching",
+            ),
+            patch("src.agents.slo_agent.orchestrator.process.FleetReaper.reap", new=reap),
+        ):
+            first_dispatch = asyncio.create_task(
+                pool.dispatch(
+                    mode="single",
+                    tasks=[
+                        SubAgentTaskDAO(
+                            task_summary="Exercise child dispatch lifecycle",
+                            task_id="t-child-1",
+                            prompt="x",
+                            session_id="child-1",
+                        )
+                    ],
+                )
+            )
+            await _until(
+                lambda: (e := pool.registry.get(session_id="child-1")) is not None and e.status == "running"
+            )
+            await pool.abort_dispatches()
+            assert [event.sub_agent_id for event in relayed if event.kind == "sub_agent_reaped"] == [
+                "child-1"
+            ]
+            first.exit()
+            await first_dispatch
+
+            # Reap-event recording parked mid-episode: a stale whole-registry walk
+            # would re-report child-1 once the gate opens.
+            record_gate = asyncio.Event()
+            reaped_second = asyncio.Event()
+            recording_relay = pool._relay
+            reaped_kinds: list[str] = []
+
+            async def gated_relay(event: AgentStreamEventDAO) -> None:
+                if event.kind == "sub_agent_reaped":
+                    reaped_kinds.append(str(event.sub_agent_id))
+                    reaped_second.set()
+                    await record_gate.wait()
+                await recording_relay(event)
+
+            second = FakeChildProcess(lines=[], exit_code=-9)
+            reaped_children.append(second)
+            with (
+                patch.object(pool, "_relay", new=gated_relay),
+                patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=second)),
+            ):
+                second_dispatch = asyncio.create_task(
+                    pool.dispatch(
+                        mode="single",
+                        tasks=[
+                            SubAgentTaskDAO(
+                                task_summary="Exercise child dispatch lifecycle",
+                                task_id="t-child-2",
+                                prompt="x",
+                                session_id="child-2",
+                            )
+                        ],
+                    )
+                )
+                await _until(
+                    lambda: (e := pool.registry.get(session_id="child-2")) is not None
+                    and e.status == "running"
+                )
+                second_abort = asyncio.create_task(pool.abort_dispatches())
+                await _until(reaped_second.is_set)
+                # Parked inside episode two's record step with child-1 already terminal.
+                second.exit()
+                record_gate.set()
+                await second_abort
+                await second_dispatch
+
+        reaped = [event.sub_agent_id for event in relayed if event.kind == "sub_agent_reaped"]
+        assert reaped == ["child-1", "child-2"]

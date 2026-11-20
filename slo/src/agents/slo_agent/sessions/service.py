@@ -2914,7 +2914,7 @@ class SloAgentSession:
             return
         if self._candidate_pool_cleanup_task is None:
             self._candidate_pool_cleanup_task = asyncio.create_task(
-                coro=self._sub_agent_pool.abort_and_drain()
+                coro=self._sub_agent_pool.close_and_drain()
             )
         cancelled = await HerdrTaskJoin.wait(task=self._candidate_pool_cleanup_task)
         try:
@@ -3441,14 +3441,15 @@ class SloAgentSession:
     def abort(self) -> None:
         """Request graceful cancellation of the in-flight run.
 
-        Aborts the active ``SloAgent`` turn and schedules the pool's ordered
-        seal-and-drain shutdown when an orchestrator pool is active.
+        Aborts the active ``SloAgent`` turn and schedules the pool's turn-scoped
+        abort when an orchestrator pool is active. The pool reopens once the
+        aborted turn's children have drained; only a real shutdown closes it.
         """
         self._recovery_abort_requested = True
         if self._agent is not None:
             self._agent.abort()
         if self._sub_agent_pool is not None:
-            asyncio.ensure_future(self._sub_agent_pool.abort_and_drain())
+            asyncio.ensure_future(self._sub_agent_pool.abort_dispatches())
 
     async def refresh_model_catalog(self) -> str:
         """Refresh OpenRouter catalog state through the session admission owner.

@@ -341,8 +341,8 @@ class TestAdmissionOrder:
             reused = await pool.dispatch(mode="single", tasks=[_task(task_id="t2", session_id="a")])
         assert reused.all_completed
 
-    async def test_seal_during_preparation_is_rechecked_at_admission(self, tmp_path: Path) -> None:
-        """A pool sealed while a batch prepares refuses it without beginning a dispatch."""
+    async def test_close_during_preparation_is_rechecked_at_admission(self, tmp_path: Path) -> None:
+        """A pool closed while a batch prepares refuses it without beginning a dispatch."""
         pool, relayed = _pool(tmp_path=tmp_path)
         resolve_gate = asyncio.Event()
 
@@ -355,12 +355,12 @@ class TestAdmissionOrder:
                 pool.dispatch(mode="single", tasks=[_task(task_id="t1", session_id="a")])
             )
             await asyncio.sleep(0)
-            await pool.abort_and_drain()
+            await pool.close_and_drain()
             resolve_gate.set()
             result = await pending
 
         assert (result.all_completed, result.failed_task_ids) == (False, ["t1"])
-        assert result.error is not None and "sealed" in result.error
+        assert result.error is not None and "closed" in result.error
         assert relayed == [] and pool.attached_dispatch_snapshot().dispatch_sequence == 0
 
 

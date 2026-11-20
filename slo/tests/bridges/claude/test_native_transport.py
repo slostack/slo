@@ -48,6 +48,7 @@ async def test_custom_transport_official_sdk_wire_and_profile(tmp_path: Path) ->
         session_options=ClaudeSessionOptionsDAO(
             session_id="s",
             model_id="claude-bridge:model",
+            native_model_id="model",
             working_directory=tmp_path,
             instructions="trusted instructions",
             effort="high",
@@ -78,6 +79,7 @@ async def test_custom_transport_official_sdk_wire_and_profile(tmp_path: Path) ->
         session_options=ClaudeSessionOptionsDAO(
             session_id="s",
             model_id="claude-bridge:model",
+            native_model_id="model",
             working_directory=tmp_path,
             instructions="trusted instructions",
             tools=(
@@ -183,6 +185,7 @@ async def test_synthetic_process_failures_and_partial_start_are_reaped(tmp_path:
                 session_options=ClaudeSessionOptionsDAO(
                     session_id="s",
                     model_id="claude-bridge:model",
+                    native_model_id="model",
                     working_directory=tmp_path,
                     instructions="",
                 ),

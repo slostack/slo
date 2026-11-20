@@ -4,7 +4,8 @@
 
 Changes since v0.31.4. Raises the default per-request output budget for
 OpenRouter routes so reasoning-capable models can finish an ordinary coding
-turn instead of ending with "Output limit reached" (bug 112).
+turn instead of ending with "Output limit reached" (bug 112), and routes the
+Fable Claude bridge to real native model ids.
 
 ### Fixed
 
@@ -25,6 +26,17 @@ turn instead of ending with "Output limit reached" (bug 112).
   file is never rewritten on read, and repeated admissions of an unchanged
   old cache do not republish the catalog snapshot (generation stays
   stable); real changed state still republishes exactly once.
+- **Fable bridge routes reach real Fable models.** `claude-bridge:claude-fable` now sends
+  `claude-fable-5-1` to Claude Code. Before, the bridge sent the route text itself, which
+  the native API rejected on every request. `claude-bridge:claude-fable-5-1` and
+  `claude-bridge:claude-fable-5` send their own ids.
+- **Invented Fable versions are removed from the picker.** `claude-bridge:claude-fable-4-8`,
+  `-4-9`, `-5-0` and `-5-2` through `-5-5` never existed. They are rejected at selection,
+  before any native process starts. A saved selection of one now fails early with
+  "Unsupported Claude bridge model".
+- **Fable keeps thinking on.** Reasoning `off` on a Fable route sends native effort `low`
+  with adaptive thinking. Fable rejects disabled thinking, so Slo no longer offers an
+  "off" that the model cannot honour.
 
 ### Verification and compatibility
 
@@ -40,6 +52,12 @@ turn instead of ending with "Output limit reached" (bug 112).
   HTTP 402; lowering `max_tokens` via an operator override always works.
   Durable schemas, model selection and packaging-owned launchers are
   unchanged; no cache migration is required.
+
+### Changed
+
+- Each bridge route maps to its native model id in one route table, and the SDK runtime
+  sends that id without stripping a prefix. Grid and retained routes send the same ids
+  as before. Direct catalog entries, including `claude-fable`, are unchanged.
 
 ## [0.31.4] — 2026-11-12
 
@@ -244,8 +262,6 @@ this release also ships every 0.30.2 change listed below.
 - Isolate nested pytest collection from inherited CI options and update parallel-invocation assertions.
 - Await admitted Herdr report settlement before lifecycle assertions and repair the child-supervisor test deadline handling.
 - Preserve the isolated installer launcher and packaging-owned `slo-entry` contract.
-
-## [Unreleased]
 
 ## [0.31.0] — 2026-11-08
 

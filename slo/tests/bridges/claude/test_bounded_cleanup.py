@@ -29,7 +29,11 @@ async def test_disconnect_deadline_retains_failed_owner_for_explicit_retry(tmp_p
     runtime = ClaudeSDKRuntime(transport=transport, cleanup_grace_seconds=0.02, cleanup_force_seconds=0.02)
     runtime.start(
         session_options=ClaudeSessionOptionsDAO(
-            session_id="s", model_id="claude-bridge:model", working_directory=tmp_path, instructions=""
+            session_id="s",
+            model_id="claude-bridge:model",
+            native_model_id="model",
+            working_directory=tmp_path,
+            instructions="",
         ),
         invocation_options=ClaudeInvocationOptionsDAO(invocation_id="i", text="hi"),
     )
@@ -82,7 +86,11 @@ async def test_missing_control_ack_is_bounded_before_disconnect(tmp_path: Path, 
     runtime = ClaudeSDKRuntime(transport=transport, cleanup_grace_seconds=0.02, cleanup_force_seconds=0.02)
     runtime.start(
         session_options=ClaudeSessionOptionsDAO(
-            session_id="s", model_id="claude-bridge:model", working_directory=tmp_path, instructions=""
+            session_id="s",
+            model_id="claude-bridge:model",
+            native_model_id="model",
+            working_directory=tmp_path,
+            instructions="",
         ),
         invocation_options=ClaudeInvocationOptionsDAO(invocation_id="i", text="hi"),
     )
@@ -146,7 +154,11 @@ async def test_interrupt_and_disconnect_share_one_grace_budget(tmp_path: Path) -
     runtime = ClaudeSDKRuntime(transport=transport, cleanup_grace_seconds=0.2, cleanup_force_seconds=0.02)
     runtime.start(
         session_options=ClaudeSessionOptionsDAO(
-            session_id="s", model_id="claude-bridge:model", working_directory=tmp_path, instructions=""
+            session_id="s",
+            model_id="claude-bridge:model",
+            native_model_id="model",
+            working_directory=tmp_path,
+            instructions="",
         ),
         invocation_options=ClaudeInvocationOptionsDAO(invocation_id="i", text="hi"),
     )
@@ -189,7 +201,11 @@ async def test_startup_cancel_with_missing_ack_and_wedged_close_retains_retry_ow
     runtime = ClaudeSDKRuntime(transport=transport, cleanup_grace_seconds=0.02, cleanup_force_seconds=0.02)
     runtime.start(
         session_options=ClaudeSessionOptionsDAO(
-            session_id="s", model_id="claude-bridge:model", working_directory=tmp_path, instructions=""
+            session_id="s",
+            model_id="claude-bridge:model",
+            native_model_id="model",
+            working_directory=tmp_path,
+            instructions="",
         ),
         invocation_options=ClaudeInvocationOptionsDAO(invocation_id="i", text="hi"),
     )

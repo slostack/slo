@@ -86,8 +86,10 @@ async def test_real_executor_fifo_io_suspends_then_reactivates_watchdog(
     import time
 
     monkeypatch.setenv(name="SLO_CLAUDE_BRIDGE_ENABLED", value="1")
-    monkeypatch.setenv(name="SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS", value="0.15")
-    monkeypatch.setenv(name="SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS", value="0.15")
+    # The startup budget must outlive slow real FIFO startup before the first graph
+    # item (writer open start measured at 0.27-0.55s under six-worker load).
+    monkeypatch.setenv(name="SLO_PROVIDER_STREAM_IDLE_TIMEOUT_SECONDS", value="1")
+    monkeypatch.setenv(name="SLO_PROVIDER_STREAM_FIRST_PROGRESS_TIMEOUT_SECONDS", value="3")
     target = tmp_path / "slow.txt"
     assert target.resolve().is_relative_to(tmp_path.resolve())
     os.mkfifo(target)
@@ -114,7 +116,11 @@ async def test_real_executor_fifo_io_suspends_then_reactivates_watchdog(
             try:
                 if index == 2:
                     reader_entered.set()
-                    time.sleep(0.5)
+                    hold_started = time.monotonic()
+                    # Hold beyond every watchdog deadline (idle 1s) that could govern
+                    # the held read, so only real suspension keeps the watchdog quiet.
+                    time.sleep(3.0)
+                    rendezvous.append(f"held={time.monotonic() - hold_started:.6f}")
                 os.write(fd, b"real slow executor receipt\n")
             finally:
                 os.close(fd)
@@ -153,7 +159,7 @@ async def test_real_executor_fifo_io_suspends_then_reactivates_watchdog(
     events = []
     caught = None
     try:
-        async with asyncio.timeout(8):
+        async with asyncio.timeout(30):
             try:
                 async for event in session.invoke(text="Read slow.txt"):
                     events.append(event)
@@ -171,6 +177,10 @@ async def test_real_executor_fifo_io_suspends_then_reactivates_watchdog(
                 caught.add_note(f"FIFO writer {writer_error!r}; timings={rendezvous}")
                 raise caught
         assert reader_entered.is_set()
+        # The held open must outlive the active deadline that would govern a broken
+        # read (idle 1s < 3s hold); measure the held interval from the rendezvous.
+        held = next(float(entry.split("=", 1)[1]) for entry in rendezvous if entry.startswith("held="))
+        assert held >= 1.0, rendezvous
         stored = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
             session_id="executor-io"
         )
@@ -181,6 +191,10 @@ async def test_real_executor_fifo_io_suspends_then_reactivates_watchdog(
             from src.agents.providers.stream_recovery.dao import ProviderStreamProgressTimeout
 
             assert sum(e.kind == "run_started" for e in stored) == 1, [e.kind for e in stored]
+            # The receipt is delivered before the typed timeout fires: the recorded
+            # tool_result strictly precedes run_failed in the persisted history.
+            kinds = [event.kind for event in stored]
+            assert kinds.index("tool_result") < kinds.index("run_failed"), kinds
             chain = []
             current: BaseException | None = caught
             while current is not None:

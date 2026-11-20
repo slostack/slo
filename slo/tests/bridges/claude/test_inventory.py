@@ -32,6 +32,7 @@ def session_options(*, tmp_path: Path, tools: tuple[ClaudeToolDefinitionDAO, ...
     return ClaudeSessionOptionsDAO(
         session_id="inventory",
         model_id="claude-bridge:claude-haiku-5-5",
+        native_model_id="claude-haiku-5-5",
         working_directory=tmp_path,
         instructions="host",
         tools=tools,

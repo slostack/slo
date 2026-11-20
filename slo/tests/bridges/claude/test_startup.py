@@ -81,6 +81,7 @@ async def test_close_joins_blocked_auth_and_prevents_late_startup(tmp_path: Path
             session_options=ClaudeSessionOptionsDAO(
                 session_id="host",
                 model_id="claude-bridge:claude-sonnet-4-6",
+                native_model_id="claude-sonnet-4-6",
                 working_directory=tmp_path,
                 instructions="host",
             )
@@ -188,6 +189,7 @@ async def test_close_cancels_blocked_sdk_startup_in_its_owner(tmp_path: Path, bl
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-sonnet-4-6",
+            native_model_id="claude-sonnet-4-6",
             working_directory=tmp_path,
             instructions="host",
         )
@@ -258,6 +260,7 @@ async def test_read_response_raises_queued_failure_and_rejects_second_reader(tmp
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-sonnet-4-6",
+            native_model_id="claude-sonnet-4-6",
             working_directory=tmp_path,
             instructions="host",
         )

@@ -48,6 +48,7 @@ from .sdk.inventory import ClaudeToolInventory
 from .history_transcript import ClaudeHistoryTranscript
 from .host_content import ClaudeHostContent
 from .host_usage import ClaudeHostUsage
+from .routes import ClaudeBridgeRoute
 from .tool_result import ToolCallResponseAdapter
 from .response import AIAgentResponseAdapter, ClaudeResponseTranslationDAO
 from .tool_call import ToolCallAdapter, ClaudeCompletedCallBatchDAO
@@ -518,6 +519,7 @@ class SloClaudeBridge(BaseChatModel):
             session_options=ClaudeSessionOptionsDAO(
                 session_id=options.session_id,
                 model_id=self.model_name,
+                native_model_id=ClaudeBridgeRoute.native_model_id(model_name=self.model_name),
                 working_directory=options.working_directory,
                 instructions=options.instructions,
                 effort=self.effort,

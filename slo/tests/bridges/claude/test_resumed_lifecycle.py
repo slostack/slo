@@ -43,6 +43,7 @@ async def test_stale_invocation_results_cannot_release_resumed_waiters(tmp_path:
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-haiku-5-5",
+            native_model_id="claude-haiku-5-5",
             working_directory=tmp_path,
             instructions="host",
             tools=(
@@ -156,6 +157,7 @@ async def test_close_resumed_work_retains_cleanup_owner_without_replay(
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-haiku-5-5",
+            native_model_id="claude-haiku-5-5",
             working_directory=tmp_path,
             instructions="host",
         )

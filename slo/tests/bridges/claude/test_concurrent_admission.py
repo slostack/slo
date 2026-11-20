@@ -41,6 +41,7 @@ async def test_close_during_session_auth_prevents_late_configuration(
             session_options=ClaudeSessionOptionsDAO(
                 session_id="host",
                 model_id="claude-bridge:claude-haiku-5-5",
+                native_model_id="claude-haiku-5-5",
                 working_directory=tmp_path,
                 instructions="host",
             )
@@ -93,6 +94,7 @@ async def test_invocation_reserves_admission_across_authentication(
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-haiku-5-5",
+            native_model_id="claude-haiku-5-5",
             working_directory=tmp_path,
             instructions="host",
         )

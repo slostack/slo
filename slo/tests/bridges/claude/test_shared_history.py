@@ -352,7 +352,11 @@ async def test_adapter_carries_ordered_text_and_image_content_and_can_start_fres
     pixel = base64.b64encode(b"\x89PNG-synthetic").decode()
     await adapter.start_session(
         session_options=ClaudeSessionOptionsDAO(
-            session_id="host", model_id=ROUTE, working_directory=tmp_path, instructions="host"
+            session_id="host",
+            model_id=ROUTE,
+            native_model_id="claude-haiku-5-5",
+            working_directory=tmp_path,
+            instructions="host",
         )
     )
     try:

@@ -217,4 +217,4 @@ async def test_saved_parent_submits_owned_viewer(
     finally:
         await session.close_external_reporting()
         if session._sub_agent_pool is not None:
-            await session._sub_agent_pool.abort_and_drain()
+            await session._sub_agent_pool.close_and_drain()

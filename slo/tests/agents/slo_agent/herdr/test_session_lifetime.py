@@ -311,11 +311,11 @@ async def test_candidate_disposal_only_drains_candidate(tmp_path: Path, has_pool
     await candidate.rename_session(session_name="candidate")
     await candidate.dispose_unmounted_session()
     await candidate.dispose_unmounted_session()
-    old._sub_agent_pool.abort_and_drain.assert_not_called()
+    old._sub_agent_pool.close_and_drain.assert_not_called()
     assert candidate.session_name == "candidate"
     assert candidate._herdr_closing
     if has_pool:
-        pool.abort_and_drain.assert_awaited_once()
+        pool.close_and_drain.assert_awaited_once()
     else:
         assert candidate._candidate_pool_cleanup_task is None
 
@@ -336,7 +336,7 @@ async def test_candidate_pool_cancel_and_failure(tmp_path: Path, failure: bool) 
             raise RuntimeError("private")
 
     pool = Mock(spec=SubAgentPool)
-    pool.abort_and_drain = AsyncMock(side_effect=drain)
+    pool.close_and_drain = AsyncMock(side_effect=drain)
     session._sub_agent_pool = pool
     with patch.object(
         session._herdr_reporter, "record_publication_failure", side_effect=RuntimeError("sink")
@@ -352,7 +352,7 @@ async def test_candidate_pool_cancel_and_failure(tmp_path: Path, failure: bool) 
         with pytest.raises(asyncio.CancelledError):
             await waiter
         await session.dispose_unmounted_session()
-    pool.abort_and_drain.assert_awaited_once()
+    pool.close_and_drain.assert_awaited_once()
     assert session._candidate_pool_cleanup_task is not None
     assert session._candidate_pool_cleanup_task.done()
 
@@ -382,7 +382,7 @@ async def test_candidate_pool_disposal_with_reporting_fault(tmp_path: Path, reta
         drain_entered.set()
         return HerdrReporterCloseOutcomeDAO(replacement="uncertain", resources="retained")
 
-    pool.abort_and_drain = AsyncMock(side_effect=drain_pool)
+    pool.close_and_drain = AsyncMock(side_effect=drain_pool)
     reporter = candidate._herdr_reporter
     with (
         patch.object(reporter, "close", side_effect=RuntimeError("private")),
@@ -403,8 +403,8 @@ async def test_candidate_pool_disposal_with_reporting_fault(tmp_path: Path, reta
             pool_release.set()
             if retained:
                 await asyncio.wait_for(fut=drain_entered.wait(), timeout=2)
-            pool.abort_and_drain.assert_awaited_once()
-            old._sub_agent_pool.abort_and_drain.assert_not_called()
+            pool.close_and_drain.assert_awaited_once()
+            old._sub_agent_pool.close_and_drain.assert_not_called()
             if retained:
                 assert not waiter.done()
                 assert candidate._herdr_finish_cleanup_task is not None

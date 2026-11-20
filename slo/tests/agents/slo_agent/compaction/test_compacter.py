@@ -778,8 +778,10 @@ class TestInvokeLlmSummaryShaping:
         assert llm.ainvoke.call_args.kwargs["max_tokens"] == 3_000
 
     @pytest.mark.asyncio
-    async def test_openrouter_summary_uses_local_sdk_cap_when_reported_ceiling_is_absent(self) -> None:
-        """A real local SDK summary request uses the conservative absent-ceiling cap."""
+    async def test_openrouter_summary_uses_openrouter_unreported_fallback_when_reported_ceiling_is_absent(
+        self,
+    ) -> None:
+        """A real local SDK summary request uses the 8,192 OpenRouter absent-ceiling cap."""
         from src.agents.model_catalog.dao import ModelCapabilitiesDAO
         from src.agents.model_catalog.seed import SeedModelCatalog
         from src.auth.credential_dao import ProviderName
@@ -819,7 +821,7 @@ class TestInvokeLlmSummaryShaping:
             llm = OpenRouterChatOpenAI(
                 slo_model_name=entry.model_name,
                 slo_capabilities=entry.capabilities,
-                slo_output_ceiling=4096,
+                slo_output_ceiling=8192,
                 model=entry.api_model_name,
                 api_key="synthetic-only",
                 base_url="https://openrouter.ai/api/v1",
@@ -836,7 +838,7 @@ class TestInvokeLlmSummaryShaping:
         assert summary == "summary"
         body = captured["body"]
         assert isinstance(body, dict)
-        assert body["max_completion_tokens"] == 4096
+        assert body["max_completion_tokens"] == 8192
 
     async def test_pool_summary_is_not_pre_shaped(self) -> None:
         """A pool-bound LLM receives the raw system message and raw ``max_tokens``."""

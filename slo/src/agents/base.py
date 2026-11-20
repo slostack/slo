@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 from config.ai_model_config import MODEL_DEFAULTS, defaults_for_model
 from src.agents.model_catalog.dao import ModelCatalogEntryDAO, ModelCatalogSnapshotDAO
+from src.agents.model_catalog.openrouter import OPENROUTER_UNREPORTED_OUTPUT_BUDGET_TOKENS
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.openai_platform import OpenAIPlatformChatOpenAI, OpenAIRequestPolicy
 from src.agents.providers.anthropic_claude_code import (
@@ -944,13 +945,15 @@ class LLMFactory:
             entry (ModelCatalogEntryDAO): Prepared OpenRouter catalog record.
 
         Returns:
-            int: The lesser reported-or-local output bound and half the effective context window.
+            int: The reported ceiling bounded by half the effective context window,
+                or the OpenRouter unreported fallback (8192) when no valid ceiling
+                was reported.
         """
         capabilities = entry.capabilities
         reported_or_local: int = (
             capabilities.reported_output_ceiling
             if capabilities is not None and capabilities.reported_output_ceiling is not None
-            else 4096
+            else OPENROUTER_UNREPORTED_OUTPUT_BUDGET_TOKENS
         )
         return min(reported_or_local, entry.runtime_profile.context_window // 2)
 

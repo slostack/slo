@@ -17,6 +17,15 @@ from src.agents.model_catalog.dao import (
 from src.auth.credential_dao import ProviderName
 from src.integrations.openrouter.dao import OpenRouterModelsResponseDAO
 
+OPENROUTER_AGENT_OUTPUT_BUDGET_TOKENS: int = 64_000
+"""Default per-request output budget for OpenRouter routes with a reported ceiling."""
+
+OPENROUTER_UNREPORTED_OUTPUT_BUDGET_TOKENS: int = 8_192
+"""Default per-request output budget for OpenRouter routes without a reported ceiling.
+
+Half-context still bounds every fallback, so narrow windows stay below this floor.
+"""
+
 
 class OpenRouterCatalogConverter:
     """Translate OpenRouter wire records without author-family inference or I/O."""
@@ -170,16 +179,49 @@ class OpenRouterCatalogConverter:
             and not expired
         )
 
-    @staticmethod
-    def _output_cap(*, record: dict[str, object], context_window: int) -> int:
-        """Return the smaller validated remote output ceiling or local safe default."""
+    @classmethod
+    def default_output_budget(cls, *, reported_ceiling: int | None, context_window: int) -> int:
+        """Return the default per-request output budget for one OpenRouter route.
+
+        A valid reported ceiling (a strict positive integer) is trusted up to the
+        shared agent budget and half the context window; absent or invalid evidence
+        takes the OpenRouter unreported fallback, still bounded by half the context
+        window.
+
+        Args:
+            reported_ceiling (int | None): Advertised output ceiling; booleans,
+                non-integers and non-positive values are invalid.
+            context_window (int): Effective validated context window.
+
+        Returns:
+            int: ``min(reported_ceiling, context_window // 2, 64_000)`` for valid
+                evidence, otherwise ``min(8_192, context_window // 2)``.
+        """
+        if (
+            isinstance(reported_ceiling, bool)
+            or not isinstance(reported_ceiling, int)
+            or reported_ceiling <= 0
+        ):
+            return min(OPENROUTER_UNREPORTED_OUTPUT_BUDGET_TOKENS, context_window // 2)
+        return min(
+            reported_ceiling,
+            context_window // 2,
+            OPENROUTER_AGENT_OUTPUT_BUDGET_TOKENS,
+        )
+
+    @classmethod
+    def _output_cap(cls, *, record: dict[str, object], context_window: int) -> int:
+        """Return the default request budget from validated remote output evidence."""
         top_provider: object | None = record.get("top_provider")
         remote_cap: object | None = (
             top_provider.get("max_completion_tokens") if isinstance(top_provider, dict) else None
         )
-        if isinstance(remote_cap, bool) or not isinstance(remote_cap, int) or remote_cap <= 0:
-            return min(4096, context_window // 2)
-        return min(4096, remote_cap, context_window // 2)
+        if isinstance(remote_cap, bool) or not isinstance(remote_cap, int):
+            remote_cap = None
+        return cls.default_output_budget(
+            reported_ceiling=remote_cap,
+            context_window=context_window,
+        )
 
     @classmethod
     def _is_expired(cls, *, record: dict[str, object], now: datetime) -> bool:

@@ -513,6 +513,7 @@ async def test_adapter_retires_quota_invocation_without_cancellation(tmp_path: P
         session_options=ClaudeSessionOptionsDAO(
             session_id="adapter-quota",
             model_id="claude-bridge:model",
+            native_model_id="model",
             working_directory=tmp_path,
             instructions="",
         )
@@ -607,6 +608,7 @@ async def test_cancel_during_quota_disconnect_wins(tmp_path: Path) -> None:
         session_options=ClaudeSessionOptionsDAO(
             session_id="cancel-quota",
             model_id="claude-bridge:model",
+            native_model_id="model",
             working_directory=tmp_path,
             instructions="",
         ),

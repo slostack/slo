@@ -354,7 +354,7 @@ class ClaudeSDKRuntime:
     def _build_options(*, session_options: ClaudeSessionOptionsDAO) -> ClaudeAgentOptions:
         """Use only pinned supported controls; preserve native account state without copying secrets."""
         return ClaudeAgentOptions(
-            model=session_options.model_id.removeprefix("claude-bridge:"),
+            model=session_options.native_model_id,
             cwd=session_options.working_directory,
             system_prompt={"type": "preset", "preset": "claude_code", "append": session_options.instructions},
             effort=session_options.effort,

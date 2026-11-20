@@ -189,6 +189,10 @@ class ClaudeSessionOptionsDAO(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     session_id: str = Field(min_length=1, description="Host association, not a native resume ID.")
     model_id: str = Field(description="Validated exact qualified bridge route.")
+    native_model_id: str = Field(
+        min_length=1,
+        description="Unprefixed native model id Claude Code receives; resolved by the host route owner.",
+    )
     tools: tuple[ClaudeToolDefinitionDAO, ...] = ()
 
     @field_validator("model_id")
@@ -197,6 +201,14 @@ class ClaudeSessionOptionsDAO(BaseModel):
         """Keep the host route and SDK model identity unambiguously separate."""
         if not value.startswith("claude-bridge:") or value == "claude-bridge:":
             raise ValueError("Claude bridge model must retain its claude-bridge: prefix.")
+        return value
+
+    @field_validator("native_model_id")
+    @classmethod
+    def native_model_id_is_unprefixed(cls, value: str) -> str:
+        """Keep route text out of the SDK boundary; the host route table owns the translation."""
+        if value.startswith("claude-bridge:"):
+            raise ValueError("Native Claude model id must not carry the claude-bridge: route prefix.")
         return value
 
     working_directory: Path = Field(description="Absolute existing project directory.")

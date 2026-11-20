@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Fable bridge routes reach real Fable models.** `claude-bridge:claude-fable` now sends
+  `claude-fable-5-1` to Claude Code. Before, the bridge sent the route text itself, which
+  the native API rejected on every request. `claude-bridge:claude-fable-5-1` and
+  `claude-bridge:claude-fable-5` send their own ids.
+- **Invented Fable versions are removed from the picker.** `claude-bridge:claude-fable-4-8`,
+  `-4-9`, `-5-0` and `-5-2` through `-5-5` never existed. They are rejected at selection,
+  before any native process starts. A saved selection of one now fails early with
+  "Unsupported Claude bridge model".
+- **Fable keeps thinking on.** Reasoning `off` on a Fable route sends native effort `low`
+  with adaptive thinking. Fable rejects disabled thinking, so Slo no longer offers an
+  "off" that the model cannot honour.
+
+### Changed
+
+- Each bridge route maps to its native model id in one route table, and the SDK runtime
+  sends that id without stripping a prefix. Grid and retained routes send the same ids
+  as before. Direct catalog entries, including `claude-fable`, are unchanged.
+
 ## [0.31.4] — 2026-11-12
 
 Changes since v0.31.3. Includes the Claude quota/session recovery fix from MR !165,
@@ -203,8 +225,6 @@ this release also ships every 0.30.2 change listed below.
 - Isolate nested pytest collection from inherited CI options and update parallel-invocation assertions.
 - Await admitted Herdr report settlement before lifecycle assertions and repair the child-supervisor test deadline handling.
 - Preserve the isolated installer launcher and packaging-owned `slo-entry` contract.
-
-## [Unreleased]
 
 ## [0.31.0] — 2026-11-08
 

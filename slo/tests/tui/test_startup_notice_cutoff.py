@@ -51,6 +51,12 @@ def _build_session(*, tmp_path: Path, session_id: str, enable_history: bool = Tr
     )
 
 
+def _pin_ctrl_enter_undetectable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the environment so the startup hint renders deterministically."""
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+
+
 async def _marker_written(*, session: SloAgentSession) -> bool:
     """Return whether the captured session's durable startup marker exists."""
     store = session._history_store
@@ -130,8 +136,9 @@ async def test_notice_inner_await_cutoff_blocks_late_render_and_marker(tmp_path:
 
 
 @pytest.mark.parametrize("mode", ["history", "memory"])
-async def test_notice_open_path_renders_once_with_marker(tmp_path: Path, mode: str) -> None:
+async def test_notice_open_path_renders_once_with_marker(tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """An open mount renders both startup lines exactly once and persists the marker."""
+    _pin_ctrl_enter_undetectable(monkeypatch=monkeypatch)
     session = _build_session(
         tmp_path=tmp_path,
         session_id="33333333-3333-4333-8333-333333333333",
@@ -153,17 +160,19 @@ async def test_notice_open_path_renders_once_with_marker(tmp_path: Path, mode: s
     with patch.object(app._chat_transcript, "handle", side_effect=write):
         async with app.run_test() as pilot:
             await pilot.pause()
-    assert len(lines) == 2
+    assert len(lines) == 3
     assert lines[0].startswith("slo, Copyright (C) 2026")
     assert lines[1].startswith("Tip: use /help to see available commands.")
+    assert lines[2].startswith("Tip: Ctrl+Enter may be indistinguishable from Enter")
     if mode == "history":
         assert await _marker_written(session=session)
     else:
         assert session._startup_notice_shown_in_memory
 
 
-async def test_replacement_startup_uses_successor_only(tmp_path: Path) -> None:
+async def test_replacement_startup_uses_successor_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A committed ``/new`` renders one notice for the successor, none for the old."""
+    _pin_ctrl_enter_undetectable(monkeypatch=monkeypatch)
     old = SloAgentSession.build(config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history"))
     app = SloTUI(session=old)
     lines: list[tuple[str, str]] = []
@@ -187,11 +196,12 @@ async def test_replacement_startup_uses_successor_only(tmp_path: Path) -> None:
             await pilot.pause()
     old_lines = [content for owner, content in lines if owner == old.session_id]
     successor_lines = [content for owner, content in lines if owner == successor.session_id]
-    assert len(old_lines) == 2
+    assert len(old_lines) == 3
     assert old_lines[0].startswith("slo, Copyright (C) 2026")
-    assert len(successor_lines) == 2
+    assert len(successor_lines) == 3
     assert successor_lines[0].startswith("slo, Copyright (C) 2026")
     assert successor_lines[1].startswith("Tip: use /help to see available commands.")
+    assert successor_lines[2].startswith("Tip: Ctrl+Enter may be indistinguishable from Enter")
 
 
 async def _seed_complete_turn(*, session: SloAgentSession, prompt: str) -> None:
@@ -287,8 +297,9 @@ async def test_hydration_open_path_mounts_seeded_replay(tmp_path: Path) -> None:
     assert len(mounted) == 2
 
 
-async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path) -> None:
+async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A marker write admitted before the cutoff completes; no notice repeats it."""
+    _pin_ctrl_enter_undetectable(monkeypatch=monkeypatch)
     session = _build_session(tmp_path=tmp_path, session_id="88888888-8888-4888-8888-888888888888")
     app = SloTUI(session=session)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -327,13 +338,13 @@ async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path) -> N
         try:
             async with app.run_test():
                 await driver
-                assert len(lines) == 2
+                assert len(lines) == 3
                 assert await _marker_written(session=session)
         finally:
             release.set()
             await asyncio.gather(driver, return_exceptions=True)
     assert await _marker_written(session=session)
-    assert len(lines) == 2
+    assert len(lines) == 3
 
 
 @pytest.mark.parametrize("cutoff", ["closing", "displaced"])

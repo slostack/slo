@@ -241,8 +241,13 @@ async def test_mounted_pending_startup_allows_direct_selection_and_ignores_cance
 
 
 @pytest.mark.parametrize("fail", [False, True])
-async def test_mounted_startup_shared_worker_gates_and_recovers(tmp_path: Path, fail: bool) -> None:
+async def test_mounted_startup_shared_worker_gates_and_recovers(
+    tmp_path: Path, fail: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Mounted UI paints safe pending/failure state and retries using one gateway."""
+    # The mounted app starts a real channel poller; an hourly interval keeps a
+    # queued row pending so the real OpenRouter provider is never contacted.
+    monkeypatch.setenv(name="SLO_CHANNEL_POLL_MS", value="3600000")
     snapshot = SeedModelCatalog.load()
     route = "openrouter:author/cold"
     entry = snapshot.entries["gpt-5.4"].model_copy(update={"model_name": route})
@@ -302,6 +307,11 @@ async def test_mounted_startup_shared_worker_gates_and_recovers(tmp_path: Path, 
             assert session.preparation_status == "ready"
             assert session.catalog_snapshot == snapshot
             assert session.session_id == app._session.session_id
-            with patch.object(app, "_start_accepted_prompt", new_callable=AsyncMock) as accepted:
-                await app._submit_or_queue_prompt(text="ready")
-                accepted.assert_awaited_once_with(text="ready")
+            # Delegation is proven against the real adapter and the real queue:
+            # the row lands in the shared DB while the hourly poll interval keeps
+            # it pending, so the real provider is never contacted.
+            assert app.channel_adapter is not None
+            await app._submit_or_queue_prompt(text="ready")
+            queued = await app.channel_adapter.queued()
+            assert [row.message_contents for row in queued if row.message_type == "prompt"] == ["ready"]
+            assert all(row.accepted_at is None for row in queued if row.message_type == "prompt")

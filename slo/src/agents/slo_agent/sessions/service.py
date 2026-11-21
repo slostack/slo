@@ -39,7 +39,7 @@ from langchain_core.language_models import BaseChatModel
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional, TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
@@ -96,6 +96,7 @@ from src.agents.slo_agent.herdr.dao import (
 )
 from src.agents.slo_agent.sessions.identity import is_canonical_uuid_session_id
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.boundary_inbox import BoundaryInbox, MemoryBoundaryInbox
 from src.agents.slo_agent.history.dao import (
     SessionHistoryEventDAO,
     SessionHistoryEventPayloadDAO,
@@ -170,6 +171,9 @@ from src.auth.provider_for_model import provider_for_model
 
 if TYPE_CHECKING:
     from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
+    from src.channels.gateway import ChannelGateway
+    from src.agents.slo_agent.channel_delivery.poller import ChannelPoller
+    from src.agents.slo_agent.channel_delivery.turn_runner import TurnRunner
 
 from src.agents.slo_agent.history.transcript import ReplayEntryProjector
 
@@ -341,6 +345,10 @@ class PromptAttemptPlanDAO(BaseModel):
     source_failed_turn_id: Optional[str] = Field(
         default=None,
         description="Turn id of the failed attempt that produced this retry, or None for initial.",
+    )
+    channel_message_id: Optional[str] = Field(
+        default=None,
+        description="Channel queue message id this submission runs; stamped onto the user_message event metadata.",
     )
     submission_attempt_number: int = Field(
         default=1,
@@ -768,6 +776,13 @@ class SloAgentSession:
         # message ids whose workflow_update event is already persisted. Seeded
         # lazily from the event log on the first record call.
         self._workflow_message_ids_seen: Optional[set[str]] = None
+        self._channel_poller: Optional["ChannelPoller"] = None
+        # The session's boundary inbox is the agent's own when an externally
+        # built agent was injected; otherwise a fresh memory inbox the lazily
+        # built agent will adopt (108.2).
+        self._boundary_inbox: BoundaryInbox = (
+            agent.boundary_inbox if agent is not None else MemoryBoundaryInbox()
+        )
         self.runtime_context: "SloRuntimeContext" = self._build_runtime_context()
         log_info(msg=f"SloAgentSession built session_id={session_id[:8]} workdir={self._workdir}")
 
@@ -1069,6 +1084,7 @@ class SloAgentSession:
             append_system_prompt=self._config.append_system_prompt,
             plugin_dispatcher=self._plugin_dispatcher,
             snapshot=self.catalog_snapshot,
+            boundary_inbox=self._boundary_inbox,
             **(
                 {"bridge_adapter": self._prepared_bridge_adapter}
                 if self._prepared_bridge_adapter is not None
@@ -1722,6 +1738,127 @@ class SloAgentSession:
     def history_projector(self) -> SessionHistoryProjector:
         """The active history projector."""
         return self._history_projector
+
+    @property
+    def channel_poller(self) -> Optional["ChannelPoller"]:
+        """The channel delivery poller for this session, when started (108.1)."""
+        return self._channel_poller
+
+    async def start_channel_delivery(
+        self,
+        *,
+        gateway: "ChannelGateway",
+        runner: "TurnRunner",
+        interval: Optional[float] = None,
+        operator_participant_id: Optional[UUID] = None,
+    ) -> "ChannelPoller":
+        """Start the one channel poller for this session (108.1).
+
+        Args:
+            gateway (ChannelGateway): The shared queue gateway.
+            runner (TurnRunner): Runs each accepted prompt row (TUI production
+                or an injected stub).
+            interval (Optional[float]): Poll interval override (tests).
+            operator_participant_id (Optional[UUID]): The operator's user
+                participant id when the caller knows it; rows from that
+                participant take the transcript label ``you`` (108.2 §4).
+
+        Returns:
+            ChannelPoller: The started poller.
+
+        Raises:
+            RuntimeError: Channel delivery is already running.
+        """
+        from src.agents.slo_agent.channel_delivery.boundary_inbox import ChannelBoundaryInbox
+        from src.agents.slo_agent.channel_delivery.poller import ChannelPoller
+        from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
+        from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+
+        if self._channel_poller is not None:
+            raise RuntimeError("Channel delivery already started for this session.")
+        participant_id: UUID = channel_participant_id_for_session(session_id=self._session_id)
+        boundary_inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(
+            gateway=gateway,
+            agent_id=participant_id,
+            operator_participant_id=operator_participant_id,
+        )
+        poller: ChannelPoller = ChannelPoller(
+            gateway=gateway,
+            session=self,
+            runner=runner,
+            replies=ReplyWriter(gateway=gateway),
+            boundary_inbox=boundary_inbox,
+            interval=interval,
+        )
+        await poller.start()
+        self._set_boundary_inbox(boundary_inbox)
+        self._channel_poller = poller
+        return poller
+
+    async def stop_channel_delivery(self, *, reason: str) -> None:
+        """Stop the channel poller and close the agent participant (108.1).
+
+        Args:
+            reason (str): Cancellation reason recorded on pending rows, e.g.
+                ``session_closed``.
+        """
+        poller: Optional["ChannelPoller"] = self._channel_poller
+        if poller is None:
+            return
+        self._channel_poller = None
+        await poller.stop(reason=reason)
+        self._set_boundary_inbox(MemoryBoundaryInbox())
+
+    def _set_boundary_inbox(self, inbox: BoundaryInbox) -> None:
+        """Attach a boundary inbox to the session and its built agent.
+
+        The agent reads the inbox it was built with; when channel delivery
+        starts (or stops) after the agent exists, both sides move together.
+
+        Args:
+            inbox (BoundaryInbox): The inbox to bind.
+        """
+        self._boundary_inbox = inbox
+        if self._agent is not None:
+            self._agent.boundary_inbox = inbox
+
+    @property
+    def boundary_inbox(self) -> BoundaryInbox:
+        """Return the inbox forced messages enter the current run through (108.2).
+
+        Returns:
+            BoundaryInbox: The channel adapter while delivery runs, otherwise
+                a shared ``MemoryBoundaryInbox``.
+        """
+        return self._boundary_inbox
+
+    async def channel_message_ids_in_history(self) -> set[str]:
+        """Return channel message ids already persisted in ``events.jsonl`` (108.1 §6).
+
+        Used by the poller's startup recovery: a pending queue row whose id is
+        already in history was consumed by the crashed process and is accepted
+        rather than re-run. A run leaves the id on its ``user_message`` event;
+        a forced row taken at a boundary leaves it on its ``steering_message``
+        record (108.2 F4).
+
+        Returns:
+            set[str]: Every ``channel_message_id`` found on ``user_message``
+                and ``steering_message`` events; empty when history is
+                disabled or absent.
+        """
+        if not self._enable_history or self._history_store is None:
+            return set()
+        if not await self._history_store.session_exists(session_id=self._session_id):
+            return set()
+        events: list[SessionHistoryEventDAO] = await self._history_store.load_events(
+            session_id=self._session_id
+        )
+        return {
+            str(event.payload.metadata["channel_message_id"])
+            for event in events
+            if event.kind in ("user_message", "steering_message")
+            and "channel_message_id" in event.payload.metadata
+        }
 
     @property
     def history_root(self) -> Optional[Path]:
@@ -3430,14 +3567,6 @@ class SloAgentSession:
             return []
         return list(self._config.extra_tools or [])
 
-    def steer(self, *, message: str | BaseMessage) -> None:
-        """Queue a message for the agent to apply before its next graph turn.
-
-        Args:
-            message (str | BaseMessage): Instruction injected by the shared steering queue.
-        """
-        self.agent.steer(message=message)
-
     def abort(self) -> None:
         """Request graceful cancellation of the in-flight run.
 
@@ -3759,6 +3888,7 @@ class SloAgentSession:
         self,
         *,
         text: str,
+        channel_message_id: Optional[UUID] = None,
         history: Optional[list[dict]] = None,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Run one user prompt submission to completion.
@@ -3791,6 +3921,9 @@ class SloAgentSession:
 
         Args:
             text (str): User prompt text for this submission.
+            channel_message_id (Optional[UUID]): Channel queue message id this
+                submission runs (108.1); written onto the ``user_message``
+                history event metadata when present.
             history (Optional[list[dict]]): Optional legacy caller-supplied
                 history used only by tests. The production path loads history
                 from the persistent store.
@@ -3821,6 +3954,7 @@ class SloAgentSession:
         async with self._session_run_scope():
             plan: PromptAttemptPlanDAO = self._build_initial_attempt_plan(
                 text=text,
+                channel_message_id=channel_message_id,
             )
             pending_session_events: list[AgentStreamEventDAO] = []
             while True:
@@ -3977,6 +4111,7 @@ class SloAgentSession:
         self,
         *,
         text: str,
+        channel_message_id: Optional[UUID] = None,
     ) -> PromptAttemptPlanDAO:
         """Return the plan for the first attempt of a prompt submission.
 
@@ -3989,6 +4124,9 @@ class SloAgentSession:
 
         Args:
             text (str): User-submitted prompt text.
+            channel_message_id (Optional[UUID]): Channel queue message id this
+                submission runs (108.1); stamped onto the ``user_message``
+                event metadata when present.
 
         Returns:
             PromptAttemptPlanDAO: Plan describing the initial attempt.
@@ -4003,6 +4141,7 @@ class SloAgentSession:
             submission_attempt_number=1,
             max_submission_attempts=provider_stream_continuation_max_attempts(),
             original_text=text,
+            channel_message_id=(str(channel_message_id) if channel_message_id is not None else None),
         )
 
     async def _prepare_attempt_context(
@@ -4358,6 +4497,11 @@ class SloAgentSession:
                 payload=SessionHistoryEventPayloadDAO(
                     role="user",
                     content=plan.text,
+                    metadata=(
+                        {"channel_message_id": plan.channel_message_id}
+                        if plan.channel_message_id is not None
+                        else {}
+                    ),
                 ),
             ),
         )

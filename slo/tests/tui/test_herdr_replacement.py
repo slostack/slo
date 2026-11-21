@@ -233,7 +233,6 @@ async def test_new_candidate_lease_rollback_failure_keeps_ui_progress(tmp_path: 
     app = SloTUI(session=old)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._queue_prompt(text="must not cross adoption")
         store = app._lease_store
         assert store is not None
         original_release = store.release
@@ -256,7 +255,6 @@ async def test_new_candidate_lease_rollback_failure_keeps_ui_progress(tmp_path: 
         ):
             await app._start_new_session(requested_name=None)
         assert app._session is not old
-        assert app._queued_prompt_text is None
         assert app._lease_timer is None and app._inbox_timer is None
         assert app._workflow_app_service is None and app._workflow_renderer is None
         assert not app._replacement_delivery_safe and app._delivery_quiescing

@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from textual.widget import Widget
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -58,13 +58,6 @@ class LoadOlderHistoryDAO(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
-class ShowPendingSteeringDAO(BaseModel):
-    """Display accepted steering while execution owns its queue."""
-
-    model_config = ConfigDict(frozen=True)
-    message: str
-
-
 class MountTreeOutputDAO(BaseModel):
     """Present an exported tree outside ordinary transcript accounting."""
 
@@ -114,6 +107,10 @@ class ProjectUserTurnDAO(BaseModel):
     model_config = ConfigDict(frozen=True)
     text: str
     before: Optional[int] = None
+    sender_name: Optional[str] = Field(
+        default=None,
+        description="Sender label for a forced steering delivery (108.2); shown when it is not you.",
+    )
 
 
 class ProjectReplayEntryDAO(BaseModel):
@@ -138,7 +135,6 @@ TranscriptCommand = (
     | ClearTranscriptDAO
     | BeginTranscriptRunDAO
     | LoadOlderHistoryDAO
-    | ShowPendingSteeringDAO
     | MountTreeOutputDAO
     | SetTranscriptVisibilityDAO
     | ScrollTranscriptBottomDAO

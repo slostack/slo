@@ -72,6 +72,10 @@ def _mock_session(*, history_root: Path) -> MagicMock:
     session.active_reasoning_level = "high"
     session.history_enabled = True
     session.history_root = history_root
+    # An idle session: the TUI is not running a prompt and owns no channel
+    # poller (108.1), so inbox delivery may start.
+    session.is_running = False
+    session.channel_poller = None
     session.subscribe = MagicMock()
     session.unsubscribe = MagicMock()
     session.hydrate_transcript_entries = AsyncMock(return_value=[])

@@ -39,6 +39,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from config.logger import log_info
 from src.agents.base import LLM
+from src.agents.slo_agent.boundary_inbox import BoundaryDeliveryDAO, BoundaryInbox, MemoryBoundaryInbox
 from src.agents.hooks import (
     Hook,
     ShouldStopAfterTurnHook,
@@ -111,7 +112,9 @@ class SloAgent:
     Public surface:
     - ``invoke(query, history)`` — async-generator over normalized
       ``AgentStreamEventDAO`` events.
-    - ``steer(message)`` — queue a message to inject before the next agent turn.
+    - ``boundary_inbox`` — where forced messages (108.2) enter the current
+      run at its next safe boundary; a pending forced row also revives a
+      run that would otherwise stop.
     - ``abort()`` — request graceful cancellation of the current run.
     """
 
@@ -134,6 +137,7 @@ class SloAgent:
         snapshot: Optional[ModelCatalogSnapshotDAO] = None,
         bridge_adapter_class: Optional[type[SloBridgeAdapterProtocol]] = None,
         bridge_adapter: Optional[SloBridgeAdapterProtocol] = None,
+        boundary_inbox: Optional[BoundaryInbox] = None,
     ) -> None:
         """Build the agent.
 
@@ -183,6 +187,9 @@ class SloAgent:
             snapshot (Optional[ModelCatalogSnapshotDAO]): Caller-supplied immutable
                 construction view; None keeps global reads. Admission and capture
                 remain the session caller's responsibility.
+            boundary_inbox (Optional[BoundaryInbox]): Where forced messages
+                (108.2) are taken at each safe boundary. ``None`` builds a
+                ``MemoryBoundaryInbox`` for in-process senders and tests.
         """
         self._llm: Optional[LLM] = llm
         self._plugin_dispatcher: Optional["PluginDispatcher"] = plugin_dispatcher
@@ -242,7 +249,9 @@ class SloAgent:
             )
         self._supports_explicit_caching: bool = _build_result.supports_explicit_caching
         self._should_stop_after_turn_hook: ShouldStopAfterTurnHook = should_stop_after_turn_hook
-        self._steering_queue: asyncio.Queue[BaseMessage] = asyncio.Queue()
+        self._boundary_inbox: BoundaryInbox = (
+            boundary_inbox if boundary_inbox is not None else MemoryBoundaryInbox()
+        )
         self._active_turn: TurnStreamAccumulator = TurnStreamAccumulator()
         self._abort_event: asyncio.Event = asyncio.Event()
         self._running: bool = False
@@ -254,6 +263,33 @@ class SloAgent:
         self._recovery_budget: int = 2
         """Maximum LLM-driven recoveries per submitted prompt. Default 2."""
         log_info(msg="SloAgent built")
+
+    @property
+    def boundary_inbox(self) -> BoundaryInbox:
+        """Return the inbox where forced messages enter the current run (108.2).
+
+        Returns:
+            BoundaryInbox: The injected adapter, or a ``MemoryBoundaryInbox``.
+        """
+        return self._boundary_inbox
+
+    @boundary_inbox.setter
+    def boundary_inbox(self, inbox: BoundaryInbox) -> None:
+        """Attach a different boundary inbox while no run is in flight.
+
+        The session uses this when channel delivery starts after the agent
+        was built: the run's source of forced messages moves from memory to
+        the shared channel queue.
+
+        Args:
+            inbox (BoundaryInbox): The adapter to take deliveries from.
+
+        Raises:
+            RuntimeError: A run is currently in flight.
+        """
+        if self._running:
+            raise RuntimeError("Cannot rebind the boundary inbox while a run is in flight.")
+        self._boundary_inbox = inbox
 
     @property
     def tools(self) -> list[BaseTool]:
@@ -475,8 +511,9 @@ class SloAgent:
             raise ValueError("Pass only one of `history` or `message_history` to SloAgent.")
         if self._running:
             raise RuntimeError(
-                "SloAgent is already processing. Call steer() to queue a "
-                "message, or await completion before invoking again."
+                "SloAgent is already processing. Force a message into the "
+                "current run (Ctrl+Enter / boundary inbox), or await "
+                "completion before invoking again."
             )
 
     def _initialize_run_state(self) -> None:
@@ -579,28 +616,48 @@ class SloAgent:
         iteration: int,
         runtime_handler: Optional[AgentRuntimeHandler],
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
-        """Drain the steering queue, emit traces, yield events, and extend the run context.
+        """Take forced deliveries at this boundary and fold them into the run context.
 
-        Steering messages drained here are folded into ``accumulated_messages``
-        so the next graph turn sees them as part of the message history. The
-        ``steering_applied`` stream events let the TUI render queued steers as
-        regular user messages at the moment they enter the model context.
+        The boundary inbox is the source (108.2): forced channel rows and
+        in-process memory deliveries alike. The taken texts are appended to
+        ``accumulated_messages`` first (spec ordering: context write → history
+        record → confirm), each history ``steering_message`` record carries
+        the ``channel_message_id`` (the crash-recovery key), and the rows are
+        confirmed (accepted) only after the records are written — so a crash
+        between take and confirm can never apply a row twice.
 
         Args:
             accumulated_messages (list[BaseMessage]): The run's accumulated message list.
-                Extended in place with drained steering messages.
+                Extended in place with the taken forced messages.
             iteration (int): The iteration these messages are being applied to.
             runtime_handler (Optional[AgentRuntimeHandler]): Trace observer.
 
         Yields:
-            AgentStreamEventDAO: One ``steering_applied`` event per drained message.
-                Yields nothing when the queue is empty.
+            AgentStreamEventDAO: One ``steering_applied`` event per taken delivery,
+                carrying its ``channel_message_id``. Yields nothing when the inbox is
+                empty.
         """
-        steering: list[BaseMessage] = self._drain(queue=self._steering_queue)
-        await self._emit_steering_traces(runtime_handler=runtime_handler, messages=steering)
-        for event in self._steering_applied_events(messages=steering, iteration=iteration):
+        deliveries: list[BoundaryDeliveryDAO] = await self._boundary_inbox.take(iteration=iteration)
+        if not deliveries:
+            return
+        messages: list[HumanMessage] = [
+            HumanMessage(
+                content=delivery.text,
+                additional_kwargs={"channel_message_id": str(delivery.message_id)},
+            )
+            for delivery in deliveries
+        ]
+        accumulated_messages.extend(messages)
+        await self._emit_steering_traces(
+            runtime_handler=runtime_handler,
+            deliveries=deliveries,
+        )
+        # Confirm before yielding (108.2 B1): a cancel/close of this generator
+        # at the ``steering_applied`` yield point must never leave a
+        # history-written row pending for a live-process resume to reapply.
+        await self._boundary_inbox.confirm(deliveries=deliveries)
+        for event in self._steering_applied_events(deliveries=deliveries, iteration=iteration):
             yield event
-        accumulated_messages.extend(steering)
 
     async def _process_messages_mode_chunk(
         self,
@@ -887,13 +944,15 @@ class SloAgent:
     ) -> bool:
         """Determine whether the outer ReAct loop should execute another iteration.
 
-        Checks the steering queue non-destructively to detect a pending steer
-        that would revive a run that would otherwise stop. The actual drain is
-        performed by the subsequent ``_apply_steering`` call in ``_react_loop``.
+        Checks the boundary inbox non-destructively to detect a pending forced
+        delivery that would revive a run that would otherwise stop. The actual
+        take is performed by the subsequent ``_apply_steering`` call in
+        ``_react_loop``.
 
-        A pending steer overrides a would-stop verdict because steering's contract
-        is: any steer queued before the loop evaluates its stop condition is
-        honored by reviving the run for at least one more turn.
+        A pending forced delivery overrides a would-stop verdict because the
+        boundary contract (108.2) is: any forced row queued before the loop
+        evaluates its stop condition is honored by reviving the run for at
+        least one more turn.
 
         Args:
             accumulated_messages (list[BaseMessage]): Full accumulated message list.
@@ -901,12 +960,33 @@ class SloAgent:
         Returns:
             bool: ``True`` to execute another iteration; ``False`` to break the loop.
         """
-        has_pending_steering: bool = not self._steering_queue.empty()
+        would_stop: bool = await self._evaluate_would_stop(
+            accumulated_messages=accumulated_messages,
+        )
+        return not would_stop or self._boundary_inbox.has_forced()
+
+    async def _evaluate_would_stop(
+        self,
+        *,
+        accumulated_messages: list[BaseMessage],
+    ) -> bool:
+        """Evaluate the stop hook and the tool-call continuation condition.
+
+        Split from ``_should_loop_continue`` so ``_react_loop`` can evaluate
+        the hook once and reuse the verdict for the post-boundary stale-revive
+        check (108.2 B3: an empty boundary take must not cost an extra
+        assistant-ending model call).
+
+        Args:
+            accumulated_messages (list[BaseMessage]): Full accumulated message list.
+
+        Returns:
+            bool: ``True`` when the run would stop without a pending forced delivery.
+        """
         hook_turn: TurnAccumulatorDAO = self._turn_to_hook_accumulator(turn=self._active_turn)
-        would_stop: bool = await self._evaluate_stop_hook(
+        return await self._evaluate_stop_hook(
             turn=hook_turn, messages=accumulated_messages
         ) or not self._last_turn_has_tool_calls(messages=accumulated_messages)
-        return not would_stop or has_pending_steering
 
     async def _execute_iteration_with_retry(
         self,
@@ -1085,18 +1165,31 @@ class SloAgent:
             if self._abort_event.is_set():
                 return  # run_aborted already yielded; skip stop evaluation and next iteration
 
-            if not await self._should_loop_continue(accumulated_messages=accumulated_messages):
+            would_stop: bool = await self._evaluate_would_stop(
+                accumulated_messages=accumulated_messages,
+            )
+            if would_stop and not self._boundary_inbox.has_forced():
                 if self._bridge_owner is not None:
                     await self._bridge_owner.finish_host_turn()
                 break
 
             iteration += 1
+            boundary_applied: bool = False
             async for event in self._apply_steering(
                 accumulated_messages=accumulated_messages,
                 iteration=iteration,
                 runtime_handler=runtime_handler,
             ):
+                boundary_applied = True
                 yield event
+            if would_stop and not boundary_applied:
+                # Stale revive (108.2 B3): the snapshot promised a forced row
+                # that the queue no longer reports (cancelled or taken since
+                # the last refresh), so the boundary applied nothing. Stop the
+                # run instead of spending an extra assistant-ending model call.
+                if self._bridge_owner is not None:
+                    await self._bridge_owner.finish_host_turn()
+                break
 
     async def _inject_before_agent_turn_messages(
         self,
@@ -1384,20 +1477,6 @@ class SloAgent:
         finally:
             self._teardown_run_state()
 
-    def steer(self, message: str | BaseMessage) -> None:
-        """Queue a message to inject before the next agent turn.
-
-        Steering enqueued before ``invoke`` is called is drained into the
-        first turn's message list. Steering enqueued during a run is drained
-        between turns.
-
-        Args:
-            message (str | BaseMessage): Either raw text or a prebuilt
-                LangChain message.
-        """
-        msg: BaseMessage = HumanMessage(content=message) if isinstance(message, str) else message
-        self._steering_queue.put_nowait(msg)
-
     async def _prepare_aborted_terminal(
         self,
         *,
@@ -1563,20 +1642,6 @@ class SloAgent:
             messages.extend(self._history_to_messages(history=history))
         messages.append(HumanMessage(content=query))
         return messages
-
-    def _drain(self, queue: asyncio.Queue[BaseMessage]) -> list[BaseMessage]:
-        """Drain an asyncio.Queue into a list, leaving the queue empty.
-
-        Args:
-            queue (asyncio.Queue[BaseMessage]): The queue to drain.
-
-        Returns:
-            list[BaseMessage]: Items in FIFO order.
-        """
-        drained: list[BaseMessage] = []
-        while not queue.empty():
-            drained.append(queue.get_nowait())
-        return drained
 
     def _chunk_message_delta(self, chunk: dict) -> list[BaseMessage]:
         """Extract the new messages a node added in one ``stream_mode='updates'`` chunk.
@@ -1773,24 +1838,30 @@ class SloAgent:
         self,
         *,
         runtime_handler: Optional[AgentRuntimeHandler],
-        messages: list[BaseMessage],
+        deliveries: list[BoundaryDeliveryDAO],
     ) -> None:
-        """Emit one ``steering_message`` trace per drained steering message.
+        """Emit one ``steering_message`` trace per taken forced delivery.
+
+        Each trace carries the delivery's ``channel_message_id`` in the
+        payload metadata — the persisted-history record the crash-recovery
+        rule reads (108.2 F4).
 
         Args:
             runtime_handler (Optional[AgentRuntimeHandler]): The trace observer.
-            messages (list[BaseMessage]): Drained steering messages.
+            deliveries (list[BoundaryDeliveryDAO]): The taken forced deliveries.
         """
-        for message in messages:
+        for delivery in deliveries:
             await self._emit_trace_event(
                 runtime_handler=runtime_handler,
                 event=AgentRuntimeEventDAO(
                     kind="steering_message",
                     iteration=self._current_iteration,
                     payload=AgentRuntimePayloadDAO(
-                        content=(
-                            message.content if isinstance(message.content, str) else str(message.content)
-                        ),
+                        content=delivery.text,
+                        metadata={
+                            "channel_message_id": str(delivery.message_id),
+                            "sender_name": delivery.sender_name,
+                        },
                     ),
                 ),
             )
@@ -1798,31 +1869,32 @@ class SloAgent:
     @staticmethod
     def _steering_applied_events(
         *,
-        messages: list[BaseMessage],
+        deliveries: list[BoundaryDeliveryDAO],
         iteration: int,
     ) -> list[AgentStreamEventDAO]:
-        """Build one ``steering_applied`` stream event per drained steer message.
+        """Build one ``steering_applied`` stream event per taken forced delivery.
 
-        These let the interactive surface render a queued steer as a regular
-        user message the moment the agent actually folds it into the model
-        context — the visible counterpart to the pending marker the TUI
-        shows when the steer is first queued.
+        These let the interactive surface render a forced row as a regular
+        user message the moment the agent folds it into the model context.
 
         Args:
-            messages (list[BaseMessage]): Drained steering messages.
-            iteration (int): The iteration the messages were folded into.
+            deliveries (list[BoundaryDeliveryDAO]): The taken forced deliveries.
+            iteration (int): The iteration the deliveries were folded into.
 
         Returns:
-            list[AgentStreamEventDAO]: One ``steering_applied`` event each.
+            list[AgentStreamEventDAO]: One ``steering_applied`` event each,
+                carrying the delivery's ``channel_message_id`` and sender
+                label so the transcript can credit external senders.
         """
         events: list[AgentStreamEventDAO] = []
-        for message in messages:
-            content: str = message.content if isinstance(message.content, str) else str(message.content)
+        for delivery in deliveries:
             events.append(
                 AgentStreamEventDAO(
                     kind="steering_applied",
                     iteration=iteration,
-                    content=content,
+                    content=delivery.text,
+                    channel_message_id=delivery.message_id,
+                    sender_name=delivery.sender_name,
                 )
             )
         return events

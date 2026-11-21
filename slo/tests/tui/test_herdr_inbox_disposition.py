@@ -162,7 +162,6 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
             patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
             patch.object(session, "invoke", wraps=session.invoke) as invoke,
             patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
-            patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
             patch.object(
                 app._input._prompt_history, "record", wraps=app._input._prompt_history.record
             ) as history,
@@ -189,9 +188,7 @@ async def test_inbox_delivery_disposition(tmp_path: Path, case: str) -> None:
             assert invoke.call_count == int(delivered and message.delivery_mode == "chat_turn")
             assert ack_spy.await_count == int(delivered)
             echo.assert_not_called()
-            queue.assert_not_called()
             history.assert_not_called()
-            assert app._queued_prompt_text is None
             if case == "empty":
                 assert list(tmp_path.rglob(f"*{message.message_id}.json")) == []
                 return
@@ -413,7 +410,6 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
                 app._input._prompt_history, "record", wraps=app._input._prompt_history.record
             ) as history,
             patch.object(app._chat_transcript, "echo_user", wraps=app._chat_transcript.echo_user) as echo,
-            patch.object(app, "_queue_prompt", wraps=app._queue_prompt) as queue,
             patch.object(app, "_advance_workflow_handle_state", side_effect=advance),
             patch.object(app._chat_transcript, "handle", side_effect=write),
             patch.object(store, "ack", wraps=store.ack) as ack,
@@ -436,7 +432,6 @@ async def test_durable_advance_then_shutdown(tmp_path: Path, throwing_notice: bo
                 invoke.assert_not_called()
                 history.assert_not_called()
                 echo.assert_not_called()
-                queue.assert_not_called()
                 assert app._in_flight_task is None
                 path = inbox_file(root=tmp_path, message=message)
                 assert path.parent.name == "claimed" and path.read_bytes() == before
@@ -483,9 +478,18 @@ async def assert_restart_retains_claim(
             path = inbox_file(root=root, message=message)
             assert path.parent.name == "claimed" and path.read_bytes() == original_bytes
             await restarted._submit_or_queue_prompt(text="explicit subsequent user prompt")
-            task = restarted._in_flight_task
-            assert task is not None
-            await asyncio.wait_for(task, timeout=5)
+            deadline = asyncio.get_event_loop().time() + 10.0
+            poller = restarted._session.channel_poller
+            assert poller is not None
+            while invoke.call_count == 0:
+                if asyncio.get_event_loop().time() > deadline:
+                    raise AssertionError("channel poller never ran the admitted prompt")
+                await asyncio.sleep(0.02)
+            deadline = asyncio.get_event_loop().time() + 10.0
+            while poller.busy:
+                if asyncio.get_event_loop().time() > deadline:
+                    raise AssertionError("channel run never finished")
+                await asyncio.sleep(0.02)
             invoke.assert_called_once()
             events = await history.load_events(session_id=message.session_id)
             users = [event for event in events if event.kind == "user_message"]
@@ -579,7 +583,6 @@ async def test_already_registered_ack_pending_at_close(
                 assert abort.call_count == int(operator_abort)
                 path = inbox_file(root=tmp_path, message=message)
                 assert path.parent.name == "done" and path.read_bytes() == before
-                assert app._queued_prompt_text is None
                 assert not (tmp_path / "replacement-store").exists()
                 assert await store.claim_next(session_id=session.session_id) is None
                 events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(

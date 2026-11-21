@@ -283,7 +283,6 @@ async def test_all_owner_claim_pending(
                         stream_release.set()
                     await asyncio.wait_for(fut=registered[0], timeout=5)
                     session.unsubscribe(handler=stream_barrier)
-                    assert app._queued_prompt_text is None
                     assert not (tmp_path / "displaced").exists()
                 else:
                     ack_spy.assert_not_called()
@@ -360,7 +359,6 @@ async def test_all_owner_claim_pending(
                 await restored_app._poll_session_inbox()
                 invoke.assert_not_called()
                 assert restored_app._in_flight_task is None
-                assert restored_app._queued_prompt_text is None
                 path = inbox_file(root=tmp_path, message=message)
                 assert path.parent.name == "claimed"
                 assert path.read_bytes() == original_bytes

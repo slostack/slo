@@ -73,11 +73,9 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._chat_transcript.echo_user(text="old transcript")
-            await app._queue_prompt(text="held prompt")
             await pilot.pause()
             assert app._chat_transcript._transcript_content is not None
             children = tuple(app._chat_transcript._transcript_content.children)
-            queue = app._queued_prompt_block
             assert app._input is not None
             history = app._input._prompt_history
             pool = old.sub_agent_pool
@@ -121,8 +119,6 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             assert app._session is old
             assert tuple(old._subscribers) == subscribers
             assert not preparation.done()
-            assert app._queued_prompt_block is queue
-            assert app._queued_prompt_text == "held prompt"
             assert app._input._prompt_history is history
             assert tuple(app._chat_transcript._transcript_content.children)[: len(children)] == children
             assert await app._lease_store.read(session_id=old.session_id) == lease
@@ -201,14 +197,12 @@ async def test_new_prepared_policy_is_independent(
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            await app._queue_prompt(text="discard on success")
             with patch.object(app, "_attach_pool_to_session", side_effect=attach):
                 await app._start_new_session(requested_name=requested_name)
             assert len(candidates) == 1
             assert app._session is candidates[0]
             assert app._session.session_id != old.session_id
             assert app._session.session_name == requested_name
-            assert app._queued_prompt_text is None and app._queued_prompt_block is None
             assert app._render_event not in old._subscribers
             assert app._render_event in app._session._subscribers
             assert old.sub_agent_pool is not None and not old.sub_agent_pool._sealed

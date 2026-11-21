@@ -169,7 +169,9 @@ class TranscriptProjectionAdapter:
                 case AgentStreamEventDAO():
                     await self._project(event=event)
                 case ProjectUserTurnDAO():
-                    await self._project_user_turn(text=event.text, before=event.before)
+                    await self._project_user_turn(
+                        text=event.text, before=event.before, sender_name=event.sender_name
+                    )
                 case ProjectReplayEntryDAO():
                     await self._project_replay_entry(entry=event.entry, before=event.before)
                 case _:
@@ -460,17 +462,43 @@ class TranscriptProjectionAdapter:
             )
         )
 
-    async def _project_user_turn(self, *, text: str, before: Optional[int] = None) -> None:
+    async def _project_user_turn(
+        self,
+        *,
+        text: str,
+        before: Optional[int] = None,
+        sender_name: Optional[str] = None,
+    ) -> None:
         """Add a user message and record its text before the agent starts.
 
         Add a turn separator if there is earlier content. Insert at the requested
-        child position, or append when no position is supplied.
+        child position, or append when no position is supplied. A forced steering
+        delivery from an external sender carries a ``sender_name`` label the
+        transcript shows so the row is credited to its sender (108.2).
+
+        Args:
+            text (str): The user message text to mount.
+            before (Optional[int]): Child index to insert before; ``None`` appends.
+            sender_name (Optional[str]): Sender label shown when it is not the
+                operator; ``None`` or ``"you"`` renders the plain operator line.
         """
         separated = await self._host.mount_turn_separator_if_needed(before=before)
         if separated and before is not None:
             before += 1
         await self._host.mount_user_message_block(text=text, before=before)
-        self._host.record_transcript_line(content=f"> {text}", classes="user-line")
+        self._host.record_transcript_line(content=self._user_turn_line(text=text, sender_name=sender_name), classes="user-line")
+
+    @staticmethod
+    def _user_turn_line(*, text: str, sender_name: Optional[str]) -> str:
+        """Build the copyable transcript line for one user turn.
+
+        External forced senders (orchestrator, Telegram) are labelled so the
+        line shows who sent the row (108.2); the operator's own line stays
+        unchanged.
+        """
+        if sender_name is None or sender_name == "you":
+            return f"> {text}"
+        return f"> [{sender_name}] {text}"
 
     async def _project_replay_entry(
         self,

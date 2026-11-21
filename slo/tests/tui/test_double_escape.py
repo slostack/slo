@@ -66,10 +66,12 @@ async def test_two_escapes_cancel_real_run_and_persist_aborted_history(
         assert not app.query_one(PromptInputComponent)._slash_suggestion_state.visible
         assert not any("(aborting" in text for text, _ in transcript_lines(app=app))
         await pilot.press("escape")
-        await pump_until(pilot=pilot, predicate=lambda: app._in_flight_task is None, max_cycles=100)
+        poller = session.channel_poller
+        assert poller is not None
+        await pump_until(pilot=pilot, predicate=lambda: not poller.busy, max_cycles=100)
         lines = transcript_lines(app=app)
         assert sum("(aborting" in text for text, _ in lines) == 1
-        assert app._in_flight_task is None
+        assert not poller.busy
         assert not session.is_running
     events = await history.load_events(session_id=session.session_id)
     assert [event.kind for event in events].count("run_aborted") == 1

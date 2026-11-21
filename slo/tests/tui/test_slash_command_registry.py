@@ -42,6 +42,7 @@ class TestSlashCommandRegistry:
             "code",
             "cwd",
             "abort",
+            "queue",
             "steer",
             "auth",
             "workflows",

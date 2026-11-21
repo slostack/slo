@@ -153,8 +153,8 @@ async def test_claim_retained_on_shutdown(tmp_path: Path, cutoff: str) -> None:
                         await asyncio.wait_for(shutdown, timeout=5)
 
 
-async def test_prompt_registration_shutdown_local_echo_pending(tmp_path: Path) -> None:
-    """Public shutdown during the real echo must refuse final task registration."""
+async def test_prompt_registration_shutdown_refuses_channel_send(tmp_path: Path) -> None:
+    """Public shutdown refuses a late ordinary prompt: no queue row is inserted."""
     with patch(
         "src.agents.slo_agent.graph.LLMFactory.create",
         return_value=LLMBuildResult(
@@ -166,39 +166,12 @@ async def test_prompt_registration_shutdown_local_echo_pending(tmp_path: Path) -
             config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history", model_name="gpt-5.4")
         )
         app = SloTUI(session=session)
-        entered = asyncio.Event()
-        release = asyncio.Event()
-        original_echo = app._chat_transcript.echo_user
-
-        async def echo(*, text: str) -> None:
-            """Pause the actual echo while retaining the real submission lock."""
-            await original_echo(text=text)
-            entered.set()
-            await release.wait()
-
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(app._chat_transcript, "echo_user", side_effect=echo):
-                submission = asyncio.create_task(coro=app._submit_or_queue_prompt(text="late prompt"))
-                shutdown = None
-                registered = None
-                try:
-                    await asyncio.wait_for(entered.wait(), timeout=5)
-                    shutdown = asyncio.create_task(coro=app.on_unmount())
-                    # The public shutdown prefix runs before its first suspension.
-                    await asyncio.sleep(0)
-                    assert app._app_closing
-                    assert app._prompt_submission_lock.locked()
-                    release.set()
-                    await asyncio.wait_for(submission, timeout=5)
-                    registered = app._in_flight_task
-                    assert registered is None
-                finally:
-                    release.set()
-                    await asyncio.wait_for(submission, timeout=5)
-                    # Baseline may have registered a task: drain outside the gate.
-                    registered = registered or app._in_flight_task
-                    if registered is not None:
-                        await asyncio.wait_for(registered, timeout=5)
-                    if shutdown is not None:
-                        await asyncio.wait_for(shutdown, timeout=5)
+            await app.on_unmount()
+            assert app._app_closing
+            await app._submit_or_queue_prompt(text="late prompt")
+            adapter = app.channel_adapter
+            assert adapter is not None
+            assert await adapter.queued() == []
+

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Callable, Optional
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -32,7 +32,6 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
-from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from tests.tui._scroll_settle import pump_until
 from tests.tui.authentication._painted_output import painted_widget_strips
 
@@ -152,7 +151,9 @@ def _recording_invoke(
             ``SloAgentSession.invoke``.
     """
 
-    async def _invoke(*, text: str) -> AsyncIterator[AgentStreamEventDAO]:
+    async def _invoke(
+        *, text: str, channel_message_id: Optional[UUID] = None
+    ) -> AsyncIterator[AgentStreamEventDAO]:
         invoke_log.append(text)
         await release.wait()
         yield AgentStreamEventDAO(kind="text_delta", delta="ok")
@@ -285,53 +286,6 @@ class TestPromptInputRulesGeometry:
 
 class TestPromptInputRulesNeighbours:
     """The rules change no neighbour placement and never become editor text."""
-
-    async def test_rules_when_queue_and_suggestions_visible(self, tmp_path: Path) -> None:
-        """Queue stays above the editor; suggestions and status bar stay visible and nonoverlapping."""
-        session: SloAgentSession = _build_session(workdir=tmp_path)
-        app: SloTUI = SloTUI(session=session)
-        invoke_log: list[str] = []
-        release: asyncio.Event = asyncio.Event()
-
-        with patch.object(
-            target=session, attribute="invoke", new=_recording_invoke(invoke_log=invoke_log, release=release)
-        ):
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
-                await _submit_prompt(app=app, pilot=pilot, text="first")
-                await _submit_prompt(app=app, pilot=pilot, text="queued second")
-                # A narrowed query keeps the menu short. A bare "/" sizes the menu from the screen
-                # height alone and overflows the viewport with or without these rules (pre-existing
-                # SlashSuggestionMenu capacity defect, recorded in the T01 evidence; not a frame concern).
-                prompt_input.load_text("/he")
-                await pilot.pause()
-
-                queued_blocks: list[QueuedPromptBlock] = list(app.query(QueuedPromptBlock))
-                assert app._in_flight_task is not None
-                assert invoke_log == ["first"]
-                assert len(queued_blocks) == 1
-                assert prompt_input._slash_suggestion_state.visible is True
-                assert app._suggestion_menu is not None and app._usage_status_bar is not None
-                queue_region = queued_blocks[0].region
-                menu_region = app._suggestion_menu.region
-                status_region = app._usage_status_bar.region
-                editor_region = prompt_input.region
-
-                assert queue_region.bottom <= editor_region.y
-                assert menu_region.bottom <= queue_region.y
-                assert editor_region.bottom <= status_region.y
-                assert status_region.height >= 1 and status_region.bottom <= app.screen.region.bottom
-                assert menu_region.height >= 1
-                PaintedPromptFrame.capture(app=app).assert_horizontal_rules(width=editor_region.width)
-
-                prompt_input.load_text("")
-                release.set()
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: app._in_flight_task is None and app._queued_prompt_text is None,
-                )
-                assert invoke_log == ["first", "queued second"]
 
     async def test_editor_text_excludes_rules(self, tmp_path: Path) -> None:
         """Typed, copied, submitted and recalled prompt text contains no rule or corner glyph."""

@@ -14,6 +14,7 @@ import pytest
 from src.agents.base import LLMBuildResult
 from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.boundary_inbox import MemoryBoundaryInbox
 from src.agents.slo_agent.history.dao import SessionHistoryMetadataDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.orchestrator.dao import ChildAbortRequestDAO
@@ -496,22 +497,35 @@ class TestSloAgentSessionSubscribers:
 
 
 class TestSloAgentSessionPassThroughs:
-    """``steer`` / ``abort`` delegate to the underlying agent."""
+    """``boundary_inbox`` / ``abort`` ownership of the underlying agent."""
 
-    @pytest.mark.asyncio
-    async def test_steer_delegates_to_agent(self, tmp_path: Path) -> None:
-        """``session.steer(message=...)`` → ``agent.steer(message=...)``."""
+    async def test_session_owns_a_memory_boundary_inbox_shared_with_the_agent(self, tmp_path: Path) -> None:
+        """Without channel delivery the session's inbox is a shared memory inbox."""
         session: SloAgentSession = _build_faux_session(
             workdir=tmp_path,
             responses=[FauxChatModel.assistant_message(content="hi")],
         )
+        inbox = session.boundary_inbox
+        assert isinstance(inbox, MemoryBoundaryInbox)
+        assert session.agent.boundary_inbox is inbox
 
-        with patch.object(session._agent, "steer") as mock_steer:
-            session.steer(message="x")
+    async def test_agent_inbox_receives_enqueued_text_before_a_run(self, tmp_path: Path) -> None:
+        """A message enqueued on the session's inbox reaches the agent's first boundary."""
+        session: SloAgentSession = _build_faux_session(
+            workdir=tmp_path,
+            responses=[FauxChatModel.assistant_message(content="ack")],
+        )
+        session.boundary_inbox.enqueue(text="please be terse")
+        applied: list[str] = []
+        final_response: str = ""
+        async for event in session.invoke(text="hello"):
+            if event.kind == "steering_applied":
+                applied.append(event.content or "")
+            if event.kind == "run_completed":
+                final_response = event.content or ""
+        assert applied == ["please be terse"]
+        assert final_response == "ack"
 
-        mock_steer.assert_called_once_with(message="x")
-
-    @pytest.mark.asyncio
     async def test_abort_delegates_to_agent(self, tmp_path: Path) -> None:
         """``session.abort()`` calls through to ``agent.abort()`` once."""
         session: SloAgentSession = _build_faux_session(

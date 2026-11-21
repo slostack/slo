@@ -104,15 +104,19 @@ class PromptInputComponent(TextArea):
         """Request explicit path discovery for the current cursor."""
 
     class Submitted(_PromptIntent):
-        """Posted when the user presses Enter to submit the buffer."""
+        """Posted when the user submits the buffer with one of the Enter keys."""
 
-        def __init__(self, *, text: str) -> None:
-            """Carry the submitted text.
+        def __init__(self, *, text: str, force: bool = False) -> None:
+            """Carry the submitted text and whether it is forced (108.2).
 
             Args:
                 text (str): The full multi-line buffer at submit time.
+                force (bool): True for Ctrl+Enter / Alt+Enter — the message
+                    joins the current run at its next safe boundary instead
+                    of waiting for the run to end.
             """
             self.text: str = text
+            self.force: bool = force
             super().__init__()
 
     class SuggestionAccepted(_PromptIntent):
@@ -378,9 +382,16 @@ class PromptInputComponent(TextArea):
         if event.key == "enter":
             event.prevent_default()
             event.stop()
-            self.post_message(self.Submitted(text=self.text))
+            self.post_message(self.Submitted(text=self.text, force=False))
             return
-        if event.key in {"shift+enter", "ctrl+enter", "meta+enter"}:
+        if event.key in {"ctrl+enter", "alt+enter"}:
+            # Ctrl+Enter (and Alt+Enter for terminals that report it as
+            # Enter) forces the message into the current run (108.2 F6).
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Submitted(text=self.text, force=True))
+            return
+        if event.key in {"shift+enter", "meta+enter"}:
             event.prevent_default()
             event.stop()
             self.insert("\n")

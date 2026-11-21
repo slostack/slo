@@ -27,7 +27,6 @@ from src.tui.app import SloTUI
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
-from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
 
@@ -252,22 +251,6 @@ class TestNoRegressionSweep:
             tool.toggle_expanded()
             await pilot.pause()
             assert "/[a-z]+/" in str(tool._expanded_body.content)
-
-    @pytest.mark.asyncio
-    async def test_steer_with_brackets_renders_literally_e2e(self) -> None:
-        """A mounted ``SteeringPendingBlock`` renders bracketed steer text literally."""
-        app: SloTUI = SloTUI(session=_build_session())
-
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
-            block: SteeringPendingBlock = SteeringPendingBlock(message="apply list[str] then [a-z]+")
-            await app.query_one(ChatTranscriptComponent)._transcript_content.mount(block)
-            await pilot.pause()
-
-            rendered: str = str(block.render())
-            assert "list[str]" in rendered
-            assert "[a-z]+" in rendered
 
     @pytest.mark.asyncio
     async def test_keyboard_block_copy_still_works_and_emits_osc52(self) -> None:

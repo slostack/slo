@@ -88,7 +88,7 @@ async def test_replacement_drains_gate_using_viewer(
                     await asyncio.gather(viewer, replacement, return_exceptions=True)
 
 
-@pytest.mark.parametrize("entry", ["submit", "accepted", "register", "queue", "handoff", "inbox", "viewer"])
+@pytest.mark.parametrize("entry", ["submit", "register", "inbox", "viewer"])
 async def test_transition_refuses_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
@@ -100,7 +100,6 @@ async def test_transition_refuses_admission(
     app = SloTUI(session=session)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._queued_prompt_text = "preserve"
         app._session_transitioning = True
         app._delivery_quiescing = False
         with (
@@ -110,18 +109,8 @@ async def test_transition_refuses_admission(
             patch.object(app._inbox_store, "claim_next", return_value=None) as claim,
         ):
             async with app._prompt_submission_lock:
-                if entry == "accepted":
-                    await app._start_accepted_prompt(text="refused")
-                elif entry == "register":
+                if entry == "register":
                     app._register_prompt_task(text="refused")
-                elif entry == "queue":
-                    await app._queue_prompt(text="refused")
-                elif entry == "handoff":
-                    task = asyncio.current_task()
-                    assert task is not None
-                    app._in_flight_task = task
-                    await app._start_queued_prompt_if_idle(completed_task=task)
-                    app._in_flight_task = None
                 elif entry == "inbox":
                     await app._claim_and_handle_idle_inbox_message()
                 elif entry == "viewer":
@@ -138,7 +127,6 @@ async def test_transition_refuses_admission(
             echo.assert_not_called()
             viewer.assert_not_called()
             claim.assert_not_called()
-            assert app._queued_prompt_text == "preserve"
 
 
 @pytest.mark.parametrize("shutdown", [False, True])

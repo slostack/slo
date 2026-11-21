@@ -37,6 +37,10 @@ from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
+from src.channels.gateway import ChannelGateway
+from src.tui.channel.adapter import TuiChannelAdapter
+from src.tui.channel.runner import TuiTurnRunner
+from src.tui.keyboard_capability import ctrl_enter_hint_line
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.components.chat_transcript.commands import (
     SetTranscriptVisibilityDAO,
@@ -49,7 +53,6 @@ from src.tui.components.chat_transcript.commands import (
     BindHistoryDAO,
     ClearTranscriptDAO,
     BeginTranscriptRunDAO,
-    ShowPendingSteeringDAO,
     MountTreeOutputDAO,
 )
 from src.tui.components.workflow_progress.component import WorkflowProgressComponent
@@ -80,9 +83,7 @@ from src.tui.editor_launcher import EditorLauncher
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
-from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
-from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.tree_html_exporter import TreeHtmlExporter
@@ -286,6 +287,7 @@ class SloTUI(App):
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
         path_reader: Optional[PathSuggestionReader] = None,
         editor_launcher: Optional[EditorLauncher] = None,
+        channel_gateway: Optional[ChannelGateway] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -313,6 +315,10 @@ class SloTUI(App):
             workflow_service_factory: Optional real-service composition boundary.
             workflow_coordinator_factory: Optional coordinator composition boundary;
                 defaults to the production coordinator with the app-owned sink.
+            channel_gateway (Optional[ChannelGateway]): Optional injected channel
+                gateway (108.1). ``None`` opens the shared ``channels.db``
+                gateway at mount; the app owns the gateway's lifecycle in both
+                cases.
         """
         super().__init__()
         self._session_factory = session_factory
@@ -362,10 +368,6 @@ class SloTUI(App):
         self._in_flight_task: Optional[asyncio.Task[None]] = None
         self._prompt_submission_lock: asyncio.Lock = asyncio.Lock()
         """Serializes ordinary-prompt acceptance and run-completion handoff only."""
-        self._queued_prompt_text: Optional[str] = None
-        """One-deep latest-wins ordinary text not yet accepted as a user turn."""
-        self._queued_prompt_block: Optional[QueuedPromptBlock] = None
-        """Mounted visual counterpart of ``_queued_prompt_text``, when mounted."""
         self._spinner: Optional[ThinkingSpinner] = None
         self._path_suggestions = PathSuggestionController(
             view=self, reader=path_reader, run_worker=self.run_worker
@@ -397,6 +399,8 @@ class SloTUI(App):
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
         self._lease_timer: Optional[Timer] = None
+        self._channel_gateway: Optional[ChannelGateway] = channel_gateway
+        self._channel_adapter: Optional[TuiChannelAdapter] = None
         self._inbox_timer: Optional[Timer] = None
         self._failed_delivery_timers: tuple[Timer, ...] = ()
 
@@ -657,6 +661,11 @@ class SloTUI(App):
                 classes="tool-result",
             )
         )
+        hint_line: Optional[str] = ctrl_enter_hint_line()
+        if hint_line is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(content=hint_line, classes="tool-result")
+            )
         await session.mark_startup_notice_shown()
 
     @staticmethod
@@ -874,10 +883,16 @@ class SloTUI(App):
         report is admitted after shutdown begins; the joins reuse the retained
         mount/replacement tasks outside ``_prompt_submission_lock`` and the one
         shielded observation close task — no second shutdown owner is created.
+        Channel delivery (108.1) stops first so the session participant closes
+        before presentation pruning.
         """
         self._app_closing = True
         self._delivery_quiescing = True
         self._session.begin_external_reporting_close()
+        try:
+            await self._stop_channel_delivery(reason="session_closed")
+        except Exception as exc:  # noqa: BLE001 — shutdown must continue
+            log_error(msg=f"channel delivery shutdown failed: {exc}")
         if self._mount_runtime_task is not None:
             await HerdrTaskJoin.wait(task=self._mount_runtime_task)
         if self._session_replacement_task is not None:
@@ -998,9 +1013,11 @@ class SloTUI(App):
         self._retired_herdr_session = None
 
     async def _initialize_mounted_delivery(self) -> None:
-        """Retain mount-owned filesystem work under the submission gate."""
+        """Start channel delivery, then retain mount-owned filesystem work."""
+        await self._start_channel_delivery()
         async with self._prompt_submission_lock:
             await self._finish_replacement_runtime()
+        await self._announce_recovered_queue_pause()
 
     async def _initialize_session_delivery(self) -> None:
         """Contain partial startup before mount or replacement continues."""
@@ -1487,13 +1504,21 @@ class SloTUI(App):
         )
 
     def _inbox_delivery_may_start(self) -> bool:
-        """Return delivery authority under the caller-owned submission gate."""
+        """Return delivery authority under the caller-owned submission gate.
+
+        One run owner holds the session at a time (108.1): delivery defers
+        while an app-owned task, the channel poller, or any session run is in
+        flight, so an inbox item is never claimed mid-run and never races a
+        channel row for the session's single prompt slot.
+        """
         return (
             not self._app_closing
             and not self._session_transitioning
             and not self._delivery_quiescing
             and self._replacement_delivery_safe
             and self._in_flight_task is None
+            and not self._channel_poller_busy()
+            and not self._session.is_running
         )
 
     async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> bool:
@@ -1868,17 +1893,23 @@ class SloTUI(App):
             # on ``session.is_running``.
             await self._dispatch_slash_command(line=text)
             return
-        await self._submit_or_queue_prompt(text=text)
+        await self._submit_or_queue_prompt(text=text, force=event.force)
 
-    async def _submit_or_queue_prompt(self, *, text: str) -> None:
-        """Accept an idle ordinary prompt or replace the one held behind a run.
+    async def _submit_or_queue_prompt(self, *, text: str, force: bool = False) -> None:
+        """Record an ordinary prompt and enqueue it as a channel queue row (108.1).
 
-        WHAT: Makes the app's task check and its consequent state transition atomic.
-        WHO: ``on_prompt_input_component_submitted`` calls it for non-slash non-empty input.
-        WHEN: Runs at operator submission time; it does not hold the lock during a run.
+        WHAT: Replaces the one-deep held-prompt slot: every ordinary prompt is
+        accepted immediately and sent through the TUI channel adapter; the
+        session's channel poller runs the rows in order. A forced submission
+        (108.2, Ctrl+Enter) stamps the row so it joins the current run at its
+        next safe boundary instead of waiting for the run to end.
+        WHO: ``on_prompt_input_component_submitted`` calls it for non-slash
+        non-empty input.
+        WHEN: At operator submission time; it never blocks on a running turn.
 
         Args:
             text (str): Normalized ordinary prompt text.
+            force (bool): True marks the row forced (108.2).
         """
         if self._app_closing or self._session_transitioning:
             return
@@ -1891,38 +1922,73 @@ class SloTUI(App):
                     )
                 )
             return
-        async with self._prompt_submission_lock:
-            if self._app_closing or self._session_transitioning:
-                return
-            if self._in_flight_task is not None:
-                await self._queue_prompt(text=text)
-                return
-            await self._start_accepted_prompt(text=text)
-
-    async def _start_accepted_prompt(self, *, text: str) -> None:
-        """Record, echo, and start one already-admitted ordinary prompt.
-
-        WHAT: Converts text from either idle input or completion drain into a real
-        user turn and starts the single app task.
-        WHO: The submission and completion-handoff methods call it while holding
-        ``_prompt_submission_lock``.
-        WHEN: Only after the caller has established that no other app task may start.
-
-        Args:
-            text (str): Accepted text to persist through the normal session invoke path.
-        """
-        if self._app_closing or self._session_transitioning:
-            return
         if self._input is not None:
             await self._input.handle(command=RecordAcceptedPromptDAO(text=text))
-        await self._chat_transcript.handle(command=EchoUserDAO(text=text))
-        self._register_prompt_task(text=text)
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Channel delivery unavailable; prompt not queued.",
+                        classes="tool-result",
+                    )
+                )
+            return
+        try:
+            await adapter.send_prompt(text=text, force=force)
+        except Exception as exc:  # noqa: BLE001 — a locked/corrupt DB must not lose the text
+            if self._input is not None:
+                await self._input.handle(command=ReplacePromptDAO(text=text))
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=f"(channel send failed: {exc})",
+                        classes="tool-result",
+                    )
+                )
+
+    async def _send_forced_slash_prompt(self, *, text: str) -> None:
+        """Enqueue one slash-command forced message (``/steer`` / ``/force``, 108.2).
+
+        The row is sent like any forced send (``force=True``), so it joins the
+        current run at its next safe boundary, or runs at once when the agent
+        is idle. A channel-delivery failure shows a notice and keeps the text
+        in the prompt buffer.
+
+        Args:
+            text (str): The forced message body from the slash command.
+        """
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Channel delivery unavailable; forced message not queued.",
+                        classes="tool-result",
+                    )
+                )
+            return
+        try:
+            await adapter.send_prompt(text=text, force=True)
+        except Exception as exc:  # noqa: BLE001 — a locked/corrupt DB must not lose the text
+            if self._input is not None:
+                await self._input.handle(command=ReplacePromptDAO(text=text))
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=f"(channel send failed: {exc})",
+                        classes="tool-result",
+                    )
+                )
+
+    # ---- Channel delivery (108.1) ------------------------------------------
 
     def _register_prompt_task(self, *, text: str) -> bool:
-        """Commit prompt admission under the caller-owned submission lock.
+        """Commit a legacy app-owned run task (inbox ``chat_turn`` bridge only).
 
-        No rendering, callback or suspension may separate the closing check from
-        task registration. Already registered runs retain their execution policy.
+        Ordinary operator prompts run through the channel poller (108.1); this
+        app-owned task path remains only for the legacy inbox bridge until
+        108.3/108.6 retire it.
 
         Args:
             text (str): Accepted prompt text, never logged by this gate.
@@ -1935,57 +2001,87 @@ class SloTUI(App):
         self._in_flight_task = asyncio.create_task(coro=self._run_prompt(text=text))
         return True
 
-    async def _queue_prompt(self, *, text: str) -> None:
-        """Store the newest held text and mount or update its one visible block.
+    @property
+    def channel_adapter(self) -> Optional[TuiChannelAdapter]:
+        """Return the TUI channel adapter when channel delivery is active.
 
-        WHAT: Applies one-deep latest-wins policy without creating a user turn.
-        WHO: ``_submit_or_queue_prompt`` calls it under the submission gate.
-        WHEN: An ordinary prompt arrives while an app-owned run task is active.
+        Returns:
+            Optional[TuiChannelAdapter]: The adapter started at mount, or
+                ``None`` when startup failed (the transcript shows a notice).
+        """
+        return self._channel_adapter
+
+    async def _start_channel_delivery(self) -> None:
+        """Open the gateway, start the TUI adapter, and start the session poller.
+
+        Startup failure leaves local prompts available with a notice instead of
+        killing the mount (mirrors the inbox startup posture). A poller that
+        started paused after crash recovery (108.1 §6) gets a visible notice
+        naming ``/queue resume``; the poller owns the pause, the TUI owns the
+        presentation.
+        """
+        if self._channel_adapter is not None:
+            return
+        try:
+            if self._channel_gateway is None:
+                self._channel_gateway = await ChannelGateway.default()
+            adapter: TuiChannelAdapter = TuiChannelAdapter(app=self, gateway=self._channel_gateway)
+            await adapter.start()
+            await self._session.start_channel_delivery(
+                gateway=self._channel_gateway,
+                runner=TuiTurnRunner(app=self),
+                operator_participant_id=adapter.user_participant.id,
+            )
+            self._channel_adapter = adapter
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not block the TUI
+            log_error(msg=f"channel delivery startup failed: {exc}")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Channel queue unavailable; prompts stay local.",
+                        classes="tool-result",
+                    )
+                )
+
+    async def _announce_recovered_queue_pause(self) -> None:
+        """Show the recovery pause notice when the poller started paused.
+
+        Runs after the mount presentation refresh so the notice survives the
+        mount-time transcript hydration that resets recorded lines.
+        """
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        poller = self._session.channel_poller
+        if adapter is None or poller is None or poller.paused != "recovered":
+            return
+        if self._chat_transcript is None:
+            return
+        pending_count: int = len([row for row in await adapter.queued() if row.message_type == "prompt"])
+        await self._chat_transcript.handle(
+            command=TranscriptNoticeDAO(
+                content=(
+                    f"(channel queue paused after restart — {pending_count} queued "
+                    "prompt(s) held; /queue resume to continue)"
+                ),
+                classes="tool-result",
+            )
+        )
+
+    async def _stop_channel_delivery(self, *, reason: str) -> None:
+        """Stop the session poller, the adapter, and close the shared gateway.
 
         Args:
-            text (str): Newest ordinary prompt text.
+            reason (str): Cancellation reason recorded on pending rows, e.g.
+                ``session_closed``.
         """
-        if self._app_closing or self._session_transitioning:
-            return
-        self._queued_prompt_text = text
-        if self._queued_prompt_block is not None:
-            self._queued_prompt_block.replace_text(text=text)
-            return
-        await self._mount_queued_prompt_block(text=text)
-
-    async def _mount_queued_prompt_block(self, *, text: str) -> None:
-        """Mount the visible held-prompt block directly above the prompt input.
-
-        WHAT: Anchors the block as a ``#chat-shell`` child immediately before
-        ``PromptInputComponent`` — outside the scroll region, so it stays visible while
-        the transcript scrolls and window eviction can never reach it.
-        WHO: ``_queue_prompt`` calls it only for an empty visual slot.
-        WHEN: The first ordinary busy submission fills the one-deep queue.
-
-        Args:
-            text (str): Text to render in the new queued-prompt block.
-        """
-        if self._chat_shell is None or self._input is None:
-            return
-        block: QueuedPromptBlock = QueuedPromptBlock(text=text)
-        await self._chat_shell.mount(block, before=self._input)
-        self._queued_prompt_block = block
-
-    async def _remove_queued_prompt_block(self) -> None:
-        """Remove the current queue block and release its tracked reference.
-
-        WHAT: Keeps the block registered until its asynchronous Textual removal is
-        complete, then clears the tracked slot-block reference.
-        WHO: ``_start_queued_prompt_if_idle`` and the clear path call it under the
-        submission gate.
-        WHEN: Immediately before a held prompt becomes an echoed user turn, or when
-        ``/clear``/an allowed ``/new`` discards the held prompt.
-        """
-        block: Optional[QueuedPromptBlock] = self._queued_prompt_block
-        if block is None:
-            return
-        await block.remove()
-        self._queued_prompt_block = None
+        await self._session.stop_channel_delivery(reason=reason)
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        self._channel_adapter = None
+        if adapter is not None:
+            await adapter.stop()
+        gateway: Optional[ChannelGateway] = self._channel_gateway
+        self._channel_gateway = None
+        if gateway is not None:
+            await gateway.close()
 
     # ---- Actions ----------------------------------------------------------
 
@@ -1998,6 +2094,22 @@ class SloTUI(App):
         WHO: Textual invokes it for the ``ctrl+c`` key binding.
         WHEN: Whenever the operator presses ``^C`` while the TUI is mounted.
         """
+        if self._channel_poller_busy():
+            self._session.abort()
+            poller = self._session.channel_poller
+            if poller is not None:
+                poller.pause(reason="aborted")
+            self._escalate_abort()
+            if self._app_closing:
+                return
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="(aborting… queued prompts held — /queue resume to continue)",
+                        classes="tool-result",
+                    )
+                )
+            return
         if self._in_flight_task is None:
             self.exit()
             return
@@ -2005,35 +2117,22 @@ class SloTUI(App):
         self._escalate_abort()
         if self._app_closing:
             return
-        await self._announce_queued_prompt_survival()
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(
                 command=TranscriptNoticeDAO(content="(aborting…)", classes="tool-result")
             )
 
-    async def _announce_queued_prompt_survival(self) -> None:
-        """Explain that an abort retains the held prompt when one exists.
+    def _channel_poller_busy(self) -> bool:
+        """Return whether the channel poller currently owns a run (108.1).
 
-        WHAT: Writes one operator-facing notice without changing queue/task state.
-        WHO: ``action_interrupt`` and ``_dispatch_slash_command`` call it after an
-        abort has been requested.
-        WHEN: Only while a user-held prompt remains queued behind the aborted run.
+        Returns:
+            bool: True while the session's channel poller is executing a run.
         """
-        if self._queued_prompt_text is None:
-            return
-        if self._chat_transcript is not None:
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content=(
-                        "(queued prompt held — it will run next; resubmit to replace it, "
-                        "/clear to drop it)"
-                    ),
-                    classes="tool-result",
-                )
-            )
+        poller = self._session.channel_poller
+        return poller is not None and poller.busy
 
     def _escalate_abort(self) -> None:
-        """Schedule a hard cancel of the in-flight task after the abort grace.
+        """Schedule a hard cancel of the in-flight run after the abort grace.
 
         ``session.abort()`` is cooperative — it is only observed between
         agent graph stream items, so a run wedged inside a single hung tool
@@ -2043,15 +2142,40 @@ class SloTUI(App):
 
         The exact task is captured now and bound into the timer callback, so
         a run that aborts cooperatively and is replaced by a fresh prompt
-        within the grace window is never cancelled by this escalation.
+        within the grace window is never cancelled by this escalation. A
+        channel-poller run is bound the same way (108.2 §6: an aborted run's
+        escalation must never kill a later run, e.g. one started by
+        ``/queue resume``).
         """
         task: Optional[asyncio.Task[None]] = self._in_flight_task
-        if task is None:
+        if task is not None:
+            self.set_timer(
+                _ABORT_HARD_CANCEL_GRACE_SECONDS,
+                lambda: self._hard_cancel_task(task=task),
+            )
+            return
+        poller = self._session.channel_poller
+        channel_run_task: Optional[asyncio.Task] = poller.current_run_task if poller is not None else None
+        if channel_run_task is None:
             return
         self.set_timer(
             _ABORT_HARD_CANCEL_GRACE_SECONDS,
-            lambda: self._hard_cancel_task(task=task),
+            lambda: self._hard_cancel_channel_run_task(task=channel_run_task),
         )
+
+    def _hard_cancel_channel_run_task(self, *, task: asyncio.Task) -> None:
+        """Hard-cancel the exact channel run captured at abort time (108.2 §6).
+
+        Fired by the abort-grace timer. Cancels only the task that was in
+        flight when the abort was requested; a run started later (for example
+        by ``/queue resume`` after a cooperative abort) is never cancelled.
+
+        Args:
+            task (asyncio.Task): The channel run task captured at abort time.
+        """
+        if task.done():
+            return
+        task.cancel()
 
     def _hard_cancel_task(self, *, task: asyncio.Task[None]) -> None:
         """Cancel a specific in-flight task when its cooperative abort did not land.
@@ -2165,12 +2289,11 @@ class SloTUI(App):
         return service.live_workflow_labels()
 
     async def action_clear(self) -> None:
-        """Clear transcript state and discard any held ordinary prompt.
+        """Clear transcript state.
 
         WHAT: Removes visible transcript children and clears their app-owned state.
         WHO: The Ctrl+L binding and slash-command result dispatch call it.
-        WHEN: It may run while an agent task remains active; that task continues, but
-        the held next prompt is intentionally discarded.
+        WHEN: It may run while an agent task remains active; that task continues.
         """
         async with self._prompt_submission_lock:
             await self._clear_transcript_and_prompt_queue()
@@ -2178,13 +2301,12 @@ class SloTUI(App):
     async def _clear_transcript_and_prompt_queue(self) -> None:
         """Perform clear mutations while the prompt-submission gate is held.
 
-        WHAT: Drops queued prompt state before removing all transcript children, then
-        executes the existing projector/window/reset behavior.
+        WHAT: Executes the projector/window/reset behavior. Channel-queued
+        prompts (108.1) live in the shared queue, not the transcript; they are
+        managed with ``/queue`` (108.1 M2), never by ``/clear``.
         WHO: ``action_clear`` and an allowed ``_start_new_session`` call it.
-        WHEN: Runs only under ``_prompt_submission_lock`` to avoid a drain/clear race.
+        WHEN: Runs only under ``_prompt_submission_lock``.
         """
-        self._queued_prompt_text = None
-        await self._remove_queued_prompt_block()
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(command=ClearTranscriptDAO())
 
@@ -2361,12 +2483,8 @@ class SloTUI(App):
             return
         if result.abort_run:
             self._escalate_abort()
-            await self._announce_queued_prompt_survival()
-        if result.steer_pending_message is not None:
-            assert self._chat_transcript is not None
-            await self._chat_transcript.handle(
-                command=ShowPendingSteeringDAO(message=result.steer_pending_message)
-            )
+        if result.forced_prompt_text is not None:
+            await self._send_forced_slash_prompt(text=result.forced_prompt_text)
         if result.render_tree is not None:
             await self._mount_tree_viewer(tree=result.render_tree, tree_format=result.tree_format)
         git_diff_path: Optional[str] = result.git_diff_path if isinstance(result.git_diff_path, str) else None
@@ -2621,7 +2739,8 @@ class SloTUI(App):
     async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
         """Release the captured old binding before establishing any successor lease.
 
-        WHAT: Stops delivery timers and releases the old inbox lease. The old
+        WHAT: Stops the old session's channel delivery (108.1), stops delivery
+            timers and releases the old inbox lease. The old
             owner's workflow observation stays bound until predecessor retirement;
             ``_finish_replacement_commit`` closes it before adoption through the canonical
             coordinator → service → sink → panel teardown so no rows, caches
@@ -2632,6 +2751,10 @@ class SloTUI(App):
             old_session (SloAgentSession): Predecessor captured before adoption.
         """
         self._delivery_quiescing = True
+        try:
+            await old_session.stop_channel_delivery(reason="session_closed")
+        except Exception as exc:  # noqa: BLE001 — replacement must continue
+            log_error(msg=f"channel delivery stop on /new failed: {exc}")
         self._stop_delivery_timers()
         await self._release_replaced_session_lease(session=old_session)
         self._workflow_renderer = None
@@ -2759,6 +2882,16 @@ class SloTUI(App):
         session = self._session
         if not self._runtime_may_start(session=session):
             return
+        if session.channel_poller is None:
+            try:
+                if self._channel_gateway is None:
+                    self._channel_gateway = await ChannelGateway.default()
+                await session.start_channel_delivery(
+                    gateway=self._channel_gateway,
+                    runner=TuiTurnRunner(app=self),
+                )
+            except Exception as exc:  # noqa: BLE001 — replacement survives a broken queue
+                log_error(msg=f"channel delivery restart failed: {exc}")
         await self._ensure_workflow_observation_bound()
         if not self._runtime_may_start(session=session):
             return
@@ -3312,15 +3445,18 @@ class SloTUI(App):
         )
 
     async def _run_prompt(self, *, text: str) -> None:
-        """Drain ``session.invoke`` to completion.
+        """Drain ``session.invoke`` to completion for an app-owned legacy run.
 
         WHAT: Renders one run's stream events, surfaces failures inline, and
-        hands off to any held queued prompt from its ``finally``.
-        WHO: ``_start_accepted_prompt`` and ``_start_inbox_chat_turn`` schedule
-        it as the single app-owned run task.
-        WHEN: Once per accepted user turn or claimed inbox chat turn; success,
-        provider failure, cooperative abort, and hard cancellation all reach
-        the same terminal cleanup.
+        hands off to any held queued prompt from its ``finally``. Ordinary
+        operator prompts now run through the channel poller (108.1); this
+        path remains only for the legacy inbox ``chat_turn`` bridge until
+        108.3/108.6 retire it.
+        WHO: The inbox ``chat_turn`` handler schedules it as the single
+        app-owned run task.
+        WHEN: Once per claimed inbox chat turn; success, provider failure,
+        cooperative abort, and hard cancellation all reach the same terminal
+        cleanup.
 
         Args:
             text (str): The user prompt.
@@ -3362,52 +3498,20 @@ class SloTUI(App):
             await self._finish_prompt_run()
 
     async def _finish_prompt_run(self) -> None:
-        """Atomically hand off a completed run to its queued successor.
+        """Release the app run guard after a legacy app-owned run ends.
 
-        WHAT: Keeps the completed task as the app run guard until the queue is
-        consumed or the app becomes idle.
+        WHAT: Marks the app idle; the channel poller owns ordinary queued
+        prompts now, so there is no held-prompt handoff.
         WHO: ``_run_prompt`` calls it as its final cleanup step.
-        WHEN: Runs after successful, failed, aborted, or cancelled prompt runs.
+        WHEN: Runs after successful, failed, aborted, or cancelled legacy runs.
         """
         completed_task: Optional[asyncio.Task[None]] = self._in_flight_task
         if completed_task is None or completed_task is not asyncio.current_task():
             return
 
         async with self._prompt_submission_lock:
-            tracked_task: Optional[asyncio.Task[None]] = self._in_flight_task
-            if tracked_task is None or tracked_task is not completed_task:
-                return
-            await self._start_queued_prompt_if_idle(completed_task=tracked_task)
-
-    async def _start_queued_prompt_if_idle(
-        self,
-        *,
-        completed_task: asyncio.Task[None],
-    ) -> None:
-        """Consume the held prompt or mark the completed app run idle.
-
-        WHAT: Removes and starts the held prompt before releasing app task ownership.
-        WHO: ``_finish_prompt_run`` calls it while holding the submission gate.
-        WHEN: Immediately after the tracked run reaches its terminal cleanup.
-
-        Args:
-            completed_task (asyncio.Task[None]): The finished run task that must
-                still own the app run guard for the handoff to proceed.
-        """
-        if self._in_flight_task is not completed_task:
-            return
-        if self._app_closing or self._session_transitioning:
-            self._in_flight_task = None
-            return
-
-        text: Optional[str] = self._queued_prompt_text
-        if text is None:
-            self._in_flight_task = None
-            return
-
-        self._queued_prompt_text = None
-        await self._remove_queued_prompt_block()
-        await self._start_accepted_prompt(text=text)
+            if self._in_flight_task is completed_task:
+                self._in_flight_task = None
 
     async def _refresh_context_window_after_prompt(self) -> None:
         """Refresh durable Context Window Snapshot exactly once at prompt cleanup."""

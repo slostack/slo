@@ -281,10 +281,20 @@ class _ReplayEntryBuilder:
         self._entries.append(TranscriptEntryDAO(kind="user", content=event.payload.content or ""))
 
     def _absorb_steering_message(self, *, event: SessionHistoryEventDAO) -> None:
-        """Append a steering message as a prefixed user entry."""
+        """Append a steering message as a prefixed user entry.
+
+        A forced row from an external sender carries its ``sender_name`` in the
+        event metadata (108.2); the replayed entry labels that sender so the
+        transcript credits the row to its sender, while the operator's own
+        steer keeps the plain ``(steer)`` prefix.
+        """
         self._flush_assistant()
+        sender_name: object = event.payload.metadata.get("sender_name")
+        prefix: str = "(steer)"
+        if isinstance(sender_name, str) and sender_name and sender_name != "you":
+            prefix = f"(steer) [{sender_name}]"
         self._entries.append(
-            TranscriptEntryDAO(kind="user", content=f"(steer) {event.payload.content or ''}")
+            TranscriptEntryDAO(kind="user", content=f"{prefix} {event.payload.content or ''}")
         )
 
     def _absorb_assistant_delta(self, *, event: SessionHistoryEventDAO) -> None:

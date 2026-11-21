@@ -317,9 +317,133 @@ async def test_window_501st_mount_and_terminal_do_not_deadlock() -> None:
         )
 
 
+@pytest.mark.parametrize("operation", ["clear", "bind", "close"])
+async def test_initial_read_hard_cancel_cannot_publish_after_lifecycle_reset(
+    tmp_path: Path, operation: str
+) -> None:
+    """A cancellation-suppressing real-store read cannot publish into a reset lifetime."""
+    session = _build_session_with_history(
+        workdir=tmp_path,
+        history_root=tmp_path / "history",
+        responses=[FauxChatModel.assistant_message(content="old answer")],
+    )
+    await _drain_session(session=session, text="old question")
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def gated_reader() -> list[TranscriptEntryDAO]:
+        """Retain genuine replay bytes across a deliberately delayed cancellation."""
+        entries = await session.hydrate_transcript_entries()
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        return entries
+
+    transcript = ChatTranscriptComponent(history_reader=gated_reader)
+    app = TranscriptTestApp(transcript=transcript)
+    async with app.run_test() as pilot:
+        hydration = asyncio.create_task(transcript.hydrate())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            if operation == "bind":
+                cleanup = asyncio.create_task(
+                    transcript.bind_history(history_reader=session.hydrate_transcript_entries)
+                )
+            else:
+                cleanup = asyncio.create_task(getattr(transcript, operation)())
+        except BaseException:
+            release.set()
+            await hydration
+            raise
+        try:
+            await asyncio.wait_for(cancelled.wait(), timeout=5)
+            delivery = asyncio.create_task(transcript.echo_user(text="after reset"))
+            await asyncio.sleep(0)
+            assert not cleanup.done()
+            assert not delivery.done()
+            cleanup.cancel()
+            await asyncio.sleep(0)
+            assert not cleanup.done()
+        finally:
+            release.set()
+            await asyncio.gather(hydration, cleanup, return_exceptions=True)
+        if operation == "close":
+            with pytest.raises(RuntimeError, match="closed"):
+                await delivery
+        else:
+            await delivery
+        await pilot.pause()
+        expected = [] if operation == "close" else ["after reset"]
+        assert [block.get_copyable_text() for block in transcript.query(UserMessageBlock)] == expected
+        assert not list(transcript.query(AssistantStreamBlock))
+        assert "old question" not in transcript.logical_copy_text()
+        if operation == "bind":
+            await transcript.hydrate()
+            assert transcript.query_one(AssistantStreamBlock).get_copyable_text() == "old answer"
+
+
+async def test_history_loads_30_then_30_then_5_without_writes(tmp_path: Path) -> None:
+    """A real 65-entry history is published once in complete chronological order."""
+    entries = await seed_history(root=tmp_path / "history", count=65)
+    assert len(entries) == 65
+    history = tmp_path / "history" / "seed" / "events.jsonl"
+    original = history.read_bytes()
+
+    async def read_history() -> list[TranscriptEntryDAO]:
+        """Return the canonical real-store projection."""
+        return entries
+
+    transcript = ChatTranscriptComponent(history_reader=read_history)
+    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
+        await transcript.hydrate()
+        for start in (35, 5, 0):
+            await pilot.pause()
+            assert [block.get_copyable_text() for block in transcript.query(AssistantStreamBlock)] == [
+                f"entry-{index:02}" for index in range(start, 65)
+            ]
+            if start:
+                assert str(transcript.query_one("#transcript-earlier-summary").render()).find(str(start)) >= 0
+            await transcript.load_older()
+        assert not list(transcript.query("#transcript-earlier-summary"))
+        assert history.read_bytes() == original
+
+
+async def test_window_501st_mount_and_terminal_do_not_deadlock() -> None:
+    """Real 500/10 window removes settled prefix but retains live blocks and newest text."""
+
+    async def empty_history() -> list[TranscriptEntryDAO]:
+        """No persisted entries exist for this live-only journey."""
+        return []
+
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
+    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
+        await transcript.present_event(
+            event=AgentStreamEventDAO(kind="text_delta", delta="live", iteration=0)
+        )
+        live = transcript.query_one(AssistantStreamBlock)
+        for index in range(510):
+            await transcript.handle(
+                command=TranscriptNoticeDAO(content=f"notice-{index}", classes="tool-result")
+            )
+        await asyncio.wait_for(
+            transcript.present_event(event=AgentStreamEventDAO(kind="text_end")), timeout=5
+        )
+        await pilot.pause()
+        content = transcript.query_one("#transcript-content")
+        ordinary = [child for child in content.children if child.id != "transcript-earlier-summary"]
+        assert len(ordinary) == 500
+        assert live in ordinary and not live.finalized
+        assert [str(child.render()) for child in ordinary[-10:]] == [f"notice-{i}" for i in range(500, 510)]
+        assert "notice-0" in transcript.logical_copy_text()
+        await asyncio.wait_for(
+            transcript.present_event(event=AgentStreamEventDAO(kind="run_completed")), timeout=5
+        )
+
+
 async def test_tree_and_steering_are_separate_from_clear_and_expansion() -> None:
     """Reusable clear drops all transient content and expansion policy."""
-
     async def empty_history() -> list[TranscriptEntryDAO]:
         """Supply an empty read-only history."""
         return []
@@ -328,10 +452,7 @@ async def test_tree_and_steering_are_separate_from_clear_and_expansion() -> None
     async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
         tree = Static("tree")
         await transcript.mount_tree_output(widget=tree)
-        await transcript.show_pending_steering(message="first")
-        await transcript.show_pending_steering(message="second")
         await transcript.present_event(event=AgentStreamEventDAO(kind="steering_applied", content="first"))
-        assert len(list(transcript.query("SteeringPendingBlock"))) == 1
         assert transcript.query_one(UserMessageBlock).get_copyable_text() == "first"
         transcript.toggle_expandable_details()
         await transcript.clear()
@@ -344,6 +465,43 @@ async def test_tree_and_steering_are_separate_from_clear_and_expansion() -> None
             event=AgentStreamEventDAO(kind="steering_applied", content="unmatched")
         )
         assert transcript.query_one(UserMessageBlock).get_copyable_text() == "unmatched"
+
+
+async def test_external_sender_steering_line_is_labelled() -> None:
+    """A forced row from an external sender carries its sender label (108.2)."""
+
+    async def empty_history() -> list[TranscriptEntryDAO]:
+        """Supply an empty read-only history."""
+        return []
+
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
+    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
+        await transcript.present_event(
+            event=AgentStreamEventDAO(
+                kind="steering_applied",
+                content="deploy to staging",
+                sender_name="orchestrator wf-12",
+            )
+        )
+        await pilot.pause()
+        assert transcript.query_one(UserMessageBlock).get_copyable_text() == "deploy to staging"
+        assert transcript.logical_copy_text() == "> [orchestrator wf-12] deploy to staging"
+
+
+async def test_operator_steering_line_stays_plain() -> None:
+    """The operator's own forced row keeps the plain user line (108.2)."""
+
+    async def empty_history() -> list[TranscriptEntryDAO]:
+        """Supply an empty read-only history."""
+        return []
+
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
+    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
+        await transcript.present_event(
+            event=AgentStreamEventDAO(kind="steering_applied", content="use pytest -x", sender_name="you")
+        )
+        await pilot.pause()
+        assert transcript.logical_copy_text() == "> use pytest -x"
 
 
 @pytest.mark.parametrize("operation", ["clear", "bind", "close"])

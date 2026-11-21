@@ -23,9 +23,8 @@ class LiteralTextStatic(Static):
     every plain-string transcript render site uses it instead of a bare ``Static``.
 
     Who uses it: ``SloTUI._transcript_write``, the tree-viewer mounts,
-    ``AssistantStreamBlock`` (label + terminal note), ``ToolExecutionBlock``
-    (headline/hint/body/result), and ``SteeringPendingBlock`` (verbatim ``/steer``
-    text).
+    ``AssistantStreamBlock`` (label + terminal note), and
+    ``ToolExecutionBlock`` (headline/hint/body/result).
     """
 
     def __init__(

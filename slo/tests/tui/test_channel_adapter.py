@@ -1102,3 +1102,191 @@ class TestAbortEscalationNeverKillsALaterRun:
                 await _wait_until_db(predicate=_resumed_reply_completed, timeout_seconds=10.0)
         finally:
             await gateway.close()
+
+
+class TestNotesReachABusyTui:
+    """Native half of O1: notes from a running orchestrator reach a busy TUI at once."""
+
+    async def test_note_from_the_orchestrator_shows_as_a_star_line_while_the_tui_runs(
+        self, tmp_path: Path
+    ) -> None:
+        release_first_run: asyncio.Event = asyncio.Event()
+        model: GatedFauxChatModel = GatedFauxChatModel(
+            responses=[AIMessage(content="busy answer")],
+            first_call_release=release_first_run,
+        )
+        session: SloAgentSession = _build_session(tmp_path=tmp_path, responses=[], model=model)
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
+        try:
+            from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+
+            orchestrator_session_id: str = str(uuid4())
+            orchestrator: ParticipantDAO = await gateway.register_agent(
+                session_id=UUID(orchestrator_session_id), name="orchestrator wf-x1a2"
+            )
+            notifier: WorkflowNotifier = WorkflowNotifier(
+                gateway=gateway,
+                target_session_id=session.session_id,
+                orchestrator_session_id=orchestrator_session_id,
+                workflow_id="wf-x1a2",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
+                poller = session.channel_poller
+                assert poller is not None
+                prompt_input.text = "long question"
+                await pilot.press("enter")
+                await pump_until(
+                    pilot=pilot,
+                    predicate=lambda: poller.busy
+                    and _user_echo_texts(app=app) == ["long question"],
+                )
+                # The orchestrator reports while the TUI run is still in flight.
+                await notifier.started(brief_preview="bounded brief")
+                await pump_until(
+                    pilot=pilot,
+                    predicate=lambda: any(
+                        "⊛ orchestrator wf-x1a2:" in content
+                        for content, _classes in _transcript_lines(app=app)
+                    ),
+                )
+                assert poller.busy is True  # the run never stopped for the note
+                assert release_first_run.is_set() is False
+        finally:
+            release_first_run.set()
+        # A busy note never revives the run (O2): it entered context at a
+        # boundary as steering, not via the idle record path.
+        from uuid import NAMESPACE_URL, uuid5
+
+        from src.agents.slo_agent.orchestrator.notifier import NS_WORKFLOW
+
+        note_id: UUID = uuid5(NS_WORKFLOW, "wf-x1a2:started:0")
+        assert session.history_store is not None
+        events = await session.history_store.load_events(session_id=session.session_id)
+        steering = [
+            event
+            for event in events
+            if event.kind == "steering_message"
+            and event.payload.metadata.get("channel_message_id") == str(note_id)
+        ]
+        assert len(steering) == 1
+        assert [event for event in events if event.kind == "workflow_update"] == []
+
+    async def test_notice_from_the_orchestrator_shows_and_never_enters_context(
+        self, tmp_path: Path
+    ) -> None:
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, responses=[AIMessage(content="answer")]
+        )
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
+        try:
+            orchestrator_session_id: str = str(uuid4())
+            orchestrator: ParticipantDAO = await gateway.register_agent(
+                session_id=UUID(orchestrator_session_id), name="orchestrator wf-x1a2"
+            )
+            recipient: UUID = channel_participant_id_for_session(session_id=session.session_id)
+            await gateway.register_agent(session_id=recipient, name="slo tui-session")
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=orchestrator.id,
+                    recipient_id=recipient,
+                    message_contents="fleet: 2 live",
+                    message_type="notice",
+                    coalesce_key="wf-x1a2:fleet",
+                )
+            )
+            async with app.run_test() as pilot:
+                await pump_until(
+                    pilot=pilot,
+                    predicate=lambda: any(
+                        "⊛ orchestrator wf-x1a2: fleet: 2 live" in content
+                        for content, _classes in _transcript_lines(app=app)
+                    ),
+                )
+            assert session.history_store is not None
+            events = await session.history_store.load_events(session_id=session.session_id)
+            assert [event for event in events if event.kind == "workflow_update"] == []
+        finally:
+            await gateway.close()
+
+
+class TestOutboundRepliesFromOtherAgents:
+    """Replies from other agents render in the TUI; own-session replies do not (108.3 §3)."""
+
+    async def test_reply_from_another_agent_renders_and_own_reply_does_not(
+        self, tmp_path: Path
+    ) -> None:
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, responses=[AIMessage(content="answer")]
+        )
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
+        try:
+            orchestrator_session_id: str = str(uuid4())
+            orchestrator: ParticipantDAO = await gateway.register_agent(
+                session_id=UUID(orchestrator_session_id), name="orchestrator wf-x1a2"
+            )
+            async with app.run_test() as pilot:
+                await pump_until(pilot=pilot, predicate=lambda: app.channel_adapter is not None)
+                adapter = app.channel_adapter
+                assert adapter is not None
+                own_agent: UUID = channel_participant_id_for_session(
+                    session_id=session.session_id
+                )
+                user: ParticipantDAO = adapter.user_participant
+                request: ChannelMessageDAO = await gateway.send(
+                    new=NewMessageDAO(
+                        sender_id=user.id,
+                        recipient_id=own_agent,
+                        message_contents="what happened?",
+                        channel_id=adapter.channel.id,
+                    )
+                )
+                foreign_reply: ChannelMessageDAO = await gateway.send(
+                    new=NewMessageDAO(
+                        sender_id=orchestrator.id,
+                        recipient_id=user.id,
+                        message_contents="the workflow finished its phase",
+                        message_type="reply",
+                        in_reply_to_id=request.id,
+                    )
+                )
+                own_reply: ChannelMessageDAO = await gateway.send(
+                    new=NewMessageDAO(
+                        sender_id=own_agent,
+                        recipient_id=user.id,
+                        message_contents="stream already showed this",
+                        message_type="reply",
+                        in_reply_to_id=request.id,
+                    )
+                )
+                await pump_until(
+                    pilot=pilot,
+                    predicate=lambda: any(
+                        "↩ orchestrator wf-x1a2: the workflow finished its phase" in content
+                        for content, _classes in _transcript_lines(app=app)
+                    ),
+                )
+                assert all(
+                    "stream already showed this" not in content
+                    for content, _classes in _transcript_lines(app=app)
+                )
+
+                async def _both_accepted() -> bool:
+                    foreign: Optional[ChannelMessageDAO] = await gateway.get(
+                        message_id=foreign_reply.id
+                    )
+                    own: Optional[ChannelMessageDAO] = await gateway.get(message_id=own_reply.id)
+                    return (
+                        foreign is not None
+                        and foreign.accepted_at is not None
+                        and own is not None
+                        and own.accepted_at is not None
+                    )
+
+                await _wait_until_db(predicate=_both_accepted)
+        finally:
+            await gateway.close()

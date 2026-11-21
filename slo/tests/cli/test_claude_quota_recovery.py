@@ -20,7 +20,6 @@ from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 from src.agents.slo_agent.orchestrator.dao import SubAgentTaskDAO
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.bridges.claude.sdk.exceptions import ClaudeQuotaExceededError
 from tests.bridges.claude.test_quota_recovery import QuotaThenSuccessTransport, quota_frame
 from tests.cli.test_claude_bridge import scripted_adapter_class
@@ -146,17 +145,33 @@ async def test_child_and_parent_quota_failures_remain_actionable(tmp_path: Path)
     assert result.results[0].status == "failed"
     assert "Claude usage limit reached" in result.results[0].answer
     assert sum(event.kind == "sub_agent_failed" for event in relayed) == 1
-    inbox = SessionInboxStore(history_root=history_root)
+    from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+    from src.channels.gateway import ChannelGateway
+    from src.channels.repository import ChannelRepository
+
+    quota_repository: ChannelRepository = ChannelRepository(
+        db_path=history_root.parent / "channels.db"
+    )
+    await quota_repository.open()
+    quota_gateway: ChannelGateway = ChannelGateway(repository=quota_repository)
+    quota_target: object = await quota_gateway.register_agent(
+        session_id=channel_participant_id_for_session(session_id="quota-parent"),
+        name="slo quota-parent",
+    )
     notifier = WorkflowNotifier(
-        target_session_id="quota-parent",
+        gateway=quota_gateway,
+        target_session_id=str(quota_target.id),  # type: ignore[attr-defined]
         orchestrator_session_id="quota-child",
         workflow_id="wf-synthetic-quota",
-        inbox_store=inbox,
     )
     await notifier.failed(error=result.results[0].answer)
-    note = await inbox.claim_next(session_id="quota-parent")
-    assert note is not None and note.kind == "workflow_failed" and note.delivery_mode == "chat_turn"
-    assert "Claude usage limit reached" in note.text
+    quota_rows = await quota_gateway.pending_inbound(
+        recipient_id=channel_participant_id_for_session(session_id="quota-parent")
+    )
+    assert [row.message_type for row in quota_rows] == ["prompt"]
+    note_text: str = quota_rows[0].message_contents
+    assert "Claude usage limit reached" in note_text
+    await quota_gateway.close()
     parent_transport = QuotaThenSuccessTransport(frame=quota_frame())
     parent = await SloAgentSession.prepare(
         config=child_config.model_copy(update={"session_id": "quota-parent"}),
@@ -165,7 +180,7 @@ async def test_child_and_parent_quota_failures_remain_actionable(tmp_path: Path)
     try:
         async with asyncio.timeout(15):
             with pytest.raises(ClaudeQuotaExceededError):
-                async for _event in parent.invoke(text=note.text):
+                async for _event in parent.invoke(text=note_text):
                     pass
         for session_id in ("quota-child", "quota-parent"):
             events = await FilesystemSessionHistoryStore(root=history_root).load_events(session_id=session_id)
@@ -178,7 +193,7 @@ async def test_child_and_parent_quota_failures_remain_actionable(tmp_path: Path)
             )
             assert sum(event.kind == "user_message" for event in events) == 1
         assert child_transport.prompts == ["inspect child"]
-        assert parent_transport.prompts == [note.text]
+        assert parent_transport.prompts == [note_text]
         status = json.loads((history_root / "quota-parent/children/quota-child/status.json").read_text())
         assert status["status"] == "failed" and "Claude usage limit reached" in status["answer"]
         assert len(pool.registry.snapshot()) == 1 and len(launches) == 1

@@ -36,10 +36,33 @@ class TestSchemaBootstrap:
         try:
             tables: set[str] = await repository.table_names()
             assert {"channels", "participants", "messages"} <= tables
-            assert await repository.user_version() == 1
+            assert await repository.user_version() == 2
             assert await repository.journal_mode() == "wal"
             db_file: Path = tmp_path / "channels.db"
             assert oct(db_file.stat().st_mode & 0o777) == "0o600"
+        finally:
+            await repository.close()
+
+    async def test_v1_database_is_upgraded_to_v2_with_the_coalesce_column(self, tmp_path: Path) -> None:
+        """A database left at schema v1 gains the ``coalesce_key`` column and index (108.3 §4)."""
+        import sqlite3
+
+        from src.channels.schema import SCHEMA_V1
+
+        db_file: Path = tmp_path / "channels.db"
+        connection: sqlite3.Connection = sqlite3.connect(database=str(db_file))
+        connection.executescript(SCHEMA_V1)
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+        connection.close()
+
+        repository: ChannelRepository = await _open_repository(tmp_path=tmp_path)
+        try:
+            assert await repository.user_version() == 2
+            columns: list[tuple[str, str]] = await repository.column_names(table="messages")
+            assert "coalesce_key" in {name for name, _kind in columns}
+            indexes: set[str] = await repository.index_names()
+            assert "coalesce_pending" in indexes
         finally:
             await repository.close()
 
@@ -413,3 +436,323 @@ class TestPendingReads:
                 await second.close()
         finally:
             await first.close()
+
+
+class TestCoalesceSupersede:
+    """Coalesce keys: a newer pending notice replaces an older one (108.3 §4)."""
+
+    async def test_newer_pending_notice_supersedes_an_older_pending_one(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            older: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="fleet snapshot 1",
+                    message_type="notice",
+                    channel_id=channel.id,
+                    coalesce_key=f"wf:abcd:fleet",
+                )
+            )
+            newer: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="fleet snapshot 2",
+                    message_type="notice",
+                    channel_id=channel.id,
+                    coalesce_key=f"wf:abcd:fleet",
+                )
+            )
+            pending: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            assert [row.id for row in pending] == [newer.id]
+            stored_older: Optional[ChannelMessageDAO] = await gateway.get(message_id=older.id)
+            assert stored_older is not None
+            assert stored_older.cancelled_at is not None
+            assert stored_older.cancel_reason == "superseded"
+            stored_newer: Optional[ChannelMessageDAO] = await gateway.get(message_id=newer.id)
+            assert stored_newer is not None
+            assert stored_newer.cancelled_at is None and stored_newer.accepted_at is None
+            assert stored_newer.coalesce_key == "wf:abcd:fleet"
+        finally:
+            await gateway.close()
+
+    async def test_supersede_never_touches_accepted_rows_or_other_keys(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            other_agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo def67890")
+            accepted: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="delivered snapshot",
+                    message_type="notice",
+                    channel_id=channel.id,
+                    coalesce_key="wf:abcd:fleet",
+                )
+            )
+            await gateway.accept(message_id=accepted.id)
+            different_key: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="other key",
+                    message_type="notice",
+                    channel_id=channel.id,
+                    coalesce_key="wf:abcd:other",
+                )
+            )
+            different_sender: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=other_agent.id,
+                    recipient_id=user.id,
+                    message_contents="other sender",
+                    message_type="notice",
+                    channel_id=channel.id,
+                    coalesce_key="wf:abcd:fleet",
+                )
+            )
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="fleet snapshot 2",
+                    message_type="notice",
+                    channel_id=channel.id,
+                    coalesce_key="wf:abcd:fleet",
+                )
+            )
+            stored_accepted: Optional[ChannelMessageDAO] = await gateway.get(message_id=accepted.id)
+            assert stored_accepted is not None
+            assert stored_accepted.cancelled_at is None and stored_accepted.accepted_at is not None
+            for row in (different_key, different_sender):
+                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+                assert stored is not None and stored.cancelled_at is None
+        finally:
+            await gateway.close()
+
+    async def test_duplicate_id_retry_returns_the_existing_row_without_superseding(
+        self, tmp_path: Path
+    ) -> None:
+        """A crashed notifier retrying its fixed uuid5 id never creates a second row."""
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            message_id: UUID = uuid4()
+            first: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    id=message_id,
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="phase 1 done",
+                    message_type="note",
+                    channel_id=channel.id,
+                )
+            )
+            second: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    id=message_id,
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="phase 1 done",
+                    message_type="note",
+                    channel_id=channel.id,
+                    coalesce_key="wf:abcd:fleet",
+                )
+            )
+            assert first.id == second.id == message_id
+            pending: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            assert [row.id for row in pending] == [message_id]
+            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=message_id)
+            assert stored is not None and stored.coalesce_key is None
+        finally:
+            await gateway.close()
+
+
+class TestAtomicCloseAgent:
+    """close_agent marks the participant closed and cancels pending rows atomically (108.3 §2)."""
+
+    async def test_close_agent_cancels_pending_inbound_and_refuses_further_sends(
+        self, tmp_path: Path
+    ) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="late prompt",
+                    channel_id=channel.id,
+                )
+            )
+            cancelled: int = await gateway.close_agent(session_id=agent.id, reason="recipient_closed")
+            assert cancelled == 1
+            participant: Optional[ParticipantDAO] = await gateway.get_participant(
+                participant_id=agent.id
+            )
+            assert participant is not None and participant.status == "closed"
+            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            assert pending == []
+            conversation: list[ChannelMessageDAO] = await gateway.conversation(agent_session_id=agent.id)
+            assert conversation[0].cancel_reason == "recipient_closed"
+            with pytest.raises(RecipientClosedError):
+                await gateway.send(
+                    new=NewMessageDAO(
+                        sender_id=user.id,
+                        recipient_id=agent.id,
+                        message_contents="too late",
+                        channel_id=channel.id,
+                    )
+                )
+        finally:
+            await gateway.close()
+
+
+class TestSentMessagesAndReplies:
+    """Composer source queries: rows you sent and their replies (108.3 §4)."""
+
+    async def test_recent_sent_messages_lists_the_newest_rows_first(self, tmp_path: Path) -> None:
+        from src.channels.dao import SentMessageRowDAO
+
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            for text in ("first", "second", "third"):
+                await gateway.send(
+                    new=NewMessageDAO(
+                        sender_id=user.id,
+                        recipient_id=agent.id,
+                        message_contents=text,
+                        channel_id=channel.id,
+                    )
+                )
+            rows: list[ChannelMessageDAO] = await gateway.recent_sent_messages(
+                sender_id=user.id, recipient_id=agent.id, limit=5
+            )
+            assert [row.message_contents for row in rows] == ["third", "second", "first"]
+        finally:
+            await gateway.close()
+
+    async def test_recent_sent_messages_scopes_sender_recipient_and_type(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            other_agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo def67890")
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="mine", channel_id=channel.id
+                )
+            )
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=other_agent.id,
+                    message_contents="other target",
+                    channel_id=channel.id,
+                )
+            )
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="inbound",
+                    channel_id=channel.id,
+                )
+            )
+            rows: list[ChannelMessageDAO] = await gateway.recent_sent_messages(
+                sender_id=user.id, recipient_id=agent.id, limit=5
+            )
+            assert [row.message_contents for row in rows] == ["mine"]
+        finally:
+            await gateway.close()
+
+    async def test_reply_for_returns_the_answer_row(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="run tests",
+                    channel_id=channel.id,
+                )
+            )
+            reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="all green",
+                    message_type="reply",
+                    in_reply_to_id=request.id,
+                )
+            )
+            found: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+            assert found is not None and found.id == reply.id
+            assert await gateway.reply_for(message_id=reply.id) is None
+        finally:
+            await gateway.close()
+
+    async def test_sent_row_state_and_previews_derive_from_the_queue(self, tmp_path: Path) -> None:
+        from src.channels.dao import SentMessageRowDAO
+
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            forced: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="x" * 100,
+                    channel_id=channel.id,
+                    force=True,
+                )
+            )
+            queued: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="waiting",
+                    channel_id=channel.id,
+                )
+            )
+            cancelled: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="gone",
+                    channel_id=channel.id,
+                )
+            )
+            await gateway.cancel(message_id=cancelled.id, reason="recipient_closed")
+            await gateway.accept(message_id=forced.id)
+            sent: list[SentMessageRowDAO] = await gateway.sent_rows(
+                sender_id=user.id, recipient_id=agent.id, limit=5
+            )
+            by_id: dict = {row.message_id: row for row in sent}
+            assert by_id[forced.id].state == "accepted"
+            assert by_id[forced.id].forced is True
+            assert by_id[forced.id].preview == "x" * 80
+            assert by_id[queued.id].state == "queued"
+            assert by_id[cancelled.id].state == "cancelled"
+        finally:
+            await gateway.close()

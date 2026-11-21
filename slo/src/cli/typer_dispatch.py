@@ -14,7 +14,7 @@ Name mapping — CLI flag → Python attribute (headless run path):
   --append-system-prompt-file <p> → append_system_prompt_file→ SessionConfigDAO.append_system_prompt
   --orchestrator                  → orchestrator_mode        → HeadlessRunner.orchestrator_mode
   --system-prompt-b64 <str>       → system_prompt_b64        → SessionConfigDAO.system_prompt
-  --notify-session <id>           → notify_session_id        → HeadlessRunner.notify_session_id
+  --notify-session <id>           → notify_session_id        → HeadlessRunner.notify_session_id (workflow channel mode)
 
 Resolution order for session id (first non-None wins):
   1. ``--resume`` reference resolved by the history store to a canonical UUID.
@@ -266,9 +266,10 @@ class TyperDispatch:
             system_prompt_b64 (Optional[str]): Base64-encoded system prompt string.
                 When non-None, decoded and applied as ``SessionConfigDAO.system_prompt``.
                 Takes precedence over ``system_prompt_file``.
-            notify_session_id (Optional[str]): Session id whose inbox receives
-                workflow lifecycle notifications (spec 57.a.3). ``None`` keeps
-                headless behaviour byte-identical to today's (no notifier).
+            notify_session_id (Optional[str]): Owning session id this detached
+                orchestrator reports to over the channel queue (108.3).
+                ``None`` keeps headless behaviour byte-identical to today's
+                (no notifier, no channel participant).
 
         Returns:
             int: POSIX exit code: ``0`` completed, ``2`` aborted, ``1`` failed.

@@ -98,25 +98,36 @@ class ChannelBoundaryInbox:
         return bool((self._forced_ids - self._in_flight_ids) - self._reserved_ids)
 
     async def take(self, *, iteration: int) -> list[BoundaryDeliveryDAO]:
-        """Take every pending forced prompt row, FIFO by message index.
+        """Take pending notes first, then forced prompt rows, FIFO by message index.
 
-        Normal rows, notes, notices and rows reserved by the poller's own run
-        are never taken here (108.2 §5).
+        Notes join the current run's context at the boundary before forced
+        prompts (108.3 §2). Rows the poller reserved for its own run, and rows
+        taken here but not yet confirmed, are never taken again, so a take can
+        never apply a delivery twice. Notices and normal prompts are never
+        taken here (108.2 §5).
 
         Args:
             iteration (int): Agent loop iteration whose boundary takes them.
 
         Returns:
-            list[BoundaryDeliveryDAO]: The taken rows in delivery order.
+            list[BoundaryDeliveryDAO]: The taken rows in delivery order — notes
+                before forced prompts.
         """
         rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
             recipient_id=self._agent_id,
         )
-        forced_rows: list[ChannelMessageDAO] = [
+        claimable: list[ChannelMessageDAO] = [
             row
             for row in rows
-            if row.forced_at is not None and row.message_type == "prompt" and row.id not in self._reserved_ids
+            if row.id not in self._reserved_ids and row.id not in self._in_flight_ids
         ]
+        notes: list[ChannelMessageDAO] = [row for row in claimable if row.message_type == "note"]
+        forced_rows: list[ChannelMessageDAO] = [
+            row
+            for row in claimable
+            if row.forced_at is not None and row.message_type == "prompt"
+        ]
+        taken: list[ChannelMessageDAO] = notes + forced_rows
         # The fresh read is the truth: replace the snapshot with the ids the
         # queue still reports so a cached id the queue dropped (cancelled or
         # accepted since the last refresh) cannot revive the run for an empty
@@ -124,7 +135,7 @@ class ChannelBoundaryInbox:
         self._forced_ids = {row.id for row in forced_rows}
         # The taken rows are in flight until their confirm settles them, so a
         # refresh between take and confirm cannot reinsert them (108.2 B3).
-        self._in_flight_ids |= {row.id for row in forced_rows}
+        self._in_flight_ids |= {row.id for row in taken}
         return [
             BoundaryDeliveryDAO(
                 message_id=row.id,
@@ -132,7 +143,7 @@ class ChannelBoundaryInbox:
                 sender_name=self._sender_label(sender_id=row.sender_id, sender_name=row.sender_name),
                 iteration=iteration,
             )
-            for row in forced_rows
+            for row in taken
         ]
 
     def _sender_label(self, *, sender_id: UUID, sender_name: str) -> str:

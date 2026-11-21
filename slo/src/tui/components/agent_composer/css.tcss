@@ -1,0 +1,22 @@
+AgentComposerComponent {
+    height: auto;
+    max-height: 10;
+    border-top: solid $primary;
+    padding: 0 1;
+    & .agent-composer-header {
+        color: $accent;
+        height: 1;
+    }
+    & .agent-composer-rows {
+        color: $text-muted;
+        height: auto;
+        max-height: 4;
+    }
+    & Input {
+        height: 1;
+    }
+}
+
+AgentComposerComponent.-agent-finished Input {
+    disabled: true;
+}

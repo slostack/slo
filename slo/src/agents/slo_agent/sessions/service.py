@@ -172,7 +172,7 @@ from src.auth.provider_for_model import provider_for_model
 if TYPE_CHECKING:
     from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
     from src.channels.gateway import ChannelGateway
-    from src.agents.slo_agent.channel_delivery.poller import ChannelPoller
+    from src.agents.slo_agent.channel_delivery.poller import ChannelDisplaySink, ChannelPoller
     from src.agents.slo_agent.channel_delivery.turn_runner import TurnRunner
 
 from src.agents.slo_agent.history.transcript import ReplayEntryProjector
@@ -1751,6 +1751,8 @@ class SloAgentSession:
         runner: "TurnRunner",
         interval: Optional[float] = None,
         operator_participant_id: Optional[UUID] = None,
+        display: Optional["ChannelDisplaySink"] = None,
+        auto_run: bool = True,
     ) -> "ChannelPoller":
         """Start the one channel poller for this session (108.1).
 
@@ -1762,6 +1764,12 @@ class SloAgentSession:
             operator_participant_id (Optional[UUID]): The operator's user
                 participant id when the caller knows it; rows from that
                 participant take the transcript label ``you`` (108.2 §4).
+            display (Optional[ChannelDisplaySink]): Sink for rows shown but
+                never run — notices and notes (108.3 §5). ``None`` settles
+                them without rendering.
+            auto_run (bool): ``False`` (headless workflow mode) keeps the
+                boundary inbox and note/notice handling live while an external
+                owner drives every run (108.3 §5).
 
         Returns:
             ChannelPoller: The started poller.
@@ -1789,6 +1797,8 @@ class SloAgentSession:
             replies=ReplyWriter(gateway=gateway),
             boundary_inbox=boundary_inbox,
             interval=interval,
+            display=display,
+            auto_run=auto_run,
         )
         await poller.start()
         self._set_boundary_inbox(boundary_inbox)

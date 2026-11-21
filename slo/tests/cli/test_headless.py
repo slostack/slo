@@ -633,22 +633,39 @@ class TestHeadlessRunnerWorkflowNotifications:
 
     async def test_workflow_id_read_from_env_with_fallback(self, tmp_path, capsys, monkeypatch) -> None:
         """The real notifier is built with SLO_WORKFLOW_ID, else 'wf-unknown'."""
+        from src.channels.gateway import ChannelGateway
+        from src.channels.repository import ChannelRepository
+
         monkeypatch.setenv("SLO_WORKFLOW_ID", "wf-3f2a")
+        repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+        await repository.open()
+        gateway: ChannelGateway = ChannelGateway(repository=repository)
         runner: HeadlessRunner = HeadlessRunner(
             config=_make_config(tmp_path),
             notify_session_id="tui-1",
+            channel_gateway=gateway,
         )
 
         built = runner._resolve_notifier(orchestrator_session_id="orch-1")
+        await gateway.close()
         assert built is not None
         assert built._workflow_id == "wf-3f2a"
         assert built._target_session_id == "tui-1"
         assert built._orchestrator_session_id == "orch-1"
 
         monkeypatch.delenv("SLO_WORKFLOW_ID", raising=False)
-        fallback = runner._resolve_notifier(orchestrator_session_id="orch-1")
+        repository2: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+        await repository2.open()
+        gateway2: ChannelGateway = ChannelGateway(repository=repository2)
+        runner_fallback: HeadlessRunner = HeadlessRunner(
+            config=_make_config(tmp_path),
+            notify_session_id="tui-1",
+            channel_gateway=gateway2,
+        )
+        fallback = runner_fallback._resolve_notifier(orchestrator_session_id="orch-1")
         assert fallback is not None
         assert fallback._workflow_id == "wf-unknown"
+        await gateway2.close()
 
 
 class TestHeadlessRunnerWatchdogControls:
@@ -939,17 +956,25 @@ class TestHeadlessRunnerDrainGate:
 class TestHeadlessNotifyEndToEnd:
     """Integration: runner event tap → real WorkflowNotifier → real inbox store."""
 
-    async def test_full_lifecycle_lands_in_target_inbox(self, tmp_path, capsys) -> None:
-        """started + phase + completed messages land in the owner session's inbox."""
-        from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-        from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+    async def test_full_lifecycle_lands_in_the_channel_queue(self, tmp_path, capsys) -> None:
+        """started + phase + completed rows reach the owner session's participant (108.3 §4)."""
+        from uuid import UUID
 
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=tmp_path / "history")
+        from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+        from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+        from src.channels.gateway import ChannelGateway
+        from src.channels.repository import ChannelRepository
+
+        repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+        await repository.open()
+        gateway: ChannelGateway = ChannelGateway(repository=repository)
+        target_id: UUID = channel_participant_id_for_session(session_id="tui-owner")
+        await gateway.register_agent(session_id=target_id, name="slo tui-owner")
         notifier: WorkflowNotifier = WorkflowNotifier(
+            gateway=gateway,
             target_session_id="tui-owner",
             orchestrator_session_id="orch-1",
             workflow_id="wf-3f2a",
-            inbox_store=inbox_store,
         )
         spawn_json: str = json.dumps(
             {"mode": "single", "all_completed": True, "failed_task_ids": [], "results": [{}]}
@@ -962,42 +987,45 @@ class TestHeadlessNotifyEndToEnd:
             config=_make_config(tmp_path),
             notify_session_id="tui-owner",
             notifier=notifier,
+            channel_gateway=gateway,
         )
 
-        with patch(
-            "src.cli.headless.SloAgentSession.build",
-            return_value=_make_session_mock(events=events),
-        ):
-            exit_code: int = await runner.invoke(prompt="run the workflow")
+        try:
+            with patch(
+                "src.cli.headless.SloAgentSession.build",
+                return_value=_make_session_mock(events=events),
+            ):
+                exit_code: int = await runner.invoke(prompt="run the workflow")
 
-        pending = await inbox_store.list_pending(session_id="tui-owner")
-        assert exit_code == 0
-        assert [message.kind for message in pending] == [
-            "workflow_started",
-            "workflow_phase_update",
-            "workflow_completed",
-        ]
-        assert [message.delivery_mode for message in pending] == [
-            "context_note",
-            "context_note",
-            "chat_turn",
-        ]
-        assert all(message.payload["workflow_id"] == "wf-3f2a" for message in pending)
-        assert "workflow synthesis" in pending[-1].text
+            pending = await gateway.pending_inbound(recipient_id=target_id)
+            assert exit_code == 0
+            assert [row.message_type for row in pending] == ["note", "note", "prompt"]
+            assert all("[workflow wf-3f2a]" in row.message_contents for row in pending[:2])
+            assert "workflow synthesis" in pending[-1].message_contents
+            # The runner closed its own participant; pending rows for the TUI survive.
+            closed = await gateway.get_participant(
+                participant_id=channel_participant_id_for_session(session_id="orch-1")
+            )
+            assert closed is not None
+        finally:
+            await gateway.close()
 
-    async def test_exploding_inbox_never_alters_exit_code_or_stdout(self, tmp_path, capsys) -> None:
-        """An inbox that raises on every call leaves the run's output untouched."""
+    async def test_unreachable_queue_never_alters_exit_code_or_stdout(self, tmp_path, capsys) -> None:
+        """A queue that raises on every send leaves the run's output untouched (108.3)."""
         from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+        from src.channels.gateway import ChannelGateway
+        from src.channels.repository import ChannelRepository
 
-        class _ExplodingStore:
-            async def enqueue(self, *, message):
-                raise OSError("disk full")
+        repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+        await repository.open()
+        gateway: ChannelGateway = ChannelGateway(repository=repository)
+        await gateway.close()  # every send now raises: the repository is not open
 
         notifier: WorkflowNotifier = WorkflowNotifier(
+            gateway=gateway,
             target_session_id="tui-owner",
             orchestrator_session_id="orch-1",
             workflow_id="wf-3f2a",
-            inbox_store=_ExplodingStore(),  # type: ignore[arg-type]
         )
         events: list[AgentStreamEventDAO] = [
             AgentStreamEventDAO(kind="text_delta", delta="hello"),
@@ -1007,6 +1035,7 @@ class TestHeadlessNotifyEndToEnd:
             config=_make_config(tmp_path),
             notify_session_id="tui-owner",
             notifier=notifier,
+            channel_gateway=gateway,
         )
 
         with patch(

@@ -10,7 +10,8 @@ pause after an aborted run.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional, TYPE_CHECKING
+import re
+from typing import Optional, Protocol, TYPE_CHECKING, runtime_checkable
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from config.logger import log_error, log_warning
@@ -25,10 +26,42 @@ from src.channels.gateway import ChannelGateway
 if TYPE_CHECKING:
     from src.agents.slo_agent.sessions.service import SloAgentSession
 
-__all__ = ["ChannelPoller", "poll_interval_from_env"]
+__all__ = ["ChannelDisplaySink", "ChannelPoller", "poll_interval_from_env", "workflow_id_from_note"]
 
 _DEFAULT_POLL_INTERVAL_SECONDS: float = 0.5
 _HEARTBEAT_INTERVAL_SECONDS: float = 5.0
+
+_WORKFLOW_ID_PATTERN: re.Pattern[str] = re.compile(r"\[workflow ([^\]\s]+)\]")
+
+
+def workflow_id_from_note(*, text: str) -> str:
+    """Return the workflow id embedded in a note's ``[workflow X]`` prefix.
+
+    The notifier writes every workflow note with a leading ``[workflow <id>]
+    marker; channel rows carry no payload column, so the receiving side reads
+    the id from the text. Unknown shapes fall back to ``wf-unknown``.
+
+    Args:
+        text (str): Note contents.
+
+    Returns:
+        str: The parsed workflow id, or ``wf-unknown``.
+    """
+    match: Optional[re.Match[str]] = _WORKFLOW_ID_PATTERN.search(text)
+    return match.group(1) if match is not None else "wf-unknown"
+
+
+@runtime_checkable
+class ChannelDisplaySink(Protocol):
+    """Where the poller hands rows that must be shown but not run (108.3 §5)."""
+
+    async def show(self, *, message: ChannelMessageDAO) -> None:
+        """Display one channel row (notice or note) to this channel's user.
+
+        Args:
+            message (ChannelMessageDAO): The row being displayed.
+        """
+        ...
 
 
 def poll_interval_from_env() -> float:
@@ -80,6 +113,8 @@ class ChannelPoller:
         replies: ReplyWriter,
         boundary_inbox: ChannelBoundaryInbox,
         interval: Optional[float] = None,
+        display: Optional[ChannelDisplaySink] = None,
+        auto_run: bool = True,
     ) -> None:
         """Compose the poller around its injected collaborators.
 
@@ -95,6 +130,15 @@ class ChannelPoller:
                 snapshot every tick (108.2).
             interval (Optional[float]): Poll interval in seconds; defaults to
                 ``SLO_CHANNEL_POLL_MS`` (500 ms).
+            display (Optional[ChannelDisplaySink]): Sink for rows shown but
+                never run: ``notice`` rows are displayed then accepted;
+                ``note`` rows are displayed once per id, and recorded into
+                model context when the session is idle (108.3 §5). ``None``
+                still settles the rows, without rendering anything.
+            auto_run (bool): When ``True`` (default) the poller starts runs
+                for pending prompt rows itself; ``False`` (headless workflow
+                mode) keeps the boundary inbox and note/notice handling live
+                while ``HeadlessRunner`` owns every run (108.3 §5).
         """
         self._gateway: ChannelGateway = gateway
         self._session: "SloAgentSession" = session
@@ -108,6 +152,9 @@ class ChannelPoller:
         self._paused_reason: Optional[str] = None
         self._stopping: bool = False
         self._started: bool = False
+        self._display: Optional[ChannelDisplaySink] = display
+        self._auto_run: bool = auto_run
+        self._shown_note_ids: set[UUID] = set()
         self._participant_id: UUID = channel_participant_id_for_session(session_id=self._session.session_id)
 
     @property
@@ -308,6 +355,15 @@ class ChannelPoller:
                 await self._boundary_inbox.refresh()
             except Exception as exc:  # noqa: BLE001 — a bad snapshot must not kill the loop
                 log_warning(msg=f"channel forced-snapshot refresh failed: {exc}")
+            # Rows shown but never run settle before run transitions: notices
+            # display-and-accept, notes display-once and record when idle
+            # (108.3 §5).
+            try:
+                await self._settle_display_rows()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the loop must survive a bad row
+                log_error(msg=f"channel poller display settlement failed: {exc}")
             if self._run_task is not None:
                 if self._run_task.done():
                     try:
@@ -318,7 +374,8 @@ class ChannelPoller:
                     except Exception as exc:  # noqa: BLE001 — the loop must survive a bad run
                         log_error(msg=f"channel poller run settlement failed: {exc}")
             elif (
-                self._paused_reason is None
+                self._auto_run
+                and self._paused_reason is None
                 and not self._session.is_running
                 and self._session.preparation_status == "ready"
             ):
@@ -335,6 +392,63 @@ class ChannelPoller:
             # Drop the wake signal only now: anything sent during this tick
             # re-sets the event and makes the next wait return at once.
             wake.clear()
+
+    async def _settle_display_rows(self) -> None:
+        """Settle every pending ``notice`` and ``note`` row for this session.
+
+        A ``notice`` is display-only: shown through the sink (when wired),
+        then accepted — it never enters model context (108.3 §2). A ``note``
+        is shown once per id; when the session is idle it is recorded via
+        ``record_workflow_update`` and accepted, so it joins the context at
+        the next run without ever starting one. While the session runs, the
+        pending note stays in the queue for the boundary inbox to take before
+        forced prompts — notes never revive a run (108.3 O2).
+        """
+        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+            recipient_id=self._participant_id,
+        )
+        for row in rows:
+            if row.message_type == "notice":
+                await self._show(message=row)
+                await self._gateway.accept(message_id=row.id)
+                continue
+            if row.message_type != "note":
+                continue
+            if row.id not in self._shown_note_ids:
+                await self._show(message=row)
+                self._shown_note_ids.add(row.id)
+            if not self._session_idle():
+                continue
+            try:
+                await self._session.record_workflow_update(
+                    text=row.message_contents,
+                    message_id=str(row.id),
+                    workflow_id=workflow_id_from_note(text=row.message_contents),
+                )
+            except Exception as exc:  # noqa: BLE001 — an unrecorded note is retried next tick
+                log_warning(msg=f"channel note record failed: {exc}")
+                continue
+            await self._gateway.accept(message_id=row.id)
+
+    def _session_idle(self) -> bool:
+        """Return whether the session currently runs nothing this poller must not interleave.
+
+        Returns:
+            bool: ``True`` when no run task is in flight and the session is not
+                running.
+        """
+        run_settling: bool = self._run_task is not None and not self._run_task.done()
+        return not run_settling and not self._session.is_running
+
+    async def _show(self, *, message: ChannelMessageDAO) -> None:
+        """Hand one row to the display sink when one is wired.
+
+        Args:
+            message (ChannelMessageDAO): The notice or note being displayed.
+        """
+        if self._display is None:
+            return
+        await self._display.show(message=message)
 
     async def _settle_finished_run(self) -> None:
         """Finish one completed run: accept semantics, pause on abort, reply."""

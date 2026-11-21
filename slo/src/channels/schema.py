@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 
-__all__ = ["SCHEMA_V1", "SCHEMA_VERSION", "migrate"]
+__all__ = ["SCHEMA_V1", "SCHEMA_V2", "SCHEMA_VERSION", "migrate"]
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 """Current ``PRAGMA user_version`` this build migrates to."""
 
 SCHEMA_V1: str = """
@@ -62,12 +62,21 @@ CREATE INDEX conversation     ON messages(agent_session_id, message_index);
 """
 """DDL for schema version 1: channels, participants, messages (overview §3.1)."""
 
+SCHEMA_V2: str = """
+ALTER TABLE messages ADD COLUMN coalesce_key TEXT;
+
+CREATE INDEX coalesce_pending ON messages(recipient_id, sender_id, coalesce_key)
+    WHERE accepted_at IS NULL AND cancelled_at IS NULL AND coalesce_key IS NOT NULL;
+"""
+"""DDL for schema version 2: coalesce key for superseding notices (108.3 §4)."""
+
 
 def migrate(*, connection: sqlite3.Connection) -> None:
     """Bring the database up to the current schema version.
 
     Applies pending migrations in order and stamps ``PRAGMA user_version``.
-    Version 0 → 1 creates all three tables and their indexes.
+    Version 0 → 1 creates all three tables and their indexes; version 1 → 2
+    adds the ``messages.coalesce_key`` column and its partial supersede index.
 
     Args:
         connection (sqlite3.Connection): Open database connection to migrate.
@@ -76,4 +85,8 @@ def migrate(*, connection: sqlite3.Connection) -> None:
     if current < 1:
         connection.executescript(SCHEMA_V1)
         connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+    if current < 2:
+        connection.executescript(SCHEMA_V2)
+        connection.execute("PRAGMA user_version = 2")
         connection.commit()

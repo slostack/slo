@@ -339,6 +339,25 @@ class ChannelRepository:
                     ).fetchone()[0]
                 )
                 now: datetime = utc_now()
+                # Coalesce (108.3 §4): a newer pending row with the same
+                # recipient, sender and key cancels the older pending one as
+                # ``superseded`` inside this same transaction, so a burst of
+                # fleet notices leaves only the newest pending row.
+                if new.coalesce_key is not None:
+                    connection.execute(
+                        """
+                        UPDATE messages
+                        SET cancelled_at = ?, cancel_reason = 'superseded'
+                        WHERE recipient_id = ? AND sender_id = ? AND coalesce_key = ?
+                          AND accepted_at IS NULL AND cancelled_at IS NULL
+                        """,
+                        (
+                            _stamp(now),
+                            str(recipient.id),
+                            str(sender.id),
+                            new.coalesce_key,
+                        ),
+                    )
                 stored: ChannelMessageDAO = ChannelMessageDAO(
                     id=new.id,
                     agent_session_id=agent_session_id,
@@ -357,14 +376,16 @@ class ChannelRepository:
                     channel_id=new.channel_id,
                     cancelled_at=None,
                     cancel_reason=None,
+                    coalesce_key=new.coalesce_key,
                 )
                 connection.execute(
                     """
                     INSERT INTO messages(
                         id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
                         sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
-                        message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                        coalesce_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(stored.id),
@@ -384,6 +405,7 @@ class ChannelRepository:
                         str(stored.channel_id) if stored.channel_id is not None else None,
                         None,
                         None,
+                        stored.coalesce_key,
                     ),
                 )
                 connection.commit()
@@ -412,7 +434,8 @@ class ChannelRepository:
                 """
                 SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
                        sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
-                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason
+                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                       coalesce_key
                 FROM messages
                 WHERE recipient_id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
                 ORDER BY (forced_at IS NULL) ASC, message_index ASC
@@ -441,7 +464,8 @@ class ChannelRepository:
                 f"""
                 SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
                        sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
-                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason
+                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                       coalesce_key
                 FROM messages
                 WHERE recipient_id IN ({placeholders})
                   AND accepted_at IS NULL AND cancelled_at IS NULL
@@ -575,7 +599,8 @@ class ChannelRepository:
                 """
                 SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
                        sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
-                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason
+                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                       coalesce_key
                 FROM messages
                 WHERE agent_session_id = ? AND message_index > ?
                 ORDER BY message_index ASC
@@ -584,6 +609,143 @@ class ChannelRepository:
                 (str(agent_session_id), after_index, limit),
             ).fetchall()
             return [_message_from_row(row=row) for row in rows]
+
+        return await self._run(_query)
+
+    async def close_agent_atomic(self, *, participant_id: UUID, reason: str) -> int:
+        """Close one agent participant and cancel its pending inbound rows atomically.
+
+        Both writes happen in one ``BEGIN IMMEDIATE`` transaction (108.3 §2):
+        the participant flips to ``closed`` and every unaccepted, uncancelled
+        inbound row gains ``cancel_reason`` in the same commit, so a send
+        racing the close either inserts against the open participant or hits
+        the closed one — never lands after the listener stopped.
+
+        Args:
+            participant_id (UUID): Agent participant to close.
+            reason (str): Cancellation reason for pending rows, e.g.
+                ``recipient_closed`` or ``session_closed``.
+
+        Returns:
+            int: Number of pending inbound rows cancelled.
+        """
+
+        def _write(connection: sqlite3.Connection) -> int:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "UPDATE participants SET status = 'closed' WHERE id = ?",
+                    (str(participant_id),),
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE messages SET cancelled_at = ?, cancel_reason = ?
+                    WHERE recipient_id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
+                    """,
+                    (_stamp(utc_now()), reason, str(participant_id)),
+                )
+                cancelled: int = int(cursor.rowcount)
+                connection.commit()
+                return cancelled
+            except BaseException:
+                connection.rollback()
+                raise
+
+        return await self._run(_write)
+
+    async def column_names(self, *, table: str) -> list[tuple[str, str]]:
+        """Return ``(name, declared_type)`` for one table's columns (test support).
+
+        Args:
+            table (str): Table to inspect.
+
+        Returns:
+            list[tuple[str, str]]: Column name and declared type pairs.
+        """
+
+        def _query(connection: sqlite3.Connection) -> list[tuple[str, str]]:
+            rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+            return [(str(row[1]), str(row[2])) for row in rows]
+
+        return await self._run(_query)
+
+    async def index_names(self) -> set[str]:
+        """Return the names of indexes in the database (test support).
+
+        Returns:
+            set[str]: Index names from ``sqlite_master``.
+        """
+
+        def _query(connection: sqlite3.Connection) -> set[str]:
+            rows = connection.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+            return {str(row[0]) for row in rows}
+
+        return await self._run(_query)
+
+    async def recent_sent_messages(
+        self,
+        *,
+        sender_id: UUID,
+        recipient_id: UUID,
+        limit: int = 5,
+    ) -> list[ChannelMessageDAO]:
+        """Return the newest rows one participant sent to another, newest first.
+
+        Used by the agent composer to list what the operator sent to one
+        target agent (108.3 §4).
+
+        Args:
+            sender_id (UUID): The sending participant (the channel's user).
+            recipient_id (UUID): The target agent participant.
+            limit (int): Maximum rows to return. Defaults to 5.
+
+        Returns:
+            list[ChannelMessageDAO]: Rows newest first.
+        """
+
+        def _query(connection: sqlite3.Connection) -> list[ChannelMessageDAO]:
+            rows = connection.execute(
+                """
+                SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
+                       sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
+                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                       coalesce_key
+                FROM messages
+                WHERE sender_id = ? AND recipient_id = ?
+                ORDER BY message_index DESC
+                LIMIT ?
+                """,
+                (str(sender_id), str(recipient_id), limit),
+            ).fetchall()
+            return [_message_from_row(row=row) for row in rows]
+
+        return await self._run(_query)
+
+    async def reply_for(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+        """Return the accepted reply row answering one message, or ``None``.
+
+        Args:
+            message_id (UUID): The message the reply must answer.
+
+        Returns:
+            Optional[ChannelMessageDAO]: The reply row, or ``None``.
+        """
+
+        def _query(connection: sqlite3.Connection) -> Optional[ChannelMessageDAO]:
+            row = connection.execute(
+                """
+                SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
+                       sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
+                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                       coalesce_key
+                FROM messages
+                WHERE in_reply_to_id = ? AND message_type = 'reply'
+                ORDER BY message_index ASC
+                LIMIT 1
+                """,
+                (str(message_id),),
+            ).fetchone()
+            return _message_from_row(row=row) if row is not None else None
 
         return await self._run(_query)
 
@@ -664,7 +826,8 @@ class ChannelRepository:
             """
             SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
                    sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
-                   message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason
+                   message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                   coalesce_key
             FROM messages WHERE id = ?
             """,
             (str(message_id),),
@@ -796,4 +959,5 @@ def _message_from_row(*, row: tuple) -> ChannelMessageDAO:
         channel_id=UUID(row[14]) if row[14] is not None else None,
         cancelled_at=_parse(row[15]) if row[15] is not None else None,
         cancel_reason=row[16],
+        coalesce_key=row[17],
     )

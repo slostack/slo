@@ -14,12 +14,15 @@ from uuid import UUID, uuid4
 
 from config.cfg import cfg
 
+from typing import Literal
+
 from src.channels.dao import (
     ChannelDAO,
     ChannelKind,
     ChannelMessageDAO,
     NewMessageDAO,
     ParticipantDAO,
+    SentMessageRowDAO,
     utc_now,
 )
 from src.channels.repository import ChannelRepository
@@ -165,6 +168,10 @@ class ChannelGateway:
     async def close_agent(self, *, session_id: UUID, reason: str) -> int:
         """Close one agent participant and cancel its pending inbound rows.
 
+        The participant flip and the pending-row cancellation commit together
+        (108.3 §2), so a send racing this close either inserts against the
+        open participant or is refused by the closed one.
+
         Args:
             session_id (UUID): Agent session to close.
             reason (str): Cancellation reason for pending rows, e.g.
@@ -173,8 +180,111 @@ class ChannelGateway:
         Returns:
             int: Number of pending inbound rows cancelled.
         """
-        await self._repository.set_participant_status(participant_id=session_id, status="closed")
-        return await self._repository.cancel_pending_inbound(recipient_id=session_id, reason=reason)
+        return await self._repository.close_agent_atomic(participant_id=session_id, reason=reason)
+
+    async def repository_count_participants(self) -> int:
+        """Count stored participants (test support).
+
+        Returns:
+            int: Number of participant rows.
+        """
+
+        def _query(repository_connection) -> int:
+            row = repository_connection.execute("SELECT COUNT(*) FROM participants").fetchone()
+            return int(row[0])
+
+        return await self.repository._run(_query)  # noqa: SLF001 — test-support read
+
+    async def recent_sent_messages(
+        self,
+        *,
+        sender_id: UUID,
+        recipient_id: UUID,
+        limit: int = 5,
+    ) -> list[ChannelMessageDAO]:
+        """Return the newest rows one participant sent to another, newest first.
+
+        Args:
+            sender_id (UUID): The sending participant (the channel's user).
+            recipient_id (UUID): The target agent participant.
+            limit (int): Maximum rows to return.
+
+        Returns:
+            list[ChannelMessageDAO]: Rows newest first.
+        """
+        return await self._repository.recent_sent_messages(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            limit=limit,
+        )
+
+    async def reply_for(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+        """Return the accepted reply row answering one message, or ``None``.
+
+        Args:
+            message_id (UUID): The message the reply must answer.
+
+        Returns:
+            Optional[ChannelMessageDAO]: The reply row, or ``None``.
+        """
+        return await self._repository.reply_for(message_id=message_id)
+
+    async def sent_rows(
+        self,
+        *,
+        sender_id: UUID,
+        recipient_id: UUID,
+        limit: int = 5,
+    ) -> list[SentMessageRowDAO]:
+        """Return composer rows for what one participant sent to another (108.3 §4).
+
+        State derives from ``accepted_at`` / ``cancelled_at``; the reply
+        preview comes from the first accepted reply row.
+
+        Args:
+            sender_id (UUID): The sending participant (the channel's user).
+            recipient_id (UUID): The target agent participant.
+            limit (int): Maximum rows to return.
+
+        Returns:
+            list[SentMessageRowDAO]: Composer rows, newest first.
+        """
+        rows: list[ChannelMessageDAO] = await self._repository.recent_sent_messages(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            limit=limit,
+        )
+        result: list[SentMessageRowDAO] = []
+        for row in rows:
+            reply: Optional[ChannelMessageDAO] = await self._repository.reply_for(message_id=row.id)
+            state: Literal["queued", "accepted", "cancelled"]
+            if row.cancelled_at is not None:
+                state = "cancelled"
+            elif row.accepted_at is not None:
+                state = "accepted"
+            else:
+                state = "queued"
+            result.append(
+                SentMessageRowDAO(
+                    message_id=row.id,
+                    preview=row.message_contents[:80],
+                    forced=row.forced_at is not None,
+                    state=state,
+                    reply_preview=reply.message_contents[:80] if reply is not None else None,
+                )
+            )
+        return result
+
+    async def get_participant(self, *, participant_id: UUID) -> Optional[ParticipantDAO]:
+        """Return one participant by id.
+
+        Args:
+            participant_id (UUID): Participant to look up.
+
+        Returns:
+            Optional[ParticipantDAO]: The stored participant, or ``None``.
+        """
+        return await self._repository.get_participant(participant_id=participant_id)
 
     async def send(self, *, new: NewMessageDAO) -> ChannelMessageDAO:
         """Insert one message and wake the in-process poller if there is one.
@@ -190,6 +300,29 @@ class ChannelGateway:
         if wake is not None:
             wake.set()
         return stored
+
+    async def conversation(
+        self,
+        *,
+        agent_session_id: UUID,
+        after_index: int = 0,
+        limit: int = 200,
+    ) -> list[ChannelMessageDAO]:
+        """Return one conversation's rows after an index, in order (test support).
+
+        Args:
+            agent_session_id (UUID): Conversation to read.
+            after_index (int): Only rows with ``message_index`` greater than this.
+            limit (int): Maximum rows to return.
+
+        Returns:
+            list[ChannelMessageDAO]: Rows in ``message_index`` order.
+        """
+        return await self._repository.conversation(
+            agent_session_id=agent_session_id,
+            after_index=after_index,
+            limit=limit,
+        )
 
     async def cancel(self, *, message_id: UUID, by: Optional[UUID] = None, reason: str = "operator") -> bool:
         """Cancel a pending row on behalf of a participant or the recipient agent.

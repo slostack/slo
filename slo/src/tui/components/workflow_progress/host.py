@@ -10,11 +10,14 @@ panel, the coordinator or the service.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Optional, Protocol
+from typing import Optional, Protocol, TYPE_CHECKING
 
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.dao import ChildAbortTargetDAO, WorkflowSessionKeyDAO
 from src.tui.workflows.session_progress_screen import SessionProgressScreen
+
+if TYPE_CHECKING:
+    from src.tui.components.agent_composer.component import AgentComposerComponent
 
 __all__ = ["WorkflowProgressHost"]
 
@@ -53,6 +56,20 @@ class WorkflowProgressHost(Protocol):
 
         Returns:
             Awaitable[None]: Native mount completion, not dismissal or paint completion.
+        """
+        ...
+
+    def progress_composer_for(
+        self, *, key: WorkflowSessionKeyDAO
+    ) -> Optional["AgentComposerComponent"]:
+        """Build the agent composer for one workflow session key (108.3 §5).
+
+        Args:
+            key (WorkflowSessionKeyDAO): Session row being opened.
+
+        Returns:
+            Optional[AgentComposerComponent]: A composer for the orchestrator's
+                own row, or ``None`` (children, or no channel delivery).
         """
         ...
 

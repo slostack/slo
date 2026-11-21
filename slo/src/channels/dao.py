@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "ChannelDAO",
+    "SentMessageRowDAO",
     "ChannelKind",
     "ChannelMessageDAO",
     "MessageType",
@@ -102,9 +103,30 @@ class NewMessageDAO(BaseModel):
         default=False,
         description="True sets forced_at so the message enters the current run (108.2).",
     )
+    coalesce_key: Optional[str] = Field(
+        default=None,
+        description="Key under which a newer pending message replaces an older one (108.3).",
+    )
     sent_at: datetime = Field(
         default_factory=utc_now,
         description="UTC time on the sender's clock when it was sent.",
+    )
+
+
+class SentMessageRowDAO(BaseModel):
+    """One composer list row: a message you sent and its derived state (108.3 §4)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    message_id: UUID = Field(description="Id of the message you sent.")
+    preview: str = Field(max_length=80, description="First 80 characters of the message.")
+    forced: bool = Field(description="Whether it was sent forced (Ctrl+Enter).")
+    state: Literal["queued", "accepted", "cancelled"] = Field(
+        description="Delivery state derived from accepted_at / cancelled_at."
+    )
+    reply_preview: Optional[str] = Field(
+        default=None,
+        description="First 80 characters of the reply, once one exists.",
     )
 
 
@@ -137,4 +159,7 @@ class ChannelMessageDAO(BaseModel):
     )
     cancel_reason: Optional[str] = Field(
         description="Why it was cancelled, e.g. 'operator', 'recipient_closed', 'superseded'."
+    )
+    coalesce_key: Optional[str] = Field(
+        description="Key under which a newer pending message replaced this one, if any."
     )

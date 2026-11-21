@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from time import monotonic
-from typing import Optional, Protocol, cast
+from typing import Awaitable, Callable, Optional, Protocol, cast
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -37,8 +37,11 @@ from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
+from src.channels.dao import ChannelMessageDAO
 from src.channels.gateway import ChannelGateway
-from src.tui.channel.adapter import TuiChannelAdapter
+from src.tui.channel.adapter import TuiChannelAdapter, TuiDisplaySink
+from src.tui.components.agent_composer.component import AgentComposerComponent
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.tui.channel.runner import TuiTurnRunner
 from src.tui.keyboard_capability import ctrl_enter_hint_line
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
@@ -55,6 +58,8 @@ from src.tui.components.chat_transcript.commands import (
     BeginTranscriptRunDAO,
     MountTreeOutputDAO,
 )
+from src.tui.components.queued_messages.component import QueuedMessagesComponent
+from src.tui.components.queued_messages.commands import ClearQueuedDAO, ShowQueuedDAO
 from src.tui.components.workflow_progress.component import WorkflowProgressComponent
 from src.tui.components.workflow_progress.events import ConfirmAbortDAO
 from src.tui.components.prompt_input.component import PromptInputComponent
@@ -401,6 +406,10 @@ class SloTUI(App):
         self._lease_timer: Optional[Timer] = None
         self._channel_gateway: Optional[ChannelGateway] = channel_gateway
         self._channel_adapter: Optional[TuiChannelAdapter] = None
+        self._queued_refresh_timer: Optional[Timer] = None
+        self._queued_rows_snapshot: Callable[[], Awaitable[tuple[list[ChannelMessageDAO], bool]]] = (
+            self._read_queue_snapshot
+        )
         self._inbox_timer: Optional[Timer] = None
         self._failed_delivery_timers: tuple[Timer, ...] = ()
 
@@ -420,6 +429,9 @@ class SloTUI(App):
                 yield self._suggestion_menu
             self._input = PromptInputComponent()
             yield self._input
+            # Queued prompts: below the input, hidden while the queue is empty (108.1 §5.5).
+            self._queued_messages = QueuedMessagesComponent()
+            yield self._queued_messages
             # Workflow progress: below PromptInputComponent, hidden while it has no rows.
             # The orchestrator transcript always stays in the foreground.
             self._workflow_progress = WorkflowProgressComponent(host=self)
@@ -1936,6 +1948,7 @@ class SloTUI(App):
             return
         try:
             await adapter.send_prompt(text=text, force=force)
+            await self._refresh_queued_display()
         except Exception as exc:  # noqa: BLE001 — a locked/corrupt DB must not lose the text
             if self._input is not None:
                 await self._input.handle(command=ReplacePromptDAO(text=text))
@@ -2031,8 +2044,13 @@ class SloTUI(App):
                 gateway=self._channel_gateway,
                 runner=TuiTurnRunner(app=self),
                 operator_participant_id=adapter.user_participant.id,
+                display=TuiDisplaySink(transcript=self._chat_transcript),
             )
             self._channel_adapter = adapter
+            # Queued-list refresh: every poll tick while non-empty (108.1 §5.5).
+            self._queued_refresh_timer = self.set_interval(
+                interval=0.5, callback=self._refresh_queued_display
+            )
         except Exception as exc:  # noqa: BLE001 — a broken queue must not block the TUI
             log_error(msg=f"channel delivery startup failed: {exc}")
             if self._chat_transcript is not None:
@@ -2042,6 +2060,52 @@ class SloTUI(App):
                         classes="tool-result",
                     )
                 )
+
+    async def _read_queue_snapshot(self) -> tuple[list[ChannelMessageDAO], bool]:
+        """Return the pending rows and paused flag from the live poller.
+
+        Returns:
+            tuple[list[ChannelMessageDAO], bool]: The pending rows and the
+                poller's paused state; empty and False without delivery.
+        """
+        poller = self._session.channel_poller
+        if poller is None:
+            return ([], False)
+        return (await poller.pending_prompts(), poller.paused is not None)
+
+    async def _refresh_queued_display(self) -> None:
+        """Push the current queue snapshot into the queued-messages component.
+
+        Called after every local send, on poller state change, and every poll
+        tick while non-empty (108.1 §5.5).
+        """
+        component = self._queued_messages
+        if component is None:
+            return
+        rows, paused = await self._queued_rows_snapshot()
+        if not rows:
+            component.handle(command=ClearQueuedDAO())
+            return
+        component.handle(command=ShowQueuedDAO(rows=rows, paused=paused))
+
+    async def on_queued_messages_component_cancel_requested(
+        self, event: QueuedMessagesComponent.CancelRequested
+    ) -> None:
+        """Cancel one queued row on the operator's cancel affordance.
+
+        Args:
+            event (QueuedMessagesComponent.CancelRequested): The cancel request
+                carrying the queued row's id.
+        """
+        event.stop()
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
+            return
+        try:
+            await adapter.cancel(message_id=event.message_id)
+        except Exception as exc:  # noqa: BLE001 — a locked DB must not kill the TUI
+            log_error(msg=f"queued row cancel failed: {exc}")
+        await self._refresh_queued_display()
 
     async def _announce_recovered_queue_pause(self) -> None:
         """Show the recovery pause notice when the poller started paused.
@@ -3206,6 +3270,32 @@ class SloTUI(App):
             on_closed (Callable[[None], None]): Callback after the view leaves the stack.
         """
         return self.push_screen(screen=screen, callback=on_closed)
+
+    def progress_composer_for(
+        self, *, key: WorkflowSessionKeyDAO
+    ) -> Optional["AgentComposerComponent"]:
+        """Build the agent composer for one workflow session key (108.3 §5).
+
+        Only the orchestrator's own row gets a composer; child rows get none
+        until 108.4. Without channel delivery there is nothing to send through.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Session row being opened.
+
+        Returns:
+            Optional[AgentComposerComponent]: A composer bound to the running
+                TUI channel adapter targeting the orchestrator, or ``None``.
+        """
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if not key.is_parent or adapter is None:
+            return None
+        return AgentComposerComponent(
+            target_agent_id=channel_participant_id_for_session(
+                session_id=key.orchestrator_session_id
+            ),
+            target_label="orchestrator",
+            adapter=adapter,
+        )
 
     def present_confirmation(
         self, *, screen: AbortConfirmationScreen, on_closed: Callable[[Optional[bool]], None]

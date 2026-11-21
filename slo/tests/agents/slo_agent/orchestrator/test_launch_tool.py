@@ -132,7 +132,18 @@ def _build_tool(
         handle_store=store or _build_store(tmp_path=tmp_path),
         spawn=spawn,
         history_root=tmp_path / "history",
+        channels_reachable=_reachable,
     )
+
+
+async def _reachable() -> bool:
+    """Injectable reachability probe reporting the queue as reachable."""
+    return True
+
+
+async def _unreachable() -> bool:
+    """Injectable reachability probe reporting the queue as unreachable."""
+    return False
 
 
 _VALIDATION_ERROR = {
@@ -1014,3 +1025,37 @@ async def test_launch_workflow_spawns_when_failed_handle_has_aborted_status(tmp_
     assert spawn.call_count == 1
     repaired = await store.read(owner_session_id=_OWNER_SESSION_ID, workflow_id="wf-b64c")
     assert repaired is not None and repaired.state == "aborted"
+
+
+class TestChannelsReachableGate:
+    """A launch refuses when the shared channel queue is unreachable (108.3 §3)."""
+
+    async def test_launch_refuses_when_the_channel_queue_is_unreachable(
+        self, tmp_path: Path
+    ) -> None:
+        from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool
+
+        spawn: _FakeSpawn = _FakeSpawn()
+        tool: BaseTool = LaunchWorkflowTool.build(
+            owner_session_id=_OWNER_SESSION_ID,
+            default_model=None,
+            handle_store=_build_store(tmp_path=tmp_path),
+            spawn=spawn,
+            history_root=tmp_path / "history",
+            channels_reachable=_unreachable,
+        )
+        result = json.loads(
+            await LaunchWorkflowTool._launch(
+                store=_build_store(tmp_path=tmp_path),
+                spawn=spawn,
+                history_root=tmp_path / "history",
+                channels_reachable=_unreachable,
+                owner_session_id=_OWNER_SESSION_ID,
+                brief="a valid brief",
+                cwd=None,
+                model=None,
+                reasoning_level=None,
+            )
+        )
+        assert spawn.call_count == 0
+        assert "channel queue unreachable" in result["error"]

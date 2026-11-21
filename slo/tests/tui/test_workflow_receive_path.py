@@ -921,8 +921,10 @@ class TestLaunchResultSeedsExitHint:
 @pytest.mark.parametrize("with_evidence", [True, False])
 async def test_run_aborted_marks_handle_aborted_through_inbox(tmp_path: Path, with_evidence: bool) -> None:
     """Real abort inbox delivery converges even when terminal evidence is withheld."""
+    from uuid import uuid4
+
+    from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
     from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-    from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
     from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 
     root = tmp_path / "history"
@@ -934,13 +936,28 @@ async def test_run_aborted_marks_handle_aborted_through_inbox(tmp_path: Path, wi
             history_root=root, orchestrator_session_id="orch-1", workflow_id="wf-1"
         ).write_terminal(state="aborted", exit_code=2, phase="done")
     inbox = SessionInboxStore(history_root=root)
-    notifier = WorkflowNotifier(
-        target_session_id="session-1234",
-        orchestrator_session_id="orch-1",
-        workflow_id="wf-1",
-        inbox_store=inbox,
+    # The workflow notifier no longer writes the file inbox (108.3); the
+    # retained old path is the scheduler producer, so the abort note is
+    # synthesized exactly as the scheduler would.
+    await inbox.enqueue(
+        message=SessionInboxMessageDAO(
+            session_id="session-1234",
+            schedule_id="workflow:wf-1",
+            run_id=str(uuid4()),
+            kind="workflow_aborted",
+            delivery_mode="chat_turn",
+            title="wf-1 aborted",
+            text=(
+                "Workflow wf-1 was aborted. Reason: run_aborted: <aborted>. "
+                "An aborted workflow is final: do not retry, resume or relaunch it. "
+                "Tell the user it was aborted and suggest /workflows for its final state."
+            ),
+            payload={
+                "workflow_id": "wf-1",
+                "orchestrator_session_id": "orch-1",
+            },
+        )
     )
-    await notifier.aborted(reason="run_aborted: <aborted>")
     message = await inbox.claim_next(session_id="session-1234")
     assert message is not None
     assert message.kind == "workflow_aborted" and message.delivery_mode == "chat_turn"

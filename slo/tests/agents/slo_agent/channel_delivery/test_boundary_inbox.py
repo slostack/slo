@@ -166,29 +166,30 @@ class TestTakeAndConfirm:
         finally:
             await gateway.close()
 
-    async def test_take_never_takes_normal_rows_or_other_types(self, tmp_path: Path) -> None:
-        """Normal prompts and notes stay pending; only forced prompts are taken."""
+    async def test_take_takes_notes_before_forced_prompts_but_never_normal_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """Notes join the boundary first (108.3), forced prompts next; normal prompts wait."""
         gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
         try:
             inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
             await _send(gateway=gateway, sender_id=user.id, recipient_id=agent.id, text="normal")
-            await _send(
+            note_row: ChannelMessageDAO = await _send(
                 gateway=gateway,
                 sender_id=user.id,
                 recipient_id=agent.id,
                 text="note",
-                force=True,
                 message_type="note",
             )
             forced_row: ChannelMessageDAO = await _send(
                 gateway=gateway, sender_id=user.id, recipient_id=agent.id, text="forced", force=True
             )
             deliveries = await inbox.take(iteration=1)
-            assert [delivery.message_id for delivery in deliveries] == [forced_row.id]
+            assert [delivery.message_id for delivery in deliveries] == [note_row.id, forced_row.id]
             pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
-            # The forced note stays pending (never taken); the taken-but-not-yet
-            # confirmed forced prompt and the normal prompt remain pending too.
-            assert [row.message_contents for row in pending] == ["note", "forced", "normal"]
+            # The taken-but-not-yet confirmed note and forced prompt, and the
+            # normal prompt, remain pending until they are confirmed.
+            assert {row.message_contents for row in pending} == {"note", "forced", "normal"}
         finally:
             await gateway.close()
 
@@ -293,5 +294,96 @@ class TestInFlightSnapshotExclusion:
             # The fresh read reconciled the snapshot, so the revive decision
             # after this boundary sees no forced row and stops the run.
             assert inbox.has_forced() is False
+        finally:
+            await gateway.close()
+
+
+class TestNotesAtTheBoundary:
+    """Notes join the next boundary before forced prompts and never revive a run (1083 O2)."""
+
+    async def test_take_returns_notes_before_forced_prompts_and_confirms_both(
+        self, tmp_path: Path
+    ) -> None:
+        gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
+        try:
+            inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+            forced: ChannelMessageDAO = await _send(
+                gateway=gateway, sender_id=user.id, recipient_id=agent.id, text="use pytest -x", force=True
+            )
+            note: ChannelMessageDAO = await _send(
+                gateway=gateway,
+                sender_id=user.id,
+                recipient_id=agent.id,
+                text="note while busy",
+                message_type="note",
+            )
+            deliveries: list[BoundaryDeliveryDAO] = await inbox.take(iteration=3)
+            assert [delivery.message_id for delivery in deliveries] == [note.id, forced.id]
+            assert deliveries[0].text == "note while busy"
+            assert deliveries[0].sender_name == "tester (tui)"
+            await inbox.confirm(deliveries=deliveries)
+            stored_note: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
+            stored_forced: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced.id)
+            assert stored_note is not None and stored_note.accepted_at is not None
+            assert stored_forced is not None and stored_forced.accepted_at is not None
+        finally:
+            await gateway.close()
+
+    async def test_notes_never_set_has_forced_so_they_cannot_revive_a_run(self, tmp_path: Path) -> None:
+        gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
+        try:
+            inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+            await _send(
+                gateway=gateway,
+                sender_id=user.id,
+                recipient_id=agent.id,
+                text="fyi",
+                message_type="note",
+            )
+            await inbox.refresh()
+            assert inbox.has_forced() is False
+            deliveries: list[BoundaryDeliveryDAO] = await inbox.take(iteration=1)
+            assert len(deliveries) == 1
+            # A note taken but not yet confirmed still never reads as forced.
+            assert inbox.has_forced() is False
+        finally:
+            await gateway.close()
+
+    async def test_a_taken_note_is_never_taken_twice_before_confirm(self, tmp_path: Path) -> None:
+        gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
+        try:
+            inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+            await _send(
+                gateway=gateway,
+                sender_id=user.id,
+                recipient_id=agent.id,
+                text="fyi",
+                message_type="note",
+            )
+            first: list[BoundaryDeliveryDAO] = await inbox.take(iteration=1)
+            second: list[BoundaryDeliveryDAO] = await inbox.take(iteration=2)
+            assert len(first) == 1
+            assert second == []
+            await inbox.confirm(deliveries=first)
+        finally:
+            await gateway.close()
+
+    async def test_reserved_rows_are_never_taken(self, tmp_path: Path) -> None:
+        gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
+        try:
+            inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+            note: ChannelMessageDAO = await _send(
+                gateway=gateway,
+                sender_id=user.id,
+                recipient_id=agent.id,
+                text="fyi",
+                message_type="note",
+            )
+            inbox.reserve(message_id=note.id)
+            deliveries: list[BoundaryDeliveryDAO] = await inbox.take(iteration=1)
+            assert deliveries == []
+            inbox.release(message_id=note.id)
+            deliveries_after: list[BoundaryDeliveryDAO] = await inbox.take(iteration=2)
+            assert [delivery.message_id for delivery in deliveries_after] == [note.id]
         finally:
             await gateway.close()

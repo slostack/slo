@@ -105,6 +105,33 @@ async def _settle(pilot: Pilot[None], cycles: int = 6) -> None:
         await asyncio.sleep(0.02)
 
 
+class TestAgentComposerPromptAppearance:
+    """The modal composer exposes a framed, readable prompt before focus."""
+
+    async def test_prompt_has_accent_rules_and_a_visible_editing_line(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            _, composer_factory, _ = await _build_composer(gateway=gateway, target_session_id=str(uuid4()))
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test(size=(60, 20)) as pilot:
+                await _settle(pilot)
+                prompt: Input = app.query_one("#agent-composer-input", Input)
+                for focused in (False, True):
+                    app.set_focus(prompt if focused else None)
+                    await pilot.pause()
+                    assert prompt.styles.border_top[0] == "solid"
+                    assert prompt.styles.border_bottom[0] == "solid"
+                    assert prompt.styles.border_left[0] in ("", "none")
+                    assert prompt.styles.border_right[0] in ("", "none")
+                    assert prompt.styles.border_top[1].hex == app.get_css_variables()["accent"]
+                    assert prompt.styles.border_bottom[1] == prompt.styles.border_top[1]
+                    assert prompt.region.height == 3
+                    assert prompt.content_region.height == 1
+                    assert prompt.region.bottom <= app.size.height
+        finally:
+            await gateway.close()
+
+
 class TestAgentComposerSends:
     """Enter and Ctrl+Enter enqueue rows for the target agent (108.3 §5)."""
 

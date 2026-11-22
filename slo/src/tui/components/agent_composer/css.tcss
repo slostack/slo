@@ -21,8 +21,13 @@ AgentComposerComponent {
         height: auto;
         max-height: 5;
     }
-    & Input {
-        height: 1;
+    & Input, & Input:focus {
+        border: none;
+        border-top: solid $accent;
+        border-bottom: solid $accent;
+        background: $surface;
+        height: 3;
+        padding: 0 1;
     }
 }
 

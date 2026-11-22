@@ -90,14 +90,10 @@ class OrchestratorSessionBootstrap:
         session_id: str = session.session_id
         permitted: bool = session._begin_standard_orchestrator_attachment()
         policy_sources = session._snapshot_herdr_policy_sources() if permitted else None
-        pool: SubAgentPool = (
-            cls._build_pool(
-                session=session,
-                owner_session_id=owner_session_id or session.session_id,
-                channel_gateway=channel_gateway,
-            )
-            if channel_gateway is not None
-            else cls._build_pool(session=session, owner_session_id=owner_session_id or session.session_id)
+        pool: SubAgentPool = cls._build_pool(
+            session=session,
+            owner_session_id=owner_session_id or session.session_id,
+            channel_gateway=channel_gateway,
         )
         spawn_tool: BaseTool = SpawnSubAgentsTool.build(
             pool=pool,

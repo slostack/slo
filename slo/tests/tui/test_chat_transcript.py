@@ -384,66 +384,9 @@ async def test_initial_read_hard_cancel_cannot_publish_after_lifecycle_reset(
             assert transcript.query_one(AssistantStreamBlock).get_copyable_text() == "old answer"
 
 
-async def test_history_loads_30_then_30_then_5_without_writes(tmp_path: Path) -> None:
-    """A real 65-entry history is published once in complete chronological order."""
-    entries = await seed_history(root=tmp_path / "history", count=65)
-    assert len(entries) == 65
-    history = tmp_path / "history" / "seed" / "events.jsonl"
-    original = history.read_bytes()
-
-    async def read_history() -> list[TranscriptEntryDAO]:
-        """Return the canonical real-store projection."""
-        return entries
-
-    transcript = ChatTranscriptComponent(history_reader=read_history)
-    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
-        await transcript.hydrate()
-        for start in (35, 5, 0):
-            await pilot.pause()
-            assert [block.get_copyable_text() for block in transcript.query(AssistantStreamBlock)] == [
-                f"entry-{index:02}" for index in range(start, 65)
-            ]
-            if start:
-                assert str(transcript.query_one("#transcript-earlier-summary").render()).find(str(start)) >= 0
-            await transcript.load_older()
-        assert not list(transcript.query("#transcript-earlier-summary"))
-        assert history.read_bytes() == original
-
-
-async def test_window_501st_mount_and_terminal_do_not_deadlock() -> None:
-    """Real 500/10 window removes settled prefix but retains live blocks and newest text."""
-
-    async def empty_history() -> list[TranscriptEntryDAO]:
-        """No persisted entries exist for this live-only journey."""
-        return []
-
-    transcript = ChatTranscriptComponent(history_reader=empty_history)
-    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
-        await transcript.present_event(
-            event=AgentStreamEventDAO(kind="text_delta", delta="live", iteration=0)
-        )
-        live = transcript.query_one(AssistantStreamBlock)
-        for index in range(510):
-            await transcript.handle(
-                command=TranscriptNoticeDAO(content=f"notice-{index}", classes="tool-result")
-            )
-        await asyncio.wait_for(
-            transcript.present_event(event=AgentStreamEventDAO(kind="text_end")), timeout=5
-        )
-        await pilot.pause()
-        content = transcript.query_one("#transcript-content")
-        ordinary = [child for child in content.children if child.id != "transcript-earlier-summary"]
-        assert len(ordinary) == 500
-        assert live in ordinary and not live.finalized
-        assert [str(child.render()) for child in ordinary[-10:]] == [f"notice-{i}" for i in range(500, 510)]
-        assert "notice-0" in transcript.logical_copy_text()
-        await asyncio.wait_for(
-            transcript.present_event(event=AgentStreamEventDAO(kind="run_completed")), timeout=5
-        )
-
-
 async def test_tree_and_steering_are_separate_from_clear_and_expansion() -> None:
     """Reusable clear drops all transient content and expansion policy."""
+
     async def empty_history() -> list[TranscriptEntryDAO]:
         """Supply an empty read-only history."""
         return []

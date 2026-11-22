@@ -31,6 +31,7 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.app import SloTUI
+from src.tui.channel.adapter import TuiChannelAdapter
 from src.tui.components.chat_transcript.component import HistoryReader
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.model_catalog import ModelSuggestionProjection, model_suggestion_entries
@@ -431,6 +432,8 @@ async def test_commands_keep_queue_policy(tmp_path: Path) -> None:
         editor: PromptInputComponent = _require_prompt_input(app=app)
         poller = session.channel_poller
         assert poller is not None
+        channel_adapter: Optional[TuiChannelAdapter] = app.channel_adapter
+        assert channel_adapter is not None
 
         await _submit_prompt(app=app, pilot=pilot, text="first")
         await pump_until(pilot=pilot, predicate=lambda: poller.busy)
@@ -439,14 +442,14 @@ async def test_commands_keep_queue_policy(tmp_path: Path) -> None:
 
         await pilot.press("ctrl+c")
         await pump_until(pilot=pilot, predicate=lambda: poller.paused == "aborted")
-        queued = await app.channel_adapter.queued()
+        queued = await channel_adapter.queued()
         # While run 1 is held before its first event its row is not accepted yet,
         # so both rows may still be pending; the queued row must survive the abort.
         assert "held" in [row.message_contents for row in queued if row.message_type == "prompt"]
 
         await app._dispatch_slash_command(line="/clear")
         await pilot.pause()
-        queued_after_clear = await app.channel_adapter.queued()
+        queued_after_clear = await channel_adapter.queued()
         assert "held" in [row.message_contents for row in queued_after_clear if row.message_type == "prompt"]
         assert list(editor._prompt_history._entries) == recall_before
 
@@ -454,7 +457,7 @@ async def test_commands_keep_queue_policy(tmp_path: Path) -> None:
         await _wait_for_app_idle(app=app, pilot=pilot)
         assert await _history_user_texts(session=session) == ["first"]
         held_row = next(row for row in queued_after_clear if row.message_contents == "held")
-        still_queued = await app.channel_adapter.queued()
+        still_queued = await channel_adapter.queued()
         still_pending = next(
             (row for row in still_queued if row.id == held_row.id),
             None,

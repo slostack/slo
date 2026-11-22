@@ -515,7 +515,9 @@ class TestSloAgentSessionPassThroughs:
             workdir=tmp_path,
             responses=[FauxChatModel.assistant_message(content="ack")],
         )
-        session.boundary_inbox.enqueue(text="please be terse")
+        inbox = session.boundary_inbox
+        assert isinstance(inbox, MemoryBoundaryInbox)
+        inbox.enqueue(text="please be terse")
         applied: list[str] = []
         final_response: str = ""
         async for event in session.invoke(text="hello"):

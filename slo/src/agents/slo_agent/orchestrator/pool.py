@@ -606,11 +606,14 @@ class SubAgentPool:
         WHAT: register into the captured dispatch (fresh execution_id) → install
             the wrapper, abort event and completion future → emit spawned → race
             the slot against a targeted abort → run, or publish a sealed/targeted
-            pending abort without spawning → emit exactly one terminal lifecycle
-            from the returned registry winner → return that winner. The
-            incarnation's completion future settles exactly once in finally. No
-            terminal state is reconciled or written here; the process gateway owns
-            publication.
+            pending abort without spawning → close the child's channel participant
+            → emit exactly one terminal lifecycle from the returned registry winner
+            → return that winner. Participant closure is a joined obligation on
+            every path, winner or not (C5, R8): a cancellation that arrives while
+            it runs is deferred until it settles, then re-raised, and the
+            incarnation's completion future settles exactly once, only after the
+            closure. No terminal state is reconciled or written here; the process
+            gateway owns publication.
         WHO: Called only by ``_run_one`` while it holds the session reservation.
         WHEN: Once per admitted task; a pool sealed after admission returns the
             sealed result without registering.
@@ -642,6 +645,7 @@ class SubAgentPool:
         )
         completion: asyncio.Future[SubAgentResultDAO] = self._install_incarnation(process=process)
         winner: Optional[SubAgentResultDAO] = None
+        participant_close_started: bool = False
         try:
             await self._emit_lifecycle(
                 kind="sub_agent_spawned",
@@ -651,7 +655,8 @@ class SubAgentPool:
                 prompt_preview=TaskPreview.encode_summary(task_summary=task.task_summary),
             )
             winner = await self._run_with_slot(process=process, task=task)
-            await self._close_abandoned_child_participant(session_id=session_id)
+            participant_close_started = True
+            await self._join_abandoned_child_participant_close(session_id=session_id)
             await self._emit_lifecycle(
                 kind=lifecycle_kind_for_status(status=winner.status),
                 task_id=task.task_id,
@@ -660,20 +665,23 @@ class SubAgentPool:
             )
             return winner
         finally:
-            del self._active_by_session_id[session_id]
-            self._settle_completion(completion=completion, process=process, winner=winner)
-            if winner is None:
-                # Cancelled or failed before a winner: the child may have died
-                # without closing its participant, so close it here too (C5).
-                await self._join_abandoned_child_participant_close(session_id=session_id)
+            try:
+                if not participant_close_started:
+                    # Cancelled or failed before the closure began: the child may
+                    # have died without closing its participant (C5).
+                    await self._join_abandoned_child_participant_close(session_id=session_id)
+            finally:
+                del self._active_by_session_id[session_id]
+                self._settle_completion(completion=completion, process=process, winner=winner)
 
     async def _close_abandoned_child_participant(self, *, session_id: str) -> None:
         """Close a finished child's channel participant if the child left it open (108.4 C5).
 
         WHAT: Delegates to ``ChildChannelReaper``; no-op without a channel gateway.
-        WHO: Called only by ``_run_reserved``.
-        WHEN: After the incarnation's winner is known, before its terminal
-            lifecycle event, so observers of that event see the child closed.
+        WHO: Called only by ``_join_abandoned_child_participant_close``.
+        WHEN: Once per incarnation, after its winner is known (before its
+            terminal lifecycle event, so observers of that event see the child
+            closed) or after it ended without one.
 
         Args:
             session_id (str): Child session whose incarnation just ended.
@@ -685,11 +693,15 @@ class SubAgentPool:
     async def _join_abandoned_child_participant_close(self, *, session_id: str) -> None:
         """Close an abandoned child participant to completion, even while being cancelled.
 
+        A cancelled executor await does not prove the SQLite write finished, so
+        the close runs in its own task and is always joined.
+
         WHAT: Runs ``_close_abandoned_child_participant`` in its own task and
             joins it; a cancellation that arrives while joining is deferred
             until the close finished, then re-raised.
-        WHO: Called only by ``_run_reserved``'s ``finally`` when no winner exists.
-        WHEN: After the incarnation was cancelled or failed before a winner.
+        WHO: Called only by ``_run_reserved``, exactly once per incarnation:
+            after the winner, or from ``finally`` when the run ended before one.
+        WHEN: Before the incarnation's completion future settles.
 
         Args:
             session_id (str): Child session whose incarnation ended without a winner.
@@ -764,7 +776,8 @@ class SubAgentPool:
         WHAT: Uses the runner's returned winner, else the registry's committed
             winner, else an explicit interruption error; never a fabricated result.
         WHO: Called only from ``_run_reserved``'s finally.
-        WHEN: After the wrapper left ``_active_by_session_id``.
+        WHEN: After the participant closure settled and the wrapper left
+            ``_active_by_session_id``.
 
         Args:
             completion (asyncio.Future[SubAgentResultDAO]): Incarnation future.

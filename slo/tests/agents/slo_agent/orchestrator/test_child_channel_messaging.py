@@ -792,3 +792,130 @@ class TestChildAbortAndCancellationClosesItsParticipant:
             )
         finally:
             await spawn.kill_leftovers()
+
+
+class HeldCloseChannelGateway:
+    """The pool's channel boundary over a real SQLite gateway, with a test-held close.
+
+    ``close_agent`` signals that it started, waits for the test's release, then
+    closes through the real gateway and records whether the dispatch had already
+    finished at that moment.
+    """
+
+    def __init__(self, *, gateway: ChannelGateway) -> None:
+        """Wrap the real gateway; the close gate starts closed."""
+        self._gateway: ChannelGateway = gateway
+        self.close_started: asyncio.Event = asyncio.Event()
+        self.release: asyncio.Event = asyncio.Event()
+        self.dispatch: Optional[asyncio.Task[OrchestratorResultDAO]] = None
+        self.dispatch_done_when_closed: list[bool] = []
+
+    async def close_agent(self, *, session_id: UUID, reason: str) -> int:
+        """Hold until released, then close through the real queue.
+
+        Args:
+            session_id (UUID): Child participant to close.
+            reason (str): Cancellation reason for its pending rows.
+
+        Returns:
+            int: Pending rows the real gateway cancelled.
+        """
+        self.close_started.set()
+        await self.release.wait()
+        cancelled: int = await self._gateway.close_agent(session_id=session_id, reason=reason)
+        self.dispatch_done_when_closed.append(self.dispatch is not None and self.dispatch.done())
+        return cancelled
+
+
+class TestCancellationDuringParticipantCloseIsJoined:
+    """R8: participant closure is a joined lifecycle obligation, with or without a winner."""
+
+    async def test_cancel_while_closing_after_the_winner_still_closes_before_dispatch_ends(
+        self, tmp_path: Path, channel_gateway: ChannelGateway
+    ) -> None:
+        orchestrator_session_id: str = str(uuid4())
+        parent_id: UUID = channel_participant_id_for_session(session_id=orchestrator_session_id)
+        await channel_gateway.register_agent(session_id=parent_id, name="orchestrator W")
+        spawn: ChannelChildSpawn = ChannelChildSpawn(
+            gateway=channel_gateway, parent_id=parent_id, exit_code=0, closes_itself=False
+        )
+        held: HeldCloseChannelGateway = HeldCloseChannelGateway(gateway=channel_gateway)
+        pool: SubAgentPool = _channel_pool(
+            tmp_path=tmp_path,
+            orchestrator_session_id=orchestrator_session_id,
+            spawn=spawn,
+            channel_gateway=held,  # type: ignore[arg-type]
+        )
+        child_session_id: str = str(uuid4())
+        dispatch: asyncio.Task[OrchestratorResultDAO] = asyncio.create_task(
+            pool.dispatch(mode="single", tasks=[_task(task_id="review-1", session_id=child_session_id)])
+        )
+        held.dispatch = dispatch
+        await asyncio.wait_for(held.close_started.wait(), timeout=10.0)
+        winner = pool.registry.get(session_id=child_session_id)
+        assert winner is not None and winner.status == "completed"
+
+        dispatch.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert dispatch.done() is False
+        held.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(dispatch, timeout=10.0)
+
+        assert held.dispatch_done_when_closed == [False]
+        child_participant: Optional[ParticipantDAO] = await channel_gateway.get_participant(
+            participant_id=UUID(child_session_id)
+        )
+        queued: Optional[ChannelMessageDAO] = await channel_gateway.get(
+            message_id=spawn.queued_message_ids[0]
+        )
+        assert child_participant is not None and child_participant.status == "closed"
+        assert queued is not None and (queued.accepted_at, queued.cancel_reason) == (None, "aborted")
+        # The child's terminal result survives the dispatch cancellation unchanged.
+        final = pool.registry.get(session_id=child_session_id)
+        assert final is not None and final.status == "completed"
+
+    async def test_cancel_while_closing_without_a_winner_closes_before_dispatch_ends(
+        self, tmp_path: Path, channel_gateway: ChannelGateway, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SLO_SUBAGENT_TERMINATE_GRACE_SECONDS", "2")
+        orchestrator_session_id: str = str(uuid4())
+        parent_id: UUID = channel_participant_id_for_session(session_id=orchestrator_session_id)
+        await channel_gateway.register_agent(session_id=parent_id, name="orchestrator W")
+        spawn: OwnedSleeperChildSpawn = OwnedSleeperChildSpawn(gateway=channel_gateway, parent_id=parent_id)
+        held: HeldCloseChannelGateway = HeldCloseChannelGateway(gateway=channel_gateway)
+        pool: SubAgentPool = _channel_pool(
+            tmp_path=tmp_path,
+            orchestrator_session_id=orchestrator_session_id,
+            spawn=spawn,  # type: ignore[arg-type]
+            channel_gateway=held,  # type: ignore[arg-type]
+        )
+        child_session_id: str = str(uuid4())
+        try:
+            dispatch: asyncio.Task[OrchestratorResultDAO] = asyncio.create_task(
+                pool.dispatch(mode="single", tasks=[_task(task_id="review-1", session_id=child_session_id)])
+            )
+            held.dispatch = dispatch
+            await spawn.wait_for_spawn()
+            dispatch.cancel()
+            await asyncio.wait_for(held.close_started.wait(), timeout=20.0)
+            dispatch.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert dispatch.done() is False
+            held.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(dispatch, timeout=20.0)
+
+            assert held.dispatch_done_when_closed == [False]
+            child_participant: Optional[ParticipantDAO] = await channel_gateway.get_participant(
+                participant_id=UUID(child_session_id)
+            )
+            queued: Optional[ChannelMessageDAO] = await channel_gateway.get(
+                message_id=spawn.queued_message_ids[0]
+            )
+            assert child_participant is not None and child_participant.status == "closed"
+            assert queued is not None and (queued.accepted_at, queued.cancel_reason) == (None, "aborted")
+        finally:
+            await spawn.kill_leftovers()

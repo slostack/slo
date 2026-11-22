@@ -83,9 +83,7 @@ def ctrl_enter_hint_line(*, env: Optional[dict[str, str]] = None) -> Optional[st
     )
 
 
-def ctrl_enter_hint_renderer(
-    *, env: Optional[dict[str, str]] = None
-) -> Callable[[], Optional[str]]:
+def ctrl_enter_hint_renderer(*, env: Optional[dict[str, str]] = None) -> Callable[[], Optional[str]]:
     """Return a zero-argument renderer bound to one environment snapshot.
 
     Args:

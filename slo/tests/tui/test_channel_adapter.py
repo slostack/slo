@@ -1140,8 +1140,7 @@ class TestNotesReachABusyTui:
                 await pilot.press("enter")
                 await pump_until(
                     pilot=pilot,
-                    predicate=lambda: poller.busy
-                    and _user_echo_texts(app=app) == ["long question"],
+                    predicate=lambda: poller.busy and _user_echo_texts(app=app) == ["long question"],
                 )
                 # The orchestrator reports while the TUI run is still in flight.
                 await notifier.started(brief_preview="bounded brief")
@@ -1174,12 +1173,8 @@ class TestNotesReachABusyTui:
         assert len(steering) == 1
         assert [event for event in events if event.kind == "workflow_update"] == []
 
-    async def test_notice_from_the_orchestrator_shows_and_never_enters_context(
-        self, tmp_path: Path
-    ) -> None:
-        session: SloAgentSession = _build_session(
-            tmp_path=tmp_path, responses=[AIMessage(content="answer")]
-        )
+    async def test_notice_from_the_orchestrator_shows_and_never_enters_context(self, tmp_path: Path) -> None:
+        session: SloAgentSession = _build_session(tmp_path=tmp_path, responses=[AIMessage(content="answer")])
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
         try:
@@ -1216,12 +1211,8 @@ class TestNotesReachABusyTui:
 class TestOutboundRepliesFromOtherAgents:
     """Replies from other agents render in the TUI; own-session replies do not (108.3 §3)."""
 
-    async def test_reply_from_another_agent_renders_and_own_reply_does_not(
-        self, tmp_path: Path
-    ) -> None:
-        session: SloAgentSession = _build_session(
-            tmp_path=tmp_path, responses=[AIMessage(content="answer")]
-        )
+    async def test_reply_from_another_agent_renders_and_own_reply_does_not(self, tmp_path: Path) -> None:
+        session: SloAgentSession = _build_session(tmp_path=tmp_path, responses=[AIMessage(content="answer")])
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
         try:
@@ -1233,9 +1224,7 @@ class TestOutboundRepliesFromOtherAgents:
                 await pump_until(pilot=pilot, predicate=lambda: app.channel_adapter is not None)
                 adapter = app.channel_adapter
                 assert adapter is not None
-                own_agent: UUID = channel_participant_id_for_session(
-                    session_id=session.session_id
-                )
+                own_agent: UUID = channel_participant_id_for_session(session_id=session.session_id)
                 user: ParticipantDAO = adapter.user_participant
                 request: ChannelMessageDAO = await gateway.send(
                     new=NewMessageDAO(
@@ -1276,9 +1265,7 @@ class TestOutboundRepliesFromOtherAgents:
                 )
 
                 async def _both_accepted() -> bool:
-                    foreign: Optional[ChannelMessageDAO] = await gateway.get(
-                        message_id=foreign_reply.id
-                    )
+                    foreign: Optional[ChannelMessageDAO] = await gateway.get(message_id=foreign_reply.id)
                     own: Optional[ChannelMessageDAO] = await gateway.get(message_id=own_reply.id)
                     return (
                         foreign is not None

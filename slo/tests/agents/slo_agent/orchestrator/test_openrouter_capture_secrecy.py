@@ -175,9 +175,7 @@ async def test_headless_preparation_failure_writes_terminal_status_and_notifies_
     status = json.loads(status_path.read_text(encoding="utf-8"))
     pending = await gateway.pending_inbound(recipient_id=target_participant.id)
     public = (
-        stdout
-        + status_path.read_text(encoding="utf-8")
-        + "".join(row.message_contents for row in pending)
+        stdout + status_path.read_text(encoding="utf-8") + "".join(row.message_contents for row in pending)
     )
     assert exit_code == 1
     assert status["state"] == "failed"

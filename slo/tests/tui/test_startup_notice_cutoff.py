@@ -136,7 +136,9 @@ async def test_notice_inner_await_cutoff_blocks_late_render_and_marker(tmp_path:
 
 
 @pytest.mark.parametrize("mode", ["history", "memory"])
-async def test_notice_open_path_renders_once_with_marker(tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_notice_open_path_renders_once_with_marker(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An open mount renders both startup lines exactly once and persists the marker."""
     _pin_ctrl_enter_undetectable(monkeypatch=monkeypatch)
     session = _build_session(
@@ -170,7 +172,9 @@ async def test_notice_open_path_renders_once_with_marker(tmp_path: Path, mode: s
         assert session._startup_notice_shown_in_memory
 
 
-async def test_replacement_startup_uses_successor_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_replacement_startup_uses_successor_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A committed ``/new`` renders one notice for the successor, none for the old."""
     _pin_ctrl_enter_undetectable(monkeypatch=monkeypatch)
     old = SloAgentSession.build(config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history"))
@@ -297,7 +301,9 @@ async def test_hydration_open_path_mounts_seeded_replay(tmp_path: Path) -> None:
     assert len(mounted) == 2
 
 
-async def test_marker_write_admitted_before_cutoff_is_owned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_marker_write_admitted_before_cutoff_is_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A marker write admitted before the cutoff completes; no notice repeats it."""
     _pin_ctrl_enter_undetectable(monkeypatch=monkeypatch)
     session = _build_session(tmp_path=tmp_path, session_id="88888888-8888-4888-8888-888888888888")

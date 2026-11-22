@@ -1030,9 +1030,7 @@ async def test_launch_workflow_spawns_when_failed_handle_has_aborted_status(tmp_
 class TestChannelsReachableGate:
     """A launch refuses when the shared channel queue is unreachable (108.3 §3)."""
 
-    async def test_launch_refuses_when_the_channel_queue_is_unreachable(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_launch_refuses_when_the_channel_queue_is_unreachable(self, tmp_path: Path) -> None:
         from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool
 
         spawn: _FakeSpawn = _FakeSpawn()

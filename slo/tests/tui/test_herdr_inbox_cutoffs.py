@@ -174,4 +174,3 @@ async def test_prompt_registration_shutdown_refuses_channel_send(tmp_path: Path)
             adapter = app.channel_adapter
             assert adapter is not None
             assert await adapter.queued() == []
-

@@ -431,9 +431,7 @@ async def test_managed_child_cli_completes_registered_lifecycle(managed_journey:
     assert f"[workflow {handle.workflow_id}] started" in rows[0].message_contents
     assert handle.orchestrator_session_id in rows[0].message_contents
     assert f"Workflow {handle.workflow_id} completed" in rows[-1].message_contents
-    assert handle.orchestrator_session_id in json.dumps(
-        [row.message_contents for row in rows]
-    )
+    assert handle.orchestrator_session_id in json.dumps([row.message_contents for row in rows])
     status_tool = next(tool for tool in owner.orchestration_tools if tool.name == "workflow_status")
     status_result = json.loads(await status_tool.ainvoke({"workflow_id": handle.workflow_id}))
     assert status_result["state"] == "completed"

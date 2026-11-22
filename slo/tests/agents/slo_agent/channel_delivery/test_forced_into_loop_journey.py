@@ -477,6 +477,7 @@ async def test_accepted_steering_survives_session_level_reconnect_retry(tmp_path
             return stored is not None and stored.accepted_at is not None
 
         await asyncio.wait_for(_wait_until(predicate=_steered_row_accepted), timeout=10.0)
+
         # The boundary applied the forced row; the next model call failed and
         # the session reconnected. Wait for the retried model call's context.
         async def _retried_context_recorded() -> bool:

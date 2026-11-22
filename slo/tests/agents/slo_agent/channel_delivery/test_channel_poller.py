@@ -487,9 +487,7 @@ class RecordingDisplaySink:
 
 
 class TestPollerNotesAndNotices:
-    async def test_idle_note_is_displayed_recorded_and_accepted_without_a_run(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_idle_note_is_displayed_recorded_and_accepted_without_a_run(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         session_id: UUID = uuid4()
         channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
@@ -500,7 +498,9 @@ class TestPollerNotesAndNotices:
             responses=[AIMessage(content="unused")],
         )
         display: RecordingDisplaySink = RecordingDisplaySink()
-        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner, display=display)
+        poller: ChannelPoller = _build_poller(
+            gateway=gateway, session=session, runner=runner, display=display
+        )
         await poller.start()
         try:
             note: ChannelMessageDAO = await gateway.send(
@@ -524,9 +524,7 @@ class TestPollerNotesAndNotices:
             assert session._history_store is not None
             events = await session._history_store.load_events(session_id=str(session_id))
             workflow_updates = [event for event in events if event.kind == "workflow_update"]
-            assert [event.payload.content for event in workflow_updates] == [
-                "[workflow wf-ab] phase 1 done"
-            ]
+            assert [event.payload.content for event in workflow_updates] == ["[workflow wf-ab] phase 1 done"]
             assert workflow_updates[0].payload.metadata.get("workflow_id") == "wf-ab"
         finally:
             await poller.stop(reason="test_done")
@@ -546,7 +544,9 @@ class TestPollerNotesAndNotices:
             responses=[AIMessage(content="unused")],
         )
         display: RecordingDisplaySink = RecordingDisplaySink()
-        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner, display=display)
+        poller: ChannelPoller = _build_poller(
+            gateway=gateway, session=session, runner=runner, display=display
+        )
         await poller.start()
         try:
             await gateway.send(
@@ -572,9 +572,7 @@ class TestPollerNotesAndNotices:
             assert len(display.shown) == 1
             stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
             assert stored is not None and stored.accepted_at is None and stored.cancelled_at is None
-            assert runner.ran == [  # the note never started a run
-                runner.ran[0]
-            ]
+            assert runner.ran == [runner.ran[0]]  # the note never started a run
             assert session._history_store is not None
             events = await session._history_store.load_events(session_id=str(session_id))
             assert [event for event in events if event.kind == "workflow_update"] == []
@@ -583,9 +581,7 @@ class TestPollerNotesAndNotices:
             await poller.stop(reason="test_done")
             await gateway.close()
 
-    async def test_notice_is_displayed_and_accepted_without_entering_context(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_notice_is_displayed_and_accepted_without_entering_context(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         session_id: UUID = uuid4()
         channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
@@ -596,7 +592,9 @@ class TestPollerNotesAndNotices:
             responses=[AIMessage(content="unused")],
         )
         display: RecordingDisplaySink = RecordingDisplaySink()
-        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner, display=display)
+        poller: ChannelPoller = _build_poller(
+            gateway=gateway, session=session, runner=runner, display=display
+        )
         await poller.start()
         try:
             notice: ChannelMessageDAO = await gateway.send(
@@ -624,9 +622,7 @@ class TestPollerNotesAndNotices:
             await poller.stop(reason="test_done")
             await gateway.close()
 
-    async def test_a_pending_prompt_is_never_displayed_as_a_note_or_notice(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_pending_prompt_is_never_displayed_as_a_note_or_notice(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         session_id: UUID = uuid4()
         channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
@@ -637,7 +633,9 @@ class TestPollerNotesAndNotices:
             responses=[AIMessage(content="unused")],
         )
         display: RecordingDisplaySink = RecordingDisplaySink()
-        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner, display=display)
+        poller: ChannelPoller = _build_poller(
+            gateway=gateway, session=session, runner=runner, display=display
+        )
         await poller.start()
         try:
             prompt: ChannelMessageDAO = await gateway.send(
@@ -656,9 +654,7 @@ class TestPollerNotesAndNotices:
 
 
 class TestPollerAutoRunDisabled:
-    async def test_auto_run_false_never_starts_runs_but_keeps_the_boundary_live(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_auto_run_false_never_starts_runs_but_keeps_the_boundary_live(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         session_id: UUID = uuid4()
         channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)

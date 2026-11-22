@@ -193,9 +193,7 @@ class LaunchWorkflowTool:
         _history_root: Path = history_root or default_history_root()
         _store: WorkflowHandleStore = handle_store or WorkflowHandleStore(history_root=_history_root)
         _spawn: SpawnCallable = spawn or asyncio.create_subprocess_exec  # type: ignore[assignment]
-        _channels_reachable: ReachabilityCheck = (
-            channels_reachable or _default_channels_reachable
-        )
+        _channels_reachable: ReachabilityCheck = channels_reachable or _default_channels_reachable
         _default_model: Optional[str] = default_model
 
         @tool(args_schema=LaunchWorkflowSchemaDAO)

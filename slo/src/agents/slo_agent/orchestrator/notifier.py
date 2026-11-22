@@ -81,12 +81,8 @@ class WorkflowNotifier:
         self._orchestrator_session_id: str = orchestrator_session_id
         self._workflow_id: str = workflow_id
         self._status_store: Optional[OrchestratorStatusStore] = status_store
-        self._sender_id: UUID = channel_participant_id_for_session(
-            session_id=orchestrator_session_id
-        )
-        self._recipient_id: UUID = channel_participant_id_for_session(
-            session_id=target_session_id
-        )
+        self._sender_id: UUID = channel_participant_id_for_session(session_id=orchestrator_session_id)
+        self._recipient_id: UUID = channel_participant_id_for_session(session_id=target_session_id)
         self._sender_registered: bool = False
         self._phase_index: int = 0
         self._fleet_index: int = 0
@@ -119,9 +115,7 @@ class WorkflowNotifier:
             event="phase",
             phase_index=self._phase_index,
             message_type="note",
-            text=(
-                f"[workflow {self._workflow_id}] phase {self._phase_index}: {phase_summary}"
-            ),
+            text=(f"[workflow {self._workflow_id}] phase {self._phase_index}: {phase_summary}"),
         )
 
     async def fleet_update(self, *, entries: list[dict[str, object]], live_count: int) -> None:

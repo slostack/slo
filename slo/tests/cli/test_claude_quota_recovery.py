@@ -149,9 +149,7 @@ async def test_child_and_parent_quota_failures_remain_actionable(tmp_path: Path)
     from src.channels.gateway import ChannelGateway
     from src.channels.repository import ChannelRepository
 
-    quota_repository: ChannelRepository = ChannelRepository(
-        db_path=history_root.parent / "channels.db"
-    )
+    quota_repository: ChannelRepository = ChannelRepository(db_path=history_root.parent / "channels.db")
     await quota_repository.open()
     quota_gateway: ChannelGateway = ChannelGateway(repository=quota_repository)
     quota_target: object = await quota_gateway.register_agent(

@@ -88,9 +88,7 @@ class TestStarted:
             note: ChannelMessageDAO = pending[0]
             assert note.message_type == "note"
             assert note.id == _expected_id(event="started", phase_index=0)
-            assert note.sender_id == channel_participant_id_for_session(
-                session_id=_ORCH_SESSION_ID
-            )
+            assert note.sender_id == channel_participant_id_for_session(session_id=_ORCH_SESSION_ID)
             assert note.agent_session_id == UUID(_TARGET_SESSION_ID)
             assert "[workflow wf-3f2a] started" in note.message_contents
             assert "run the code-test-review workflow" in note.message_contents
@@ -151,9 +149,7 @@ class TestPhaseUpdate:
 class TestFleetUpdate:
     """``fleet_update()`` — coalescible notice rows."""
 
-    async def test_fleet_update_sends_a_notice_with_the_fleet_coalesce_key(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_fleet_update_sends_a_notice_with_the_fleet_coalesce_key(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             await _register_target(gateway=gateway)
@@ -174,9 +170,7 @@ class TestFleetUpdate:
         finally:
             await gateway.close()
 
-    async def test_a_burst_of_fleet_notices_leaves_only_the_newest_pending(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_a_burst_of_fleet_notices_leaves_only_the_newest_pending(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             await _register_target(gateway=gateway)
@@ -253,9 +247,7 @@ class TestTerminal:
         finally:
             await gateway.close()
 
-    async def test_aborted_sends_a_normal_prompt_with_the_finality_instruction(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_aborted_sends_a_normal_prompt_with_the_finality_instruction(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             await _register_target(gateway=gateway)
@@ -361,9 +353,9 @@ class TestNoInboxImports:
     async def test_notifier_module_has_no_history_inbox_import(self) -> None:
         import inspect
 
-        source: str = inspect.getsource(__import__(
-            "src.agents.slo_agent.orchestrator.notifier", fromlist=["WorkflowNotifier"]
-        ))
+        source: str = inspect.getsource(
+            __import__("src.agents.slo_agent.orchestrator.notifier", fromlist=["WorkflowNotifier"])
+        )
         assert "history.inbox" not in source
         assert "SessionInboxStore" not in source
         assert "SessionInboxMessageDAO" not in source

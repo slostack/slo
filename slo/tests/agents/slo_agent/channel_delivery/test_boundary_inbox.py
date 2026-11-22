@@ -129,9 +129,7 @@ class TestOperatorSenderIdentity:
         finally:
             await gateway.close()
 
-    async def test_without_the_operator_identity_every_row_keeps_its_label(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_without_the_operator_identity_every_row_keeps_its_label(self, tmp_path: Path) -> None:
         """Agents that do not know the operator keep the raw sender labels."""
         gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
         try:
@@ -166,9 +164,7 @@ class TestTakeAndConfirm:
         finally:
             await gateway.close()
 
-    async def test_take_takes_notes_before_forced_prompts_but_never_normal_rows(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_take_takes_notes_before_forced_prompts_but_never_normal_rows(self, tmp_path: Path) -> None:
         """Notes join the boundary first (108.3), forced prompts next; normal prompts wait."""
         gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
         try:
@@ -231,9 +227,7 @@ class TestInFlightSnapshotExclusion:
     into the snapshot, and a cancelled cached row must not falsely revive the
     run (108.2 B3)."""
 
-    async def test_refresh_between_take_and_confirm_does_not_reinsert_taken_ids(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_refresh_between_take_and_confirm_does_not_reinsert_taken_ids(self, tmp_path: Path) -> None:
         """A mid-boundary refresh keeps taken rows out of the revive snapshot."""
         gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
         try:
@@ -275,9 +269,7 @@ class TestInFlightSnapshotExclusion:
         finally:
             await gateway.close()
 
-    async def test_take_with_a_stale_snapshot_reconciles_and_reports_empty(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_take_with_a_stale_snapshot_reconciles_and_reports_empty(self, tmp_path: Path) -> None:
         """A stale snapshot between cancel and take reconciles to an empty take."""
         gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
         try:
@@ -301,9 +293,7 @@ class TestInFlightSnapshotExclusion:
 class TestNotesAtTheBoundary:
     """Notes join the next boundary before forced prompts and never revive a run (1083 O2)."""
 
-    async def test_take_returns_notes_before_forced_prompts_and_confirms_both(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_take_returns_notes_before_forced_prompts_and_confirms_both(self, tmp_path: Path) -> None:
         gateway, channel, user, agent = await _open_world(tmp_path=tmp_path)
         try:
             inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)

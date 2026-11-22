@@ -168,9 +168,7 @@ class QueuedMessagesComponent(Vertical):
         overflow: int = len(self._rows) - len(shown)
         self.mount(*self._compose_rows(shown=shown, overflow=overflow, paused=self._paused))
 
-    def _compose_rows(
-        self, *, shown: list[ChannelMessageDAO], overflow: int, paused: bool
-    ) -> ComposeResult:
+    def _compose_rows(self, *, shown: list[ChannelMessageDAO], overflow: int, paused: bool) -> ComposeResult:
         """Yield the row widgets, the overflow line, and the pause hint.
 
         Args:

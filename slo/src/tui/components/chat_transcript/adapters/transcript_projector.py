@@ -486,7 +486,9 @@ class TranscriptProjectionAdapter:
         if separated and before is not None:
             before += 1
         await self._host.mount_user_message_block(text=text, before=before)
-        self._host.record_transcript_line(content=self._user_turn_line(text=text, sender_name=sender_name), classes="user-line")
+        self._host.record_transcript_line(
+            content=self._user_turn_line(text=text, sender_name=sender_name), classes="user-line"
+        )
 
     @staticmethod
     def _user_turn_line(*, text: str, sender_name: Optional[str]) -> str:

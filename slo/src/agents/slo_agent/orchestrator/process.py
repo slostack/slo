@@ -26,6 +26,7 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import IO, Optional, Protocol
+from uuid import UUID
 from urllib.parse import quote_from_bytes
 
 _STDOUT_STREAM_LIMIT: int = 16 * 1024 * 1024  # 16 MB
@@ -58,7 +59,12 @@ from src.agents.slo_agent.orchestrator.dao import (
     terminal_reason_for_status,
 )
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
-from src.agents.slo_agent.orchestrator.spawn_env import AgentLaunchPolicy
+from src.agents.slo_agent.orchestrator.spawn_env import (
+    CHANNEL_PARENT_ID_ENV,
+    CHANNEL_PARTICIPANT_NAME_ENV,
+    AgentLaunchPolicy,
+)
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.auth.credential_dao import ProviderName
 from src.auth.credential_resolver import CredentialResolver
@@ -103,6 +109,9 @@ Bounds the size of the fallback answer so a verbose traceback cannot bloat the
 
 STDERR_LINE_MAX_CHARS: int = 1000
 """Per-line clamp applied to each retained stderr line to bound memory."""
+
+_HEADLESS_FOLLOWUP_TURNS_ENV: str = "SLO_HEADLESS_FOLLOWUP_TURNS"
+"""Headless follow-up budget; children run one task and take no follow-up turns (108.4 §2)."""
 
 TERMINATE_GRACE_SECONDS: float = positive_float_env(
     primary_name="SLO_SUBAGENT_TERMINATE_GRACE_SECONDS",
@@ -493,8 +502,11 @@ class SubAgentProcess:
     def _build_child_spawn_env(self, *, launch_policy: Optional[AgentLaunchPolicy] = None) -> dict[str, str]:
         """Build the allowlisted environment for this pool-owned child.
 
-        WHAT: Adds the current orchestrator PID and this child's canonical
-            capture directory to the shared non-secret child environment.
+        WHAT: Adds the current orchestrator PID, this child's canonical capture
+            directory and its channel identity (108.4) to the shared non-secret
+            child environment. A child with a parent session learns the parent's
+            channel participant id (``SLO_CHANNEL_PARENT_ID``); every child runs
+            its one task without follow-up turns (``SLO_HEADLESS_FOLLOWUP_TURNS=0``).
         WHO: Called by run before it creates the headless child process.
         WHEN: Once for each SubAgentProcess spawn.
 
@@ -502,12 +514,23 @@ class SubAgentProcess:
             launch_policy (Optional[AgentLaunchPolicy]): Snapshot shared with argv.
 
         Returns:
-            dict[str, str]: Allowlisted child environment with watchdog identity.
+            dict[str, str]: Allowlisted child environment with watchdog and channel identity.
         """
         capture_dir: Optional[Path] = self._capture_dir()
-        extra: dict[str, str] = {"SLO_PARENT_PID": str(os.getpid())}
+        extra: dict[str, str] = {
+            "SLO_PARENT_PID": str(os.getpid()),
+            _HEADLESS_FOLLOWUP_TURNS_ENV: "0",
+        }
         if capture_dir is not None:
             extra["SLO_CAPTURE_DIR"] = str(capture_dir)
+        if self._parent_session_id is not None:
+            parent_participant_id: UUID = channel_participant_id_for_session(
+                session_id=self._parent_session_id
+            )
+            extra[CHANNEL_PARENT_ID_ENV] = str(parent_participant_id)
+            extra[CHANNEL_PARTICIPANT_NAME_ENV] = (
+                f"{self._task.task_id} (child of {str(parent_participant_id)[:8]})"
+            )
         return (launch_policy or AgentLaunchPolicy()).build_environment(extra=extra)
 
     async def run(self) -> SubAgentResultDAO:

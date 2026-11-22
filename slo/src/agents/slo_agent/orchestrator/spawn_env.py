@@ -21,6 +21,8 @@ from src.auth.credential_dao import ProviderName
 from src.auth.credential_resolver import CredentialResolver
 
 __all__ = [
+    "CHANNEL_PARENT_ID_ENV",
+    "CHANNEL_PARTICIPANT_NAME_ENV",
     "AgentLaunchPolicy",
     "build_headless_child_env",
     "open_capture_file_append",
@@ -43,6 +45,17 @@ _ENV_ALLOWLIST_EXACT: tuple[str, ...] = (
     "PYENV_VERSION",
 )
 _ENV_SECRET_MARKERS: tuple[str, ...] = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+CHANNEL_PARENT_ID_ENV: str = "SLO_CHANNEL_PARENT_ID"
+"""Channel participant id of the agent that spawned this child (108.4).
+
+Set only by the pool for its own children. It is identity, not a setting.
+"""
+
+CHANNEL_PARTICIPANT_NAME_ENV: str = "SLO_CHANNEL_PARTICIPANT_NAME"
+"""Display name a pool child registers under: ``<task_id> (child of <short parent>)`` (108.4 §5)."""
+
+_CHANNEL_IDENTITY_ENV: frozenset[str] = frozenset({CHANNEL_PARENT_ID_ENV, CHANNEL_PARTICIPANT_NAME_ENV})
 
 
 def build_headless_child_env(
@@ -659,9 +672,16 @@ def redact_openrouter_credential(*, raw: bytes, credential: bytes) -> bytes:
 
 
 def _allowlisted_parent_env() -> dict[str, str]:
-    """Return allowed non-secret values from the current process environment."""
+    """Return allowed non-secret values from the current process environment.
+
+    ``SLO_CHANNEL_PARENT_ID`` and ``SLO_CHANNEL_PARTICIPANT_NAME`` name this
+    process's own channel identity, so they are never inherited: a launch
+    that has a parent receives them explicitly as ``extra``.
+    """
     child_env: dict[str, str] = {}
     for name, value in os.environ.items():
+        if name in _CHANNEL_IDENTITY_ENV:
+            continue
         if name in _ENV_ALLOWLIST_EXACT:
             child_env[name] = value
             continue

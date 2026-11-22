@@ -2,6 +2,7 @@
 
 FleetReaper owns the per-pid SIGTERM, grace, SIGKILL protocol. The pool,
 headless runner, and terminal workflow sweep share this stateless utility.
+ChildChannelReaper closes the channel participant a child left open (108.4).
 
 Sub-spec 71.a.6.
 """
@@ -13,13 +14,22 @@ import os
 import shlex
 import signal
 import subprocess
-from typing import Literal, Optional
+from typing import Literal, Optional, Protocol
+from uuid import UUID
 
-from config.logger import log_info
+from config.logger import log_info, log_warning
 from config.timeout_resolver import positive_float_env
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.agents.slo_agent.orchestrator.process_probe import ProcessProbe
 
-__all__ = ["FleetReaper", "IdentityVerificationOutcome", "ReapOutcome"]
+__all__ = [
+    "ABANDONED_CHILD_CLOSE_REASON",
+    "ChildChannelGateway",
+    "ChildChannelReaper",
+    "FleetReaper",
+    "IdentityVerificationOutcome",
+    "ReapOutcome",
+]
 
 IdentityVerificationOutcome = Literal["matching", "already_dead", "recycled_pid", "unreadable"]
 """Classified evidence for a recorded child process identity."""
@@ -150,3 +160,63 @@ class FleetReaper:
                 return True
             await asyncio.sleep(0.1)
         return not ProcessProbe.is_alive(pid=pid)
+
+
+ABANDONED_CHILD_CLOSE_REASON: str = "aborted"
+"""Cancel reason for rows pending to a child that ended without closing (108.4 §6)."""
+
+
+class ChildChannelGateway(Protocol):
+    """Consumer-owned slice of ``ChannelGateway`` that the child channel reaper needs."""
+
+    async def close_agent(self, *, session_id: UUID, reason: str) -> int:
+        """Close one agent participant and cancel its pending inbound rows atomically."""
+        ...
+
+
+class ChildChannelReaper:
+    """Close the channel participant of a child that ended without closing it.
+
+    A healthy child closes itself when it stops its poller. A child that
+    crashed, was killed or was reaped leaves its participant ``open``, so
+    messages would wait for a listener that is gone. This reaper closes the
+    participant and cancels its pending rows (``aborted``) in one transaction.
+    Closing is idempotent: a participant the child already closed has no
+    pending rows left, and a child that never registered has no participant,
+    so neither changes. It never raises: the channel queue is a side channel
+    and must not change a child's terminal result.
+    """
+
+    def __init__(self, *, gateway: ChildChannelGateway) -> None:
+        """Bind the reaper to the shared channel gateway.
+
+        Args:
+            gateway (ChildChannelGateway): Shared channel queue gateway.
+        """
+        self._gateway: ChildChannelGateway = gateway
+
+    async def close_abandoned_participant(self, *, session_id: str) -> int:
+        """Close the child's participant and cancel rows still pending to it.
+
+        WHAT: Closes the child's participant with reason ``aborted``; rows the
+            child never accepted are cancelled in the same transaction. Queue
+            failures are logged and reported as zero cancelled rows.
+        WHO: ``SubAgentPool`` once per child incarnation.
+        WHEN: After the incarnation's terminal winner is known, before its
+            terminal lifecycle event is emitted.
+
+        Args:
+            session_id (str): Child session id as assigned by the pool.
+
+        Returns:
+            int: Number of pending rows cancelled; zero when the child had
+                already closed itself or never registered.
+        """
+        participant_id: UUID = channel_participant_id_for_session(session_id=session_id)
+        try:
+            return await self._gateway.close_agent(
+                session_id=participant_id, reason=ABANDONED_CHILD_CLOSE_REASON
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not change the child's result
+            log_warning(msg="child_channel_close_failed", session_id=session_id, error=str(exc))
+            return 0

@@ -209,10 +209,12 @@ class ChannelPoller:
 
         Recovery (108.1 §6): rows left pending by an earlier process whose id
         is already in ``events.jsonl`` (via ``channel_message_id``) are
-        accepted; when rows a user sent remain pending the poller starts
+        accepted; when operator rows (``ParticipantDAO.is_operator``: any user
+        participant, or an unknown sender) remain pending the poller starts
         paused so the operator decides with ``/queue resume``. Rows from other
         agents and systems (a workflow that reported while the session was
-        closed) never pause it (108.3 §6).
+        closed) never pause it (108.3 §6) — the same operator rule that
+        admission and closure apply.
         """
         if self._started:
             return
@@ -325,7 +327,7 @@ class ChannelPoller:
         for row in pending:
             if str(row.id) in known_ids:
                 await self._gateway.accept(message_id=row.id)
-            elif await self._is_sent_by_user(message=row):
+            elif await self._is_operator_row(message=row):
                 operator_leftover.append(row)
         if operator_leftover:
             self._paused_reason = "recovered"
@@ -336,8 +338,8 @@ class ChannelPoller:
                 )
             )
 
-    async def _is_sent_by_user(self, *, message: ChannelMessageDAO) -> bool:
-        """Return whether a row came from a user participant (or an unknown sender).
+    async def _is_operator_row(self, *, message: ChannelMessageDAO) -> bool:
+        """Return whether an operator sent a row (an unknown sender counts as one).
 
         Args:
             message (ChannelMessageDAO): A pending inbound row.
@@ -348,7 +350,7 @@ class ChannelPoller:
         sender: Optional[ParticipantDAO] = await self._gateway.get_participant(
             participant_id=message.sender_id
         )
-        return sender is None or sender.kind == "user"
+        return sender is None or sender.is_operator
 
     async def _loop(self) -> None:
         """The poll loop: run one tick per wake or interval, then wait again.

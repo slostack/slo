@@ -111,6 +111,17 @@ async def test_workflow_report_to_a_closed_session_runs_once_when_it_reopens(tmp
         pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(session_id))
         assert len(pending) == 1 and pending[0].message_type == "prompt"
         workflow_row: ChannelMessageDAO = pending[0]
+        # The closed session's durable inbox is for agents and systems only:
+        # a late operator prompt is refused, so nothing it sent waits to pause S.
+        with pytest.raises(RecipientClosedError):
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=operator.id, recipient_id=UUID(session_id), message_contents="late"
+                )
+            )
+        assert [row.id for row in await gateway.pending_inbound(recipient_id=UUID(session_id))] == [
+            workflow_row.id
+        ]
 
         reopened_session: SloAgentSession = _build_session(
             tmp_path=tmp_path, session_id=session_id, responses=[AIMessage(content="noted the workflow")]

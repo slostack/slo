@@ -308,9 +308,11 @@ class ChannelRepository:
 
         Raises:
             UnknownParticipantError: The recipient (or sender) is unknown.
-            RecipientClosedError: The recipient is a closed agent without a
-                durable inbox (a finished workflow or child). A closed
-                interactive session keeps its durable inbox (108.3 §6).
+            RecipientClosedError: The recipient is a closed agent that does
+                not admit this sender (``ParticipantDAO.admits_message_from``):
+                a finished workflow or child refuses everyone; a closed
+                interactive session refuses operators (users) and keeps its
+                durable inbox for agents and systems (108.3 §6).
         """
 
         def _write(connection: sqlite3.Connection) -> ChannelMessageDAO:
@@ -328,7 +330,7 @@ class ChannelRepository:
                 recipient = self._get_participant_sync(connection=connection, participant_id=new.recipient_id)
                 if recipient is None:
                     raise UnknownParticipantError(participant_id=new.recipient_id)
-                if recipient.kind == "agent" and recipient.status == "closed" and not recipient.durable_inbox:
+                if not recipient.admits_message_from(sender=sender):
                     raise RecipientClosedError(participant_id=new.recipient_id)
                 agent_session_id: UUID = (
                     recipient.id
@@ -624,9 +626,11 @@ class ChannelRepository:
         racing the close either inserts against the open participant or hits
         the closed one — never lands after the listener stopped.
 
-        A participant with a durable inbox (an interactive session, 108.3 §6)
-        cancels only rows its users sent; rows from other agents and systems
-        stay pending for the session's next opening.
+        Survivors follow ``ParticipantDAO.admits_message_from`` for the now
+        closed participant, the same rule admission applies: a durable inbox
+        (an interactive session, 108.3 §6) cancels every operator (user) row
+        and keeps rows from agents and systems for the session's next opening;
+        any other agent cancels every pending row.
 
         Args:
             participant_id (UUID): Agent participant to close.
@@ -644,20 +648,35 @@ class ChannelRepository:
                     "UPDATE participants SET status = 'closed' WHERE id = ?",
                     (str(participant_id),),
                 )
-                cursor = connection.execute(
+                closed: Optional[ParticipantDAO] = self._get_participant_sync(
+                    connection=connection, participant_id=participant_id
+                )
+                if closed is None:
+                    connection.commit()
+                    return 0
+                sender_rows = connection.execute(
+                    """
+                    SELECT m.id, p.id, p.kind, p.name, p.channel_id, p.external_ref, p.status,
+                           p.last_seen_at, p.created_at, p.durable_inbox
+                    FROM messages AS m JOIN participants AS p ON p.id = m.sender_id
+                    WHERE m.recipient_id = ? AND m.accepted_at IS NULL AND m.cancelled_at IS NULL
+                    """,
+                    (str(participant_id),),
+                ).fetchall()
+                doomed: list[tuple[str, str, str]] = [
+                    (_stamp(utc_now()), reason, str(row[0]))
+                    for row in sender_rows
+                    if not closed.admits_message_from(sender=_participant_from_row(row=row[1:]))
+                ]
+                connection.executemany(
                     """
                     UPDATE messages SET cancelled_at = ?, cancel_reason = ?
-                    WHERE recipient_id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
-                      AND (
-                        (SELECT durable_inbox FROM participants WHERE id = ?) = 0
-                        OR sender_id IN (SELECT id FROM participants WHERE kind = 'user')
-                      )
+                    WHERE id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
                     """,
-                    (_stamp(utc_now()), reason, str(participant_id), str(participant_id)),
+                    doomed,
                 )
-                cancelled: int = int(cursor.rowcount)
                 connection.commit()
-                return cancelled
+                return len(doomed)
             except BaseException:
                 connection.rollback()
                 raise

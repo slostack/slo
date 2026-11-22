@@ -78,6 +78,39 @@ class ParticipantDAO(BaseModel):
         ),
     )
 
+    @property
+    def is_operator(self) -> bool:
+        """Return whether this participant is an operator (a human user).
+
+        Every ``user`` participant is the operator, whichever channel it talks
+        through (108.4 §2: a user may message any open agent). Agents and
+        system senders are non-operators (108.3 §6).
+
+        Returns:
+            bool: ``True`` for ``user`` participants.
+        """
+        return self.kind == "user"
+
+    def admits_message_from(self, *, sender: "ParticipantDAO") -> bool:
+        """Return whether this recipient admits a new row from ``sender`` now.
+
+        The single closed-inbox rule shared by admission (insert), closure
+        (which pending rows survive) and recovery (which survivors pause the
+        poller): an open participant or a non-agent admits everyone; a closed
+        agent admits only non-operator senders, and only when it keeps a
+        durable inbox (an interactive session, 108.3 §6). A closed workflow or
+        child admits nobody.
+
+        Args:
+            sender (ParticipantDAO): The participant sending the row.
+
+        Returns:
+            bool: ``True`` when the row may be inserted (or stay pending).
+        """
+        if self.kind != "agent" or self.status == "open":
+            return True
+        return self.durable_inbox and not sender.is_operator
+
 
 class NewMessageDAO(BaseModel):
     """What a sender supplies to enqueue one message."""

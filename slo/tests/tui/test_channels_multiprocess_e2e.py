@@ -36,6 +36,7 @@ from src.channels.gateway import ChannelGateway
 from src.channels.repository import ChannelRepository
 from src.tui.app import SloTUI
 from src.tui.components.agent_composer.component import AgentComposerComponent
+from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.workflows.dao import WorkflowSessionKeyDAO
 from tests.tui._scroll_settle import pump_until
 from tests.tui.test_channel_adapter import GatedFauxChatModel, _transcript_lines
@@ -246,10 +247,15 @@ async def test_o1_o3_workflow_notes_reach_a_busy_tui_and_a_forced_modal_message_
             await pilot.pause()
             poller = session.channel_poller
             assert poller is not None
-            assert app._input is not None
-            app._input.load_text("long question")
+            prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
+            prompt_input.text = "long question"
             await pilot.press("enter")
             await pump_until(pilot=pilot, predicate=lambda: poller.busy, max_cycles=200)
+            assert poller.busy is True, (
+                poller.paused,
+                session.preparation_status,
+                _transcript_lines(app=app),
+            )
 
             await workflow.start()
             # O1: the workflow's started note shows while the TUI run is in flight.
@@ -261,7 +267,11 @@ async def test_o1_o3_workflow_notes_reach_a_busy_tui_and_a_forced_modal_message_
                 ),
                 max_cycles=600,
             )
-            assert poller.busy is True and not release_tui_run.is_set()
+            star_lines: list[str] = [
+                content for content, _classes in _transcript_lines(app=app) if "⊛" in content
+            ]
+            assert star_lines, _transcript_lines(app=app)
+            assert poller.busy is True and not release_tui_run.is_set(), star_lines
 
             # O3: a forced message from W's modal composer (Ctrl+Enter).
             composer: AgentComposerComponent = await _mount_composer(

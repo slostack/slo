@@ -9,8 +9,10 @@ transcript handles); the queue path is real end to end.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+import sqlite3
 from collections.abc import Callable
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -20,11 +22,16 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
-from src.channels.dao import NewMessageDAO
+from src.channels.dao import ChannelMessageDAO, NewMessageDAO
 from src.channels.gateway import ChannelGateway
 from src.channels.repository import ChannelRepository
 from src.tui.channel.adapter import TuiChannelAdapter
-from src.tui.components.agent_composer.component import AGENT_FINISHED_NOTICE, AgentComposerComponent
+from src.tui.components.agent_composer.component import (
+    AGENT_FINISHED_NOTICE,
+    SEND_FAILED_NOTICE,
+    SENDING_NOTICE,
+    AgentComposerComponent,
+)
 
 
 class _ComposerHost(App[None]):
@@ -45,7 +52,7 @@ class _ComposerHost(App[None]):
         yield self._composer_factory()
 
 
-async def _open_gateway(*, tmp_path) -> ChannelGateway:
+async def _open_gateway(*, tmp_path: Path) -> ChannelGateway:
     """Open one real gateway on a fresh temp database."""
     repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
     await repository.open()
@@ -101,7 +108,7 @@ async def _settle(pilot: Pilot[None], cycles: int = 6) -> None:
 class TestAgentComposerSends:
     """Enter and Ctrl+Enter enqueue rows for the target agent (108.3 §5)."""
 
-    async def test_enter_sends_a_normal_prompt_row(self, tmp_path) -> None:
+    async def test_enter_sends_a_normal_prompt_row(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -125,7 +132,7 @@ class TestAgentComposerSends:
         finally:
             await gateway.close()
 
-    async def test_ctrl_enter_sends_a_forced_prompt_row(self, tmp_path) -> None:
+    async def test_ctrl_enter_sends_a_forced_prompt_row(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -147,7 +154,7 @@ class TestAgentComposerSends:
         finally:
             await gateway.close()
 
-    async def test_alt_enter_sends_a_forced_prompt_row(self, tmp_path) -> None:
+    async def test_alt_enter_sends_a_forced_prompt_row(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -166,10 +173,187 @@ class TestAgentComposerSends:
             await gateway.close()
 
 
+class _GatedSendGateway(ChannelGateway):
+    """A real SQLite gateway whose ``send`` waits on a test-held gate.
+
+    The gate is the injected public boundary the composer's outstanding
+    submission crosses; every admitted send still lands in the real queue.
+    """
+
+    def __init__(self, *, repository: ChannelRepository) -> None:
+        """Wrap one real repository and start with the gate closed.
+
+        Args:
+            repository (ChannelRepository): Real repository on a temp database.
+        """
+        super().__init__(repository=repository)
+        self.release: asyncio.Event = asyncio.Event()
+        self.send_started: asyncio.Event = asyncio.Event()
+        self.send_calls: int = 0
+        self.failure: Optional[Exception] = None
+
+    async def send(self, *, new: NewMessageDAO) -> ChannelMessageDAO:
+        """Record the call, hold until released, then fail or delegate.
+
+        Args:
+            new (NewMessageDAO): The row the composer submits.
+
+        Returns:
+            ChannelMessageDAO: The row stored by the real gateway.
+
+        Raises:
+            Exception: The configured ``failure``, if any.
+        """
+        self.send_calls += 1
+        self.send_started.set()
+        await self.release.wait()
+        if self.failure is not None:
+            raise self.failure
+        return await super().send(new=new)
+
+
+async def _open_gated_gateway(*, tmp_path: Path) -> _GatedSendGateway:
+    """Open one gated gateway on a fresh real temp database."""
+    repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+    await repository.open()
+    return _GatedSendGateway(repository=repository)
+
+
+async def _pump_until(*, pilot: Pilot[None], event: asyncio.Event, timeout_seconds: float = 5.0) -> None:
+    """Pump the app until a gateway event fires (without joining blocked workers)."""
+    async with asyncio.timeout(timeout_seconds):
+        while not event.is_set():
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+
+
+class TestAgentComposerOutstandingSubmission:
+    """R7: the composer owns one outstanding submission; drafts and failures stay safe."""
+
+    async def test_repeated_submit_while_pending_sends_the_draft_once(self, tmp_path: Path) -> None:
+        gateway: _GatedSendGateway = await _open_gated_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                composer.query_one("#agent-composer-input", Input).value = "skip phase 3"
+                await pilot.press("enter")
+                await _pump_until(pilot=pilot, event=gateway.send_started)
+                await pilot.press("enter")
+                await pilot.press("ctrl+enter")
+                await pilot.pause()
+                assert composer.submission_outstanding is True
+                assert SENDING_NOTICE in str(composer.query_one(".agent-composer-status", Static).render())
+                gateway.release.set()
+                await _settle(pilot)
+                assert gateway.send_calls == 1
+                rows = await adapter.sent_to_agent(session_id=str(target))
+                assert [(row.preview, row.forced) for row in rows] == [("skip phase 3", False)]
+                assert composer.submission_outstanding is False
+                assert composer.query_one("#agent-composer-input", Input).value == ""
+        finally:
+            await gateway.close()
+
+    async def test_next_draft_typed_while_pending_survives_the_success(self, tmp_path: Path) -> None:
+        gateway: _GatedSendGateway = await _open_gated_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                input_widget: Input = composer.query_one("#agent-composer-input", Input)
+                input_widget.value = "first"
+                await pilot.press("enter")
+                await _pump_until(pilot=pilot, event=gateway.send_started)
+                input_widget.value = "second draft"
+                gateway.release.set()
+                await _settle(pilot)
+                assert input_widget.value == "second draft"
+                rows = await adapter.sent_to_agent(session_id=str(target))
+                assert [row.preview for row in rows] == ["first"]
+                # The kept draft is the next submission, sent once.
+                await pilot.press("enter")
+                await _settle(pilot)
+                rows = await adapter.sent_to_agent(session_id=str(target))
+                assert [row.preview for row in rows] == ["second draft", "first"]
+                assert input_widget.value == ""
+        finally:
+            await gateway.close()
+
+    async def test_send_failure_keeps_the_draft_and_shows_a_retryable_error(self, tmp_path: Path) -> None:
+        gateway: _GatedSendGateway = await _open_gated_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            gateway.failure = sqlite3.OperationalError("database is locked: /secret/path/channels.db")
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                input_widget: Input = composer.query_one("#agent-composer-input", Input)
+                input_widget.value = "retry me"
+                await pilot.press("enter")
+                gateway.release.set()
+                await _settle(pilot)
+                status: str = str(composer.query_one(".agent-composer-status", Static).render())
+                assert SEND_FAILED_NOTICE in status
+                assert "/secret/path" not in status
+                assert input_widget.value == "retry me"
+                assert input_widget.disabled is False
+                assert composer.is_finished is False
+                assert await adapter.sent_to_agent(session_id=str(target)) == []
+                gateway.failure = None
+                await pilot.press("enter")
+                await _settle(pilot)
+                rows = await adapter.sent_to_agent(session_id=str(target))
+                assert [row.preview for row in rows] == ["retry me"]
+                assert input_widget.value == ""
+                assert SEND_FAILED_NOTICE not in str(
+                    composer.query_one(".agent-composer-status", Static).render()
+                )
+        finally:
+            await gateway.close()
+
+    async def test_unmount_during_a_pending_send_makes_no_stale_update_or_duplicate(
+        self, tmp_path: Path
+    ) -> None:
+        gateway: _GatedSendGateway = await _open_gated_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                input_widget: Input = composer.query_one("#agent-composer-input", Input)
+                input_widget.value = "in flight"
+                await pilot.press("enter")
+                await _pump_until(pilot=pilot, event=gateway.send_started)
+                await composer.remove()
+                gateway.release.set()
+                await _settle(pilot)
+                assert len(app.query(AgentComposerComponent)) == 0
+                assert composer.submission_outstanding is False
+                assert input_widget.value == "in flight"
+                assert gateway.send_calls == 1
+                assert len(await adapter.sent_to_agent(session_id=str(target))) <= 1
+        finally:
+            await gateway.close()
+
+
 class TestAgentComposerRepliesAndFinish:
     """Reply previews and the finished state (108.3 §6)."""
 
-    async def test_reply_rows_render_a_preview(self, tmp_path) -> None:
+    async def test_reply_rows_render_a_preview(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -205,7 +389,7 @@ class TestAgentComposerRepliesAndFinish:
         finally:
             await gateway.close()
 
-    async def test_closed_agent_disables_the_composer_with_the_finished_notice(self, tmp_path) -> None:
+    async def test_closed_agent_disables_the_composer_with_the_finished_notice(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             target_session_id: str = str(uuid4())
@@ -232,7 +416,7 @@ class TestAgentComposerRepliesAndFinish:
         finally:
             await gateway.close()
 
-    async def test_sending_to_an_agent_that_closes_marks_the_composer_finished(self, tmp_path) -> None:
+    async def test_sending_to_an_agent_that_closes_marks_the_composer_finished(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             target_session_id: str = str(uuid4())
@@ -256,8 +440,8 @@ class TestAgentComposerRepliesAndFinish:
                 await composer.send_draft(force=False)
                 assert composer.is_finished is True
                 assert composer.query_one("#agent-composer-input", Input).disabled is True
-                stored: Optional[object] = None
-                assert stored is None  # no row was inserted after the close
+                # No row was inserted after the close.
+                assert await adapter.sent_to_agent(session_id=str(target)) == []
         finally:
             await gateway.close()
 
@@ -265,7 +449,7 @@ class TestAgentComposerRepliesAndFinish:
 class TestAgentComposerFinalRows:
     """R5: once the target closes, the final ack/reply/cancel rows stay visible."""
 
-    async def test_target_closed_before_first_refresh_still_shows_final_rows(self, tmp_path) -> None:
+    async def test_target_closed_before_first_refresh_still_shows_final_rows(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -326,7 +510,7 @@ class TestAgentComposerFinalRows:
         finally:
             await gateway.close()
 
-    async def test_abort_cancels_queued_rows_and_the_composer_shows_them(self, tmp_path) -> None:
+    async def test_abort_cancels_queued_rows_and_the_composer_shows_them(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -359,7 +543,7 @@ class TestAgentComposerFinalRows:
 class TestChildComposer:
     """108.4: a child's composer sends forced by default and shows notes to the viewed agent."""
 
-    async def test_enter_sends_forced_to_a_child(self, tmp_path) -> None:
+    async def test_enter_sends_forced_to_a_child(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, _factory, target = await _build_composer(gateway=gateway, target_session_id=str(uuid4()))
@@ -380,7 +564,7 @@ class TestChildComposer:
         finally:
             await gateway.close()
 
-    async def test_notes_to_the_viewed_agent_are_shown(self, tmp_path) -> None:
+    async def test_notes_to_the_viewed_agent_are_shown(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             adapter, composer_factory, target = await _build_composer(
@@ -408,7 +592,7 @@ class TestChildComposer:
 class TestWorkflowModalIntegration:
     """The orchestrator's workflow modal owns the composer; child rows do not (108.3/108.4)."""
 
-    async def test_orchestrator_modal_mounts_the_composer(self, tmp_path) -> None:
+    async def test_orchestrator_modal_mounts_the_composer(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             from src.tui.workflows.dao import WorkflowSessionKeyDAO
@@ -443,7 +627,7 @@ class TestWorkflowModalIntegration:
         finally:
             await gateway.close()
 
-    async def test_app_builds_a_forced_by_default_composer_for_child_rows(self, tmp_path) -> None:
+    async def test_app_builds_a_forced_by_default_composer_for_child_rows(self, tmp_path: Path) -> None:
         """108.4: the TUI's workflow modal gives child rows a composer that targets the child."""
         from langchain_core.messages import AIMessage
 

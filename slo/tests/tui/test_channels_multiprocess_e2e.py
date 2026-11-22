@@ -45,10 +45,12 @@ pytestmark = pytest.mark.e2e
 
 _HEADLESS_AGENT_SCRIPT: str = r"""
 import asyncio, json, os, sys
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
-from typing import Optional
-from langchain_core.messages import AIMessage
+from typing import Any, Optional
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import BaseTool
 from pydantic import Field
 from src.agents.providers.faux import FauxChatModel
@@ -65,16 +67,28 @@ class FileGatedFauxChatModel(FauxChatModel):
     release_path: str = Field(description="First call waits until this file exists.")
     record_path: str = Field(description="JSON file receiving every call's message texts.")
 
-    def bind_tools(self, tools: Sequence[object], *, tool_choice: Optional[str] = None, **kwargs: object):
-        clone = FileGatedFauxChatModel(
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, object] | type | Callable[..., object] | BaseTool],
+        *,
+        tool_choice: Optional[str] = None,
+        **kwargs: object,
+    ) -> "FileGatedFauxChatModel":
+        clone: FileGatedFauxChatModel = FileGatedFauxChatModel(
             responses=list(self.queue), release_path=self.release_path, record_path=self.record_path
         )
         clone.bound_tools = list(tools)
         return clone
 
-    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        record = Path(self.record_path)
-        contexts = json.loads(record.read_text()) if record.exists() else []
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        record: Path = Path(self.record_path)
+        contexts: list[list[str]] = json.loads(record.read_text()) if record.exists() else []
         contexts.append([str(message.content) for message in messages])
         record.write_text(json.dumps(contexts))
         if len(contexts) == 1:
@@ -85,7 +99,7 @@ class FileGatedFauxChatModel(FauxChatModel):
 
 
 async def main() -> int:
-    env = os.environ
+    env: dict[str, str] = dict(os.environ)
     repository = ChannelRepository(db_path=Path(env["E2E_DB"]))
     await repository.open()
     gateway = ChannelGateway(repository=repository)

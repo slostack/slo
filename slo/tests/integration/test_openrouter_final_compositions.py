@@ -159,8 +159,11 @@ async def test_normalized_provider_failure_populates_headless_status_and_termina
     failure_before_session_event: bool,
 ) -> None:
     """One real SDK failure reaches status and notifier with positive public controls."""
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+    from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
     from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+    from src.channels.dao import ChannelMessageDAO
+    from src.channels.gateway import ChannelGateway
+    from src.channels.repository import ChannelRepository
     from src.cli.headless import HeadlessRunner
 
     secret, body_marker = "FINAL_HEADLESS_SYNTHETIC_KEY", "FINAL_RAW_PROVIDER_BODY"
@@ -215,12 +218,17 @@ async def test_normalized_provider_failure_populates_headless_status_and_termina
                 model_name=model_name, resolved={**resolved, "http_async_client": client}, entry=entry
             )
 
-        inbox = SessionInboxStore(history_root=history_root)
+        # 108.3: the notifier reports through the shared channel queue.
+        channel_repository = ChannelRepository(db_path=tmp_path / "channels" / "channels.db")
+        await channel_repository.open()
+        gateway = ChannelGateway(repository=channel_repository)
+        owner_id = channel_participant_id_for_session(session_id="owner")
+        await gateway.register_agent(session_id=owner_id, name="slo owner", durable_inbox=True)
         notifier = WorkflowNotifier(
+            gateway=gateway,
             target_session_id="owner",
             orchestrator_session_id="body-session",
             workflow_id="wf-final-body",
-            inbox_store=inbox,
         )
         runner = HeadlessRunner(
             config=SessionConfigDAO(
@@ -233,6 +241,7 @@ async def test_normalized_provider_failure_populates_headless_status_and_termina
             ),
             notify_session_id="owner",
             notifier=notifier,
+            channel_gateway=gateway,
         )
         with (
             patch("src.agents.model_catalog.service.OpenRouterAPIClient", side_effect=catalog_client),
@@ -262,15 +271,17 @@ async def test_normalized_provider_failure_populates_headless_status_and_termina
     status = json.loads(status_path.read_text())
     assert status["state"] == "failed" and status["exit_code"] == 1
     assert status["orchestrator_session_id"] == "body-session"
-    pending = await inbox.list_pending(session_id="owner")
-    terminals = [message for message in pending if message.kind == "workflow_failed"]
+    pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=owner_id)
+    await gateway.close()
+    terminals = [message for message in pending if message.message_type == "prompt"]
     assert len(terminals) == 1
-    assert "OpenRouter request failed" in terminals[0].model_dump_json()
-    assert any("ordinary public prompt" in message.model_dump_json() for message in pending)
+    assert "OpenRouter request failed" in terminals[0].message_contents
+    assert any("ordinary public prompt" in message.message_contents for message in pending)
     public = captured.out + captured.err + caplog.text
     for path in history_root.rglob("*"):
         if path.is_file():
             public += path.read_text()
+    public += "".join(message.message_contents for message in pending)
     assert "ordinary public prompt" in public
     assert "headless_run_failed" in public
     assert secret not in public and body_marker not in public

@@ -90,10 +90,14 @@ class OrchestratorSessionBootstrap:
         session_id: str = session.session_id
         permitted: bool = session._begin_standard_orchestrator_attachment()
         policy_sources = session._snapshot_herdr_policy_sources() if permitted else None
-        pool: SubAgentPool = cls._build_pool(
-            session=session,
-            owner_session_id=owner_session_id or session.session_id,
-            channel_gateway=channel_gateway,
+        pool: SubAgentPool = (
+            cls._build_pool(
+                session=session,
+                owner_session_id=owner_session_id or session.session_id,
+                channel_gateway=channel_gateway,
+            )
+            if channel_gateway is not None
+            else cls._build_pool(session=session, owner_session_id=owner_session_id or session.session_id)
         )
         spawn_tool: BaseTool = SpawnSubAgentsTool.build(
             pool=pool,
@@ -103,15 +107,14 @@ class OrchestratorSessionBootstrap:
                 else None
             ),
         )
-        handle_store: Optional["WorkflowHandleStore"] = cls._build_handle_store(headless=headless)
         extra_tools: list[BaseTool] = (
             [spawn_tool]
-            + cls._build_workflow_tools(session=session, handle_store=handle_store)
+            + cls._build_workflow_tools(session=session, headless=headless)
             + cls._build_messaging_tools(
                 session=session,
                 pool=pool,
                 channel_gateway=channel_gateway,
-                handle_store=handle_store,
+                headless=headless,
             )
         )
         permitted = (
@@ -159,25 +162,29 @@ class OrchestratorSessionBootstrap:
         cls,
         *,
         session: "SloAgentSession",
-        handle_store: Optional["WorkflowHandleStore"],
+        headless: bool = False,
     ) -> list[BaseTool]:
-        """Build the detached-workflow tools over one shared handle store.
+        """Build the detached-workflow tools when the kill switch allows them.
 
-        Both tools share the store so the launch tool and the status tool
-        always agree on handle state.
+        Both tools share one ``WorkflowHandleStore`` bound to the default
+        history root so the launch tool and the status tool always agree on
+        handle state.
 
         Args:
             session (SloAgentSession): Owning session providing its id and
                 active model and reasoning snapshots. Later setting changes or
                 pending preparation do not refresh the bound launch defaults.
-            handle_store (Optional[WorkflowHandleStore]): The shared store, or
-                ``None`` when the workflow tools are withheld.
+            headless (bool): True when promoting a headless ``slo run
+                --orchestrator`` session; withholds the detached-workflow tools
+                so a detached orchestrator can never recurse.
 
         Returns:
-            list[BaseTool]: ``[launch_workflow, workflow_status]``, or an empty
-                list without a store.
+            list[BaseTool]: ``[launch_workflow, workflow_status]`` when
+                ``SLO_DETACHED_WORKFLOWS`` is enabled and ``headless`` is
+                ``False``, else an empty list.
         """
-        if handle_store is None:
+        store: Optional["WorkflowHandleStore"] = cls._build_handle_store(headless=headless)
+        if store is None:
             return []
         from src.agents.slo_agent.orchestrator.launch_tool import (  # noqa: PLC0415
             LaunchWorkflowTool,
@@ -191,9 +198,9 @@ class OrchestratorSessionBootstrap:
                 owner_session_id=session.session_id,
                 default_model=session.active_model_name,
                 default_reasoning_level=session.active_reasoning_level,
-                handle_store=handle_store,
+                handle_store=store,
             ),
-            WorkflowStatusTool.build(owner_session_id=session.session_id, store=handle_store),
+            WorkflowStatusTool.build(owner_session_id=session.session_id, store=store),
         ]
 
     @classmethod
@@ -203,19 +210,20 @@ class OrchestratorSessionBootstrap:
         session: "SloAgentSession",
         pool: SubAgentPool,
         channel_gateway: Optional["ChannelGateway"],
-        handle_store: Optional["WorkflowHandleStore"],
+        headless: bool,
     ) -> list[BaseTool]:
         """Build ``send_message`` for an orchestrator session (108.4 §5).
 
         The orchestrator may message its own children (task-id aliases from
-        the pool's child directory) and, in the TUI, the workflows it launched.
+        the pool's child directory) and, in the TUI, the workflows it launched
+        (read from the same handle files the workflow tools write).
 
         Args:
             session (SloAgentSession): The orchestrator session (the sender).
             pool (SubAgentPool): The session's pool, source of the child directory.
             channel_gateway (Optional[ChannelGateway]): Shared queue, or ``None``.
-            handle_store (Optional[WorkflowHandleStore]): Launched-workflow
-                handles of this session, or ``None`` (headless).
+            headless (bool): True for a headless orchestrator, which launches
+                no workflows.
 
         Returns:
             list[BaseTool]: ``[send_message]``, or an empty list without a gateway.
@@ -228,7 +236,7 @@ class OrchestratorSessionBootstrap:
             parent_id=None,
             children=pool.child_directory,
             launched_workflows=cls._launched_workflows_reader(
-                handle_store=handle_store,
+                handle_store=cls._build_handle_store(headless=headless),
                 owner_session_id=session.session_id,
             ),
         )

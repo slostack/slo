@@ -134,6 +134,7 @@ class SemanticTrace:
         value = record.model_dump(mode="json")
         if isinstance(record, AgentStreamEventDAO):
             value["block_id"] = self._identity(value=value["block_id"])
+            value["channel_message_id"] = self._identity(value=value.get("channel_message_id"))
             return value
         if not isinstance(record, SessionHistoryEventDAO):
             raise TypeError("Unreviewed parity record schema")
@@ -143,7 +144,8 @@ class SemanticTrace:
         payload = value["payload"]
         payload["block_id"] = self._identity(value=payload["block_id"])
         metadata = payload["metadata"]
-        for key in ("entry_id", "parent_entry_id"):
+        # channel_message_id is the generated channel queue row id (108.1 §6).
+        for key in ("entry_id", "parent_entry_id", "channel_message_id"):
             if key in metadata:
                 metadata[key] = self._identity(value=metadata[key])
         return value

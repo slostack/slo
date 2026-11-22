@@ -80,6 +80,23 @@ def jev_frames(*, tool: bool, answer: str = "complete-89") -> bytes:
     return ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode()
 
 
+async def _await_channel_run(*, app: "SloTUI") -> None:
+    """Wait for the poller-owned run of the prompt just submitted (108.1).
+
+    Prompts go through the channel queue; the session's poller starts the run
+    and owns its task, so the test awaits that task instead of an app task.
+    """
+    poller = app._session.channel_poller
+    assert poller is not None
+    async with asyncio.timeout(30):
+        while poller.current_run_task is None:
+            await asyncio.sleep(0.01)
+        run_task = poller.current_run_task
+        await run_task
+        while poller.busy:
+            await asyncio.sleep(0.01)
+
+
 @pytest.mark.parametrize("model_name", ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol", ROUTE])
 @pytest.mark.parametrize("oauth", [False, True])
 @pytest.mark.parametrize("entry", ["default", "explicit", "preference", "child"])
@@ -893,8 +910,7 @@ async def test_mounted_prepared_jev_tool_cycle_and_resume(
                     in app.query_one(ChatTranscriptComponent).logical_copy_text()
                 )
                 await app._submit_or_queue_prompt(text="run echo-89")
-                assert app._in_flight_task is not None
-                await app._in_flight_task
+                await _await_channel_run(app=app)
                 await pilot.pause()
                 assert "complete-89" in app.query_one(ChatTranscriptComponent).logical_copy_text()
             from src.agents.model_catalog.service import ModelCatalogService
@@ -931,8 +947,7 @@ async def test_mounted_prepared_jev_tool_cycle_and_resume(
             resumed_app = SloTUI(session=resumed)
             async with resumed_app.run_test(size=(120, 40)) as pilot:
                 await resumed_app._submit_or_queue_prompt(text="continue-89")
-                assert resumed_app._in_flight_task is not None
-                await resumed_app._in_flight_task
+                await _await_channel_run(app=resumed_app)
                 await pilot.pause()
                 transcript = resumed_app.query_one(ChatTranscriptComponent).logical_copy_text()
                 assert "complete-89" in transcript and "resume-89" in transcript
@@ -1076,8 +1091,7 @@ async def test_mounted_gpt6_tool_cycle_and_resume(
                     assert session.active_reasoning_level == level
                     assert not requests
                     await app._submit_or_queue_prompt(text="run echo-89")
-                    assert app._in_flight_task is not None
-                    await app._in_flight_task
+                    await _await_channel_run(app=app)
                     await pilot.pause()
                     assert "complete-89" in app.query_one(ChatTranscriptComponent).logical_copy_text()
                 with patch(
@@ -1095,8 +1109,7 @@ async def test_mounted_gpt6_tool_cycle_and_resume(
                 resumed_app = SloTUI(session=resumed)
                 async with resumed_app.run_test(size=(120, 40)) as pilot:
                     await resumed_app._submit_or_queue_prompt(text="continue-89")
-                    assert resumed_app._in_flight_task is not None
-                    await resumed_app._in_flight_task
+                    await _await_channel_run(app=resumed_app)
                     await pilot.pause()
                     transcript = resumed_app.query_one(ChatTranscriptComponent).logical_copy_text()
                     assert "complete-89" in transcript and "resume-89" in transcript

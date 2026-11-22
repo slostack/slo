@@ -94,3 +94,20 @@ SessionProgressScreen.-progress-narrow .actions Button {
     margin-left: 0;
     border: none;
 }
+
+/* Short terminals (< 20 rows): the agent composer (108.3/108.4) keeps only its
+   input, status and the two newest delivery rows so the actions stay reachable. */
+
+SessionProgressScreen.-workflow-short-height AgentComposerComponent {
+    max-height: 4;
+    border-top: none;
+}
+
+SessionProgressScreen.-workflow-short-height AgentComposerComponent .agent-composer-header,
+SessionProgressScreen.-workflow-short-height AgentComposerComponent .agent-composer-notes {
+    display: none;
+}
+
+SessionProgressScreen.-workflow-short-height AgentComposerComponent .agent-composer-rows {
+    max-height: 2;
+}

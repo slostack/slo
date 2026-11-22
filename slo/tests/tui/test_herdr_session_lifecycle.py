@@ -4,6 +4,7 @@ import asyncio
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from typing import Optional
 from src.tui.components.chat_transcript.commands import TranscriptCommand
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.channels.gateway import ChannelGateway
 from src.tui.app import SloTUI
 
 
@@ -56,9 +58,9 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             built.append(candidate)
             return candidate
 
-        def attach(*, session: SloAgentSession) -> None:
+        def attach(*, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None) -> None:
             """Fail after actual attachment to prove candidate pool cleanup."""
-            original_attach(session=session)
+            original_attach(session=session, channel_gateway=channel_gateway)
             if failure == "cancel_before_name":
                 raise asyncio.CancelledError
             if failure in ("attach", "notice"):
@@ -174,7 +176,7 @@ async def test_new_prepared_policy_is_independent(
         original_attach = app._attach_pool_to_session
         candidates: list[SloAgentSession] = []
 
-        def attach(*, session: SloAgentSession) -> None:
+        def attach(*, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None) -> None:
             """Inspect the actual new candidate before normal attachment/adoption."""
             candidates.append(session)
             assert session._config is not None
@@ -193,7 +195,7 @@ async def test_new_prepared_policy_is_independent(
                 session.model_pool_dao.entries.reverse()
                 assert configured_pool.entries[0].cooldown_seconds == 300
                 assert configured_pool.entries[0].priority == 2
-            original_attach(session=session)
+            original_attach(session=session, channel_gateway=channel_gateway)
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -230,11 +232,11 @@ async def test_candidate_cleanup_joins_repeated_cancellation(
         if cleanup_error:
             raise RuntimeError("private cleanup sentinel")
 
-    def attach(*, session: SloAgentSession) -> None:
+    def attach(*, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None) -> None:
         """Capture a partially prepared candidate and fail its attachment boundary."""
         candidates.append(session)
         if pool_present:
-            original_attach(session=session)
+            original_attach(session=session, channel_gateway=channel_gateway)
         raise RuntimeError("private attachment sentinel")
 
     async with app.run_test() as pilot:

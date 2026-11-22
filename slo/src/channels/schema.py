@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 
-__all__ = ["SCHEMA_V1", "SCHEMA_V2", "SCHEMA_VERSION", "migrate"]
+__all__ = ["SCHEMA_V1", "SCHEMA_V2", "SCHEMA_V3", "SCHEMA_VERSION", "migrate"]
 
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 """Current ``PRAGMA user_version`` this build migrates to."""
 
 SCHEMA_V1: str = """
@@ -70,13 +70,25 @@ CREATE INDEX coalesce_pending ON messages(recipient_id, sender_id, coalesce_key)
 """
 """DDL for schema version 2: coalesce key for superseding notices (108.3 §4)."""
 
+SCHEMA_V3: str = """
+ALTER TABLE participants ADD COLUMN durable_inbox INTEGER NOT NULL DEFAULT 0
+    CHECK(durable_inbox IN (0, 1));
+"""
+"""DDL for schema version 3: the durable session inbox (108.3 §6).
+
+An interactive session's agent participant keeps its inbox while it is closed:
+rows from other agents and systems wait until the session opens again. Every
+other agent participant (a finished workflow or child) refuses sends once closed.
+"""
+
 
 def migrate(*, connection: sqlite3.Connection) -> None:
     """Bring the database up to the current schema version.
 
     Applies pending migrations in order and stamps ``PRAGMA user_version``.
     Version 0 → 1 creates all three tables and their indexes; version 1 → 2
-    adds the ``messages.coalesce_key`` column and its partial supersede index.
+    adds the ``messages.coalesce_key`` column and its partial supersede index;
+    version 2 → 3 adds ``participants.durable_inbox``.
 
     Args:
         connection (sqlite3.Connection): Open database connection to migrate.
@@ -89,4 +101,8 @@ def migrate(*, connection: sqlite3.Connection) -> None:
     if current < 2:
         connection.executescript(SCHEMA_V2)
         connection.execute("PRAGMA user_version = 2")
+        connection.commit()
+    if current < 3:
+        connection.executescript(SCHEMA_V3)
+        connection.execute("PRAGMA user_version = 3")
         connection.commit()

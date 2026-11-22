@@ -36,7 +36,7 @@ class TestSchemaBootstrap:
         try:
             tables: set[str] = await repository.table_names()
             assert {"channels", "participants", "messages"} <= tables
-            assert await repository.user_version() == 2
+            assert await repository.user_version() == 3
             assert await repository.journal_mode() == "wal"
             db_file: Path = tmp_path / "channels.db"
             assert oct(db_file.stat().st_mode & 0o777) == "0o600"
@@ -58,7 +58,9 @@ class TestSchemaBootstrap:
 
         repository: ChannelRepository = await _open_repository(tmp_path=tmp_path)
         try:
-            assert await repository.user_version() == 2
+            assert await repository.user_version() == 3
+            participant_columns: list[tuple[str, str]] = await repository.column_names(table="participants")
+            assert "durable_inbox" in {name for name, _kind in participant_columns}
             columns: list[tuple[str, str]] = await repository.column_names(table="messages")
             assert "coalesce_key" in {name for name, _kind in columns}
             indexes: set[str] = await repository.index_names()
@@ -486,7 +488,9 @@ class TestCoalesceSupersede:
             channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
             user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
             agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
-            other_agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo def67890")
+            other_agent: ParticipantDAO = await gateway.register_agent(
+                session_id=uuid4(), name="slo def67890"
+            )
             accepted: ChannelMessageDAO = await gateway.send(
                 new=NewMessageDAO(
                     sender_id=agent.id,
@@ -598,9 +602,7 @@ class TestAtomicCloseAgent:
             )
             cancelled: int = await gateway.close_agent(session_id=agent.id, reason="recipient_closed")
             assert cancelled == 1
-            participant: Optional[ParticipantDAO] = await gateway.get_participant(
-                participant_id=agent.id
-            )
+            participant: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=agent.id)
             assert participant is not None and participant.status == "closed"
             pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
             assert pending == []
@@ -652,7 +654,9 @@ class TestSentMessagesAndReplies:
             channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
             user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
             agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
-            other_agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo def67890")
+            other_agent: ParticipantDAO = await gateway.register_agent(
+                session_id=uuid4(), name="slo def67890"
+            )
             await gateway.send(
                 new=NewMessageDAO(
                     sender_id=user.id, recipient_id=agent.id, message_contents="mine", channel_id=channel.id
@@ -754,5 +758,66 @@ class TestSentMessagesAndReplies:
             assert by_id[forced.id].preview == "x" * 80
             assert by_id[queued.id].state == "queued"
             assert by_id[cancelled.id].state == "cancelled"
+        finally:
+            await gateway.close()
+
+
+class TestDurableSessionInbox:
+    """A closed interactive session keeps its inbox for agents and systems; finished agents refuse (108.3 §6)."""
+
+    async def test_closed_session_admits_agent_rows_and_keeps_them_pending(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            session: ParticipantDAO = await gateway.register_agent(
+                session_id=uuid4(), name="slo session", durable_inbox=True
+            )
+            workflow: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="orchestrator")
+            operator_prompt: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(sender_id=user.id, recipient_id=session.id, message_contents="queued")
+            )
+            early_note: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=workflow.id,
+                    recipient_id=session.id,
+                    message_contents="early",
+                    message_type="note",
+                )
+            )
+            cancelled: int = await gateway.close_agent(session_id=session.id, reason="session_closed")
+            assert cancelled == 1
+            stored_prompt: Optional[ChannelMessageDAO] = await gateway.get(message_id=operator_prompt.id)
+            assert stored_prompt is not None and stored_prompt.cancel_reason == "session_closed"
+            stored_note: Optional[ChannelMessageDAO] = await gateway.get(message_id=early_note.id)
+            assert stored_note is not None and stored_note.cancelled_at is None
+            late: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=workflow.id, recipient_id=session.id, message_contents="W completed"
+                )
+            )
+            pending_ids: list[UUID] = [
+                row.id for row in await gateway.pending_inbound(recipient_id=session.id)
+            ]
+            assert pending_ids == [early_note.id, late.id]
+            closed_session: Optional[ParticipantDAO] = await gateway.get_participant(
+                participant_id=session.id
+            )
+            assert closed_session is not None and closed_session.status == "closed"
+            assert closed_session.durable_inbox is True
+        finally:
+            await gateway.close()
+
+    async def test_closed_finished_agent_still_refuses_sends(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            workflow: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="orchestrator")
+            await gateway.close_agent(session_id=workflow.id, reason="recipient_closed")
+            with pytest.raises(RecipientClosedError):
+                await gateway.send(
+                    new=NewMessageDAO(sender_id=user.id, recipient_id=workflow.id, message_contents="late")
+                )
         finally:
             await gateway.close()

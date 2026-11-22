@@ -20,7 +20,7 @@ from config.timeout_resolver import positive_float_env
 from src.agents.slo_agent.channel_delivery.boundary_inbox import ChannelBoundaryInbox
 from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
 from src.agents.slo_agent.channel_delivery.turn_runner import TurnOutcomeDAO, TurnRunner
-from src.channels.dao import ChannelMessageDAO
+from src.channels.dao import ChannelMessageDAO, ParticipantDAO
 from src.channels.gateway import ChannelGateway
 
 if TYPE_CHECKING:
@@ -115,6 +115,8 @@ class ChannelPoller:
         interval: Optional[float] = None,
         display: Optional[ChannelDisplaySink] = None,
         auto_run: bool = True,
+        durable_inbox: bool = False,
+        participant_name: Optional[str] = None,
     ) -> None:
         """Compose the poller around its injected collaborators.
 
@@ -139,6 +141,13 @@ class ChannelPoller:
                 for pending prompt rows itself; ``False`` (headless workflow
                 mode) keeps the boundary inbox and note/notice handling live
                 while ``HeadlessRunner`` owns every run (108.3 §5).
+            durable_inbox (bool): ``True`` for an interactive session whose
+                inbox outlives a closed process (108.3 §6): other agents may
+                still send to it while it is closed, and those rows are
+                handled when it opens again.
+            participant_name (Optional[str]): Display name registered for the
+                agent participant; defaults to ``slo <short id>``. Children use
+                ``<task_id> (child of <short parent>)`` (108.4 §5).
         """
         self._gateway: ChannelGateway = gateway
         self._session: "SloAgentSession" = session
@@ -156,6 +165,8 @@ class ChannelPoller:
         self._auto_run: bool = auto_run
         self._shown_note_ids: set[UUID] = set()
         self._participant_id: UUID = channel_participant_id_for_session(session_id=self._session.session_id)
+        self._durable_inbox: bool = durable_inbox
+        self._participant_name: str = participant_name or f"slo {str(self._participant_id)[:8]}"
 
     @property
     def boundary_inbox(self) -> ChannelBoundaryInbox:
@@ -198,16 +209,18 @@ class ChannelPoller:
 
         Recovery (108.1 §6): rows left pending by an earlier process whose id
         is already in ``events.jsonl`` (via ``channel_message_id``) are
-        accepted; when other rows remain pending the poller starts paused so
-        the operator decides with ``/queue resume``.
+        accepted; when rows a user sent remain pending the poller starts
+        paused so the operator decides with ``/queue resume``. Rows from other
+        agents and systems (a workflow that reported while the session was
+        closed) never pause it (108.3 §6).
         """
         if self._started:
             return
         self._started = True
-        session_uuid = self._participant_id
         await self._gateway.register_agent(
-            session_id=session_uuid,
-            name=f"slo {str(session_uuid)[:8]}",
+            session_id=self._participant_id,
+            name=self._participant_name,
+            durable_inbox=self._durable_inbox,
         )
         await self._recover_on_start()
         self._stopping = False
@@ -308,17 +321,34 @@ class ChannelPoller:
                 known_ids = await self._session.channel_message_ids_in_history()
             except Exception as exc:  # noqa: BLE001 — recovery must not kill startup
                 log_warning(msg=f"channel recovery history scan failed: {exc}")
-        leftover: list[ChannelMessageDAO] = []
+        operator_leftover: list[ChannelMessageDAO] = []
         for row in pending:
             if str(row.id) in known_ids:
                 await self._gateway.accept(message_id=row.id)
-            else:
-                leftover.append(row)
-        if leftover:
+            elif await self._is_sent_by_user(message=row):
+                operator_leftover.append(row)
+        if operator_leftover:
             self._paused_reason = "recovered"
             log_warning(
-                msg=f"channel poller recovered {len(leftover)} pending row(s); paused (use /queue resume)"
+                msg=(
+                    f"channel poller recovered {len(operator_leftover)} pending row(s); "
+                    "paused (use /queue resume)"
+                )
             )
+
+    async def _is_sent_by_user(self, *, message: ChannelMessageDAO) -> bool:
+        """Return whether a row came from a user participant (or an unknown sender).
+
+        Args:
+            message (ChannelMessageDAO): A pending inbound row.
+
+        Returns:
+            bool: ``True`` unless the sender is a known agent or system.
+        """
+        sender: Optional[ParticipantDAO] = await self._gateway.get_participant(
+            participant_id=message.sender_id
+        )
+        return sender is None or sender.kind == "user"
 
     async def _loop(self) -> None:
         """The poll loop: run one tick per wake or interval, then wait again.

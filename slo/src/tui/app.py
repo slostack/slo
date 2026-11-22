@@ -359,7 +359,12 @@ class SloTUI(App):
         self._herdr_successor_suppressed: bool = False
         self._replacement_delivery_safe: bool = True
         self._delivery_quiescing: bool = False
-        self._attach_pool_to_session(session=self._session)
+        # The gateway object exists from construction so the session tools
+        # (``send_message``, 108.4) bind to it; it is opened on mount.
+        self._channel_gateway: Optional[ChannelGateway] = (
+            channel_gateway if channel_gateway is not None else ChannelGateway.at_default_path()
+        )
+        self._attach_pool_to_session(session=self._session, channel_gateway=self._channel_gateway)
         self._chat_transcript: ChatTranscriptComponent = ChatTranscriptComponent(
             history_reader=self._session.hydrate_transcript_entries
         )
@@ -404,7 +409,6 @@ class SloTUI(App):
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
         self._lease_timer: Optional[Timer] = None
-        self._channel_gateway: Optional[ChannelGateway] = channel_gateway
         self._channel_adapter: Optional[TuiChannelAdapter] = None
         self._queued_refresh_timer: Optional[Timer] = None
         self._queued_rows_snapshot: Callable[[], Awaitable[tuple[list[ChannelMessageDAO], bool]]] = (
@@ -2037,7 +2041,8 @@ class SloTUI(App):
             return
         try:
             if self._channel_gateway is None:
-                self._channel_gateway = await ChannelGateway.default()
+                self._channel_gateway = ChannelGateway.at_default_path()
+            await self._channel_gateway.open()
             adapter: TuiChannelAdapter = TuiChannelAdapter(app=self, gateway=self._channel_gateway)
             await adapter.start()
             await self._session.start_channel_delivery(
@@ -2045,6 +2050,7 @@ class SloTUI(App):
                 runner=TuiTurnRunner(app=self),
                 operator_participant_id=adapter.user_participant.id,
                 display=TuiDisplaySink(transcript=self._chat_transcript),
+                durable_inbox=True,
             )
             self._channel_adapter = adapter
             # Queued-list refresh: every poll tick while non-empty (108.1 §5.5).
@@ -2949,10 +2955,15 @@ class SloTUI(App):
         if session.channel_poller is None:
             try:
                 if self._channel_gateway is None:
-                    self._channel_gateway = await ChannelGateway.default()
+                    self._channel_gateway = ChannelGateway.at_default_path()
+                await self._channel_gateway.open()
+                adapter: Optional[TuiChannelAdapter] = self._channel_adapter
                 await session.start_channel_delivery(
                     gateway=self._channel_gateway,
                     runner=TuiTurnRunner(app=self),
+                    operator_participant_id=(adapter.user_participant.id if adapter is not None else None),
+                    display=TuiDisplaySink(transcript=self._chat_transcript),
+                    durable_inbox=True,
                 )
             except Exception as exc:  # noqa: BLE001 — replacement survives a broken queue
                 log_error(msg=f"channel delivery restart failed: {exc}")
@@ -3029,7 +3040,7 @@ class SloTUI(App):
             )
             if candidate.history_root != self._session.history_root:
                 raise ValueError("Replacement history root must remain unchanged")
-            self._attach_pool_to_session(session=candidate)
+            self._attach_pool_to_session(session=candidate, channel_gateway=self._channel_gateway)
             if requested_name is not None:
                 await candidate.rename_session(session_name=requested_name)
             return candidate
@@ -3271,30 +3282,29 @@ class SloTUI(App):
         """
         return self.push_screen(screen=screen, callback=on_closed)
 
-    def progress_composer_for(
-        self, *, key: WorkflowSessionKeyDAO
-    ) -> Optional["AgentComposerComponent"]:
-        """Build the agent composer for one workflow session key (108.3 §5).
+    def progress_composer_for(self, *, key: WorkflowSessionKeyDAO) -> Optional["AgentComposerComponent"]:
+        """Build the agent composer for one workflow session key (108.3 §5, 108.4).
 
-        Only the orchestrator's own row gets a composer; child rows get none
-        until 108.4. Without channel delivery there is nothing to send through.
+        The orchestrator's own row targets the orchestrator with normal sends
+        by default; a child row targets that child and sends forced by default,
+        because a child runs one task and takes no follow-up turns. Without
+        channel delivery there is nothing to send through.
 
         Args:
             key (WorkflowSessionKeyDAO): Session row being opened.
 
         Returns:
             Optional[AgentComposerComponent]: A composer bound to the running
-                TUI channel adapter targeting the orchestrator, or ``None``.
+                TUI channel adapter targeting the row's agent, or ``None``.
         """
         adapter: Optional[TuiChannelAdapter] = self._channel_adapter
-        if not key.is_parent or adapter is None:
+        if adapter is None:
             return None
         return AgentComposerComponent(
-            target_agent_id=channel_participant_id_for_session(
-                session_id=key.orchestrator_session_id
-            ),
-            target_label="orchestrator",
+            target_agent_id=channel_participant_id_for_session(session_id=key.session_id),
+            target_label="orchestrator" if key.is_parent else f"child {key.session_id[:8]}",
             adapter=adapter,
+            default_force=not key.is_parent,
         )
 
     def present_confirmation(
@@ -3493,7 +3503,9 @@ class SloTUI(App):
     # ---- Session and pool management ---------------------------------------
 
     @staticmethod
-    def _attach_pool_to_session(*, session: SloAgentSession) -> None:
+    def _attach_pool_to_session(
+        *, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None
+    ) -> None:
         """Promote ``session`` to orchestrator mode via the shared bootstrapper.
 
         Delegates to ``OrchestratorSessionBootstrap.attach`` — the single
@@ -3504,12 +3516,14 @@ class SloTUI(App):
 
         Args:
             session (SloAgentSession): Session to promote to orchestrator mode.
+            channel_gateway (Optional[ChannelGateway]): The app's shared queue
+                gateway (opened on mount); binds ``send_message`` (108.4).
         """
         from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
             OrchestratorSessionBootstrap,
         )
 
-        OrchestratorSessionBootstrap.attach(session=session)
+        OrchestratorSessionBootstrap.attach(session=session, channel_gateway=channel_gateway)
 
     @staticmethod
     def _build_replacement_session_config(*, old_session: SloAgentSession) -> SessionConfigDAO:

@@ -67,9 +67,7 @@ class ChannelBoundaryInbox:
         # from reinserting them into the snapshot and reviving the run for a
         # delivery that is already being applied (108.2 B3).
         self._forced_ids = {
-            row.id
-            for row in rows
-            if row.forced_at is not None and row.message_type == "prompt"
+            row.id for row in rows if row.forced_at is not None and row.message_type == "prompt"
         } - self._in_flight_ids
 
     def reserve(self, *, message_id: UUID) -> None:
@@ -97,7 +95,7 @@ class ChannelBoundaryInbox:
         """
         return bool((self._forced_ids - self._in_flight_ids) - self._reserved_ids)
 
-    async def take(self, *, iteration: int) -> list[BoundaryDeliveryDAO]:
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
         """Take pending notes first, then forced prompt rows, FIFO by message index.
 
         Notes join the current run's context at the boundary before forced
@@ -108,6 +106,10 @@ class ChannelBoundaryInbox:
 
         Args:
             iteration (int): Agent loop iteration whose boundary takes them.
+            require_forced_prompt (bool): ``True`` at a revive boundary: when
+                the fresh read holds no forced prompt (the cached snapshot was
+                stale), nothing is taken and pending notes stay pending for
+                the next naturally continuing call (108.3 O2).
 
         Returns:
             list[BoundaryDeliveryDAO]: The taken rows in delivery order — notes
@@ -117,22 +119,20 @@ class ChannelBoundaryInbox:
             recipient_id=self._agent_id,
         )
         claimable: list[ChannelMessageDAO] = [
-            row
-            for row in rows
-            if row.id not in self._reserved_ids and row.id not in self._in_flight_ids
+            row for row in rows if row.id not in self._reserved_ids and row.id not in self._in_flight_ids
         ]
         notes: list[ChannelMessageDAO] = [row for row in claimable if row.message_type == "note"]
         forced_rows: list[ChannelMessageDAO] = [
-            row
-            for row in claimable
-            if row.forced_at is not None and row.message_type == "prompt"
+            row for row in claimable if row.forced_at is not None and row.message_type == "prompt"
         ]
-        taken: list[ChannelMessageDAO] = notes + forced_rows
         # The fresh read is the truth: replace the snapshot with the ids the
         # queue still reports so a cached id the queue dropped (cancelled or
         # accepted since the last refresh) cannot revive the run for an empty
         # boundary, and reconcile the taken ids out of the snapshot.
         self._forced_ids = {row.id for row in forced_rows}
+        if require_forced_prompt and not forced_rows:
+            return []
+        taken: list[ChannelMessageDAO] = notes + forced_rows
         # The taken rows are in flight until their confirm settles them, so a
         # refresh between take and confirm cannot reinsert them (108.2 B3).
         self._in_flight_ids |= {row.id for row in taken}
@@ -142,6 +142,7 @@ class ChannelBoundaryInbox:
                 text=row.message_contents,
                 sender_name=self._sender_label(sender_id=row.sender_id, sender_name=row.sender_name),
                 iteration=iteration,
+                kind="note" if row.message_type == "note" else "forced_prompt",
             )
             for row in taken
         ]

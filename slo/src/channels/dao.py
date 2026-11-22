@@ -69,6 +69,14 @@ class ParticipantDAO(BaseModel):
     )
     last_seen_at: datetime = Field(description="UTC time of the latest heartbeat or activity.")
     created_at: datetime = Field(description="UTC time the participant was registered.")
+    durable_inbox: bool = Field(
+        default=False,
+        description=(
+            "True for an interactive session's agent: while closed it still admits rows from "
+            "other agents and systems, which wait until the session opens again (108.3 §6). "
+            "False for finished agents such as workflows and children, which refuse sends once closed."
+        ),
+    )
 
 
 class NewMessageDAO(BaseModel):
@@ -127,6 +135,10 @@ class SentMessageRowDAO(BaseModel):
     reply_preview: Optional[str] = Field(
         default=None,
         description="First 80 characters of the reply, once one exists.",
+    )
+    cancel_reason: Optional[str] = Field(
+        default=None,
+        description="Why the row was cancelled, e.g. 'recipient_closed' or 'aborted'; None unless cancelled.",
     )
 
 

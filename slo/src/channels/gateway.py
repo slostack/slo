@@ -52,6 +52,20 @@ class ChannelGateway:
         return self._repository
 
     @classmethod
+    def at_default_path(cls) -> "ChannelGateway":
+        """Build (without opening) the gateway on ``$SLO_HOME/channels/channels.db``.
+
+        Owners that must bind tools before they can await (the TUI builds its
+        session tools in its constructor) create the gateway here and
+        ``open()`` it later.
+
+        Returns:
+            ChannelGateway: A gateway whose repository is not open yet.
+        """
+        slo_home: Path = Path(str(cfg(key="SLO_HOME") or Path.home() / ".slo"))
+        return cls(repository=ChannelRepository(db_path=slo_home / "channels" / "channels.db"))
+
+    @classmethod
     async def default(cls) -> "ChannelGateway":
         """Open the shared process gateway on ``$SLO_HOME/channels/channels.db``.
 
@@ -59,10 +73,13 @@ class ChannelGateway:
             ChannelGateway: A gateway whose repository is open on the shared
                 database file for this user.
         """
-        slo_home: Path = Path(str(cfg(key="SLO_HOME") or Path.home() / ".slo"))
-        repository: ChannelRepository = ChannelRepository(db_path=slo_home / "channels" / "channels.db")
-        await repository.open()
-        return cls(repository=repository)
+        gateway: ChannelGateway = cls.at_default_path()
+        await gateway.open()
+        return gateway
+
+    async def open(self) -> None:
+        """Open the repository; a no-op when it is already open."""
+        await self._repository.open()
 
     async def close(self) -> None:
         """Close the underlying repository."""
@@ -140,14 +157,19 @@ class ChannelGateway:
         )
         return await self._repository.upsert_participant(participant=participant)
 
-    async def register_agent(self, *, session_id: UUID, name: str) -> ParticipantDAO:
-        """Register (idempotently) one agent session participant.
+    async def register_agent(
+        self, *, session_id: UUID, name: str, durable_inbox: bool = False
+    ) -> ParticipantDAO:
+        """Register (idempotently) one agent session participant, open.
 
         The agent's participant id IS its session id (overview §2.3).
 
         Args:
             session_id (UUID): Agent session id.
             name (str): Display name, e.g. ``slo <short id>``.
+            durable_inbox (bool): ``True`` for an interactive session whose
+                inbox outlives a closed process (108.3 §6); ``False`` for an
+                agent that finishes for good (workflow, child).
 
         Returns:
             ParticipantDAO: The stored participant.
@@ -162,6 +184,7 @@ class ChannelGateway:
             status="open",
             last_seen_at=now,
             created_at=now,
+            durable_inbox=durable_inbox,
         )
         return await self._repository.upsert_participant(participant=participant)
 
@@ -182,18 +205,13 @@ class ChannelGateway:
         """
         return await self._repository.close_agent_atomic(participant_id=session_id, reason=reason)
 
-    async def repository_count_participants(self) -> int:
-        """Count stored participants (test support).
+    async def count_participants(self) -> int:
+        """Count stored participants.
 
         Returns:
             int: Number of participant rows.
         """
-
-        def _query(repository_connection) -> int:
-            row = repository_connection.execute("SELECT COUNT(*) FROM participants").fetchone()
-            return int(row[0])
-
-        return await self.repository._run(_query)  # noqa: SLF001 — test-support read
+        return await self._repository.count_participants()
 
     async def recent_sent_messages(
         self,
@@ -271,9 +289,22 @@ class ChannelGateway:
                     forced=row.forced_at is not None,
                     state=state,
                     reply_preview=reply.message_contents[:80] if reply is not None else None,
+                    cancel_reason=row.cancel_reason,
                 )
             )
         return result
+
+    async def recent_notes_to(self, *, recipient_id: UUID, limit: int = 5) -> list[ChannelMessageDAO]:
+        """Return the newest notes addressed to one agent, newest first (108.4 C3).
+
+        Args:
+            recipient_id (UUID): The viewed agent participant.
+            limit (int): Maximum rows to return.
+
+        Returns:
+            list[ChannelMessageDAO]: Note rows newest first.
+        """
+        return await self._repository.recent_notes_to(recipient_id=recipient_id, limit=limit)
 
     async def get_participant(self, *, participant_id: UUID) -> Optional[ParticipantDAO]:
         """Return one participant by id.

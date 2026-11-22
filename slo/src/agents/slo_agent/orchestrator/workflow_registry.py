@@ -287,6 +287,25 @@ class WorkflowHandleStore:
                 workflow_id=workflow_id,
             )
 
+    def launched_orchestrator_session_ids(self, *, owner_session_id: str) -> tuple[str, ...]:
+        """Return the orchestrator session ids of every workflow one session launched.
+
+        WHAT: Reads the owner's parseable handles synchronously (small files)
+            and returns their orchestrator session ids, oldest first.
+        WHO: The 108.4 messaging policy of the launching session, which may
+            message only the workflows it launched.
+        WHEN: On every ``send_message`` decision.
+
+        Args:
+            owner_session_id (str): Owning TUI session id.
+
+        Returns:
+            tuple[str, ...]: Orchestrator session ids; empty when none exist.
+        """
+        return tuple(
+            handle.orchestrator_session_id for handle in self._list_sync(owner_session_id=owner_session_id)
+        )
+
     # ``List`` (not ``list``) in signatures below this point: the ``list``
     # method shadows the builtin in class scope.
     async def list(self, *, owner_session_id: str) -> List[WorkflowHandleDAO]:

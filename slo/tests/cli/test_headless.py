@@ -1109,4 +1109,6 @@ class TestHeadlessOrchestratorOwnerComposition:
         ) as attach:
             runner._attach_orchestrator(session=session)
 
-        attach.assert_called_once_with(session=session, headless=True, owner_session_id=expected_owner)
+        attach.assert_called_once_with(
+            session=session, headless=True, owner_session_id=expected_owner, channel_gateway=None
+        )

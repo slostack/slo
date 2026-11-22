@@ -181,16 +181,18 @@ class ChannelRepository:
             connection.execute(
                 """
                 INSERT INTO participants(
-                    id, kind, name, channel_id, external_ref, status, last_seen_at, created_at
+                    id, kind, name, channel_id, external_ref, status, last_seen_at, created_at,
+                    durable_inbox
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind = excluded.kind,
                     name = excluded.name,
                     channel_id = excluded.channel_id,
                     external_ref = excluded.external_ref,
                     status = excluded.status,
-                    last_seen_at = excluded.last_seen_at
+                    last_seen_at = excluded.last_seen_at,
+                    durable_inbox = excluded.durable_inbox
                 """,
                 (
                     str(participant.id),
@@ -201,6 +203,7 @@ class ChannelRepository:
                     participant.status,
                     _stamp(participant.last_seen_at),
                     _stamp(participant.created_at),
+                    1 if participant.durable_inbox else 0,
                 ),
             )
             connection.commit()
@@ -221,7 +224,7 @@ class ChannelRepository:
         def _query(connection: sqlite3.Connection) -> Optional[ParticipantDAO]:
             row = connection.execute(
                 """
-                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at
+                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at, durable_inbox
                 FROM participants WHERE id = ?
                 """,
                 (str(participant_id),),
@@ -243,12 +246,10 @@ class ChannelRepository:
             Optional[ParticipantDAO]: The occupant, or ``None``.
         """
 
-        def _query(connection) -> Optional[ParticipantDAO]:
-            from src.channels.repository import _participant_from_row
-
+        def _query(connection: sqlite3.Connection) -> Optional[ParticipantDAO]:
             row = connection.execute(
                 """
-                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at
+                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at, durable_inbox
                 FROM participants WHERE channel_id = ? AND external_ref = ?
                 """,
                 (str(channel_id), external_ref),
@@ -307,7 +308,9 @@ class ChannelRepository:
 
         Raises:
             UnknownParticipantError: The recipient (or sender) is unknown.
-            RecipientClosedError: The recipient is an agent whose status is closed.
+            RecipientClosedError: The recipient is a closed agent without a
+                durable inbox (a finished workflow or child). A closed
+                interactive session keeps its durable inbox (108.3 §6).
         """
 
         def _write(connection: sqlite3.Connection) -> ChannelMessageDAO:
@@ -325,7 +328,7 @@ class ChannelRepository:
                 recipient = self._get_participant_sync(connection=connection, participant_id=new.recipient_id)
                 if recipient is None:
                     raise UnknownParticipantError(participant_id=new.recipient_id)
-                if recipient.kind == "agent" and recipient.status == "closed":
+                if recipient.kind == "agent" and recipient.status == "closed" and not recipient.durable_inbox:
                     raise RecipientClosedError(participant_id=new.recipient_id)
                 agent_session_id: UUID = (
                     recipient.id
@@ -621,6 +624,10 @@ class ChannelRepository:
         racing the close either inserts against the open participant or hits
         the closed one — never lands after the listener stopped.
 
+        A participant with a durable inbox (an interactive session, 108.3 §6)
+        cancels only rows its users sent; rows from other agents and systems
+        stay pending for the session's next opening.
+
         Args:
             participant_id (UUID): Agent participant to close.
             reason (str): Cancellation reason for pending rows, e.g.
@@ -641,8 +648,12 @@ class ChannelRepository:
                     """
                     UPDATE messages SET cancelled_at = ?, cancel_reason = ?
                     WHERE recipient_id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
+                      AND (
+                        (SELECT durable_inbox FROM participants WHERE id = ?) = 0
+                        OR sender_id IN (SELECT id FROM participants WHERE kind = 'user')
+                      )
                     """,
-                    (_stamp(utc_now()), reason, str(participant_id)),
+                    (_stamp(utc_now()), reason, str(participant_id), str(participant_id)),
                 )
                 cancelled: int = int(cursor.rowcount)
                 connection.commit()
@@ -652,6 +663,18 @@ class ChannelRepository:
                 raise
 
         return await self._run(_write)
+
+    async def count_participants(self) -> int:
+        """Count stored participants.
+
+        Returns:
+            int: Number of participant rows.
+        """
+
+        def _query(connection: sqlite3.Connection) -> int:
+            return int(connection.execute("SELECT COUNT(*) FROM participants").fetchone()[0])
+
+        return await self._run(_query)
 
     async def column_names(self, *, table: str) -> list[tuple[str, str]]:
         """Return ``(name, declared_type)`` for one table's columns (test support).
@@ -716,6 +739,39 @@ class ChannelRepository:
                 LIMIT ?
                 """,
                 (str(sender_id), str(recipient_id), limit),
+            ).fetchall()
+            return [_message_from_row(row=row) for row in rows]
+
+        return await self._run(_query)
+
+    async def recent_notes_to(self, *, recipient_id: UUID, limit: int = 5) -> list[ChannelMessageDAO]:
+        """Return the newest ``note`` rows addressed to one participant, newest first.
+
+        The workflow modal shows these for the agent it views (108.4 C3), for
+        example a child's question to its parent, whether or not the parent
+        has taken them into its context yet.
+
+        Args:
+            recipient_id (UUID): The viewed agent participant.
+            limit (int): Maximum rows to return. Defaults to 5.
+
+        Returns:
+            list[ChannelMessageDAO]: Note rows newest first, cancelled ones excluded.
+        """
+
+        def _query(connection: sqlite3.Connection) -> list[ChannelMessageDAO]:
+            rows = connection.execute(
+                """
+                SELECT id, agent_session_id, sender_id, sender_name, recipient_id, recipient_name,
+                       sent_at, accepted_at, message_contents, created_at, message_index, forced_at,
+                       message_type, in_reply_to_id, channel_id, cancelled_at, cancel_reason,
+                       coalesce_key
+                FROM messages
+                WHERE recipient_id = ? AND message_type = 'note' AND cancelled_at IS NULL
+                ORDER BY message_index DESC
+                LIMIT ?
+                """,
+                (str(recipient_id), limit),
             ).fetchall()
             return [_message_from_row(row=row) for row in rows]
 
@@ -848,7 +904,7 @@ class ChannelRepository:
         """
         row = connection.execute(
             """
-            SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at
+            SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at, durable_inbox
             FROM participants WHERE id = ?
             """,
             (str(participant_id),),
@@ -929,6 +985,7 @@ def _participant_from_row(*, row: tuple) -> ParticipantDAO:
         status=row[5],
         last_seen_at=_parse(row[6]),
         created_at=_parse(row[7]),
+        durable_inbox=bool(row[8]),
     )
 
 

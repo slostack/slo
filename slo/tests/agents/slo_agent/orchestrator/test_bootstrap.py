@@ -223,6 +223,7 @@ class TestOrchestratorSessionBootstrapAttach:
             run_id=ANY,
             history_root=Path("/history-root-for-test"),
             child_system_prompt=session._assembled_system_prompt(),
+            channel_gateway=None,
         )
         run_id: str = MockPool.call_args.kwargs["run_id"]
         assert str(UUID(run_id)) == run_id
@@ -299,7 +300,7 @@ class TestOrchestratorSessionBootstrapAttach:
 
             OrchestratorSessionBootstrap.attach(session=session)
 
-        MockTool.build.assert_called_once_with(pool=mock_pool)
+        MockTool.build.assert_called_once_with(pool=mock_pool, channel_notes=None)
 
 
 class TestOrchestratorSessionBootstrapWorkflowTools:
@@ -362,7 +363,10 @@ class TestOrchestratorSessionBootstrapWorkflowTools:
             ) as status_build,
         ):
             mock_build.return_value = MagicMock(name="launch_workflow")
-            OrchestratorSessionBootstrap._build_workflow_tools(session=session)
+            OrchestratorSessionBootstrap._build_workflow_tools(
+                session=session,
+                handle_store=OrchestratorSessionBootstrap._build_handle_store(headless=False),
+            )
         assert mock_build.call_args.kwargs["handle_store"] is status_build.call_args.kwargs["store"]
 
         assert mock_build.call_args.kwargs["owner_session_id"] == "owner-1"

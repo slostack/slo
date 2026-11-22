@@ -75,6 +75,7 @@ class TuiDisplaySink:
             )
         )
 
+
 __all__ = ["TuiChannelAdapter", "TuiDisplaySink"]
 
 _POLL_SECONDS: float = 0.5
@@ -192,15 +193,12 @@ class TuiChannelAdapter:
         """
         transcript = self._app._chat_transcript
         if message.message_type == "reply":
-            own_agent: UUID = channel_participant_id_for_session(
-                session_id=self._app._session.session_id
-            )
+            own_agent: UUID = channel_participant_id_for_session(session_id=self._app._session.session_id)
             if message.sender_id != own_agent and transcript is not None:
                 await transcript.handle(
                     command=TranscriptNoticeDAO(
                         content=(
-                            f"{REPLY_DISPLAY_PREFIX} {message.sender_name}: "
-                            f"{message.message_contents}"
+                            f"{REPLY_DISPLAY_PREFIX} {message.sender_name}: " f"{message.message_contents}"
                         ),
                         classes="tool-result",
                     )
@@ -283,6 +281,24 @@ class TuiChannelAdapter:
         """
         return await self._gateway.sent_rows(
             sender_id=self.user_participant.id,
+            recipient_id=channel_participant_id_for_session(session_id=session_id),
+            limit=limit,
+        )
+
+    async def notes_to_agent(self, *, session_id: str, limit: int = 5) -> list[ChannelMessageDAO]:
+        """Return the newest notes other participants sent to one agent (108.4 C3).
+
+        The workflow modal shows them as soon as they are queued, even while
+        the agent is blocked and has not taken them into its context.
+
+        Args:
+            session_id (str): Viewed agent session id.
+            limit (int): Maximum rows, newest first. Defaults to 5.
+
+        Returns:
+            list[ChannelMessageDAO]: Note rows newest first.
+        """
+        return await self._gateway.recent_notes_to(
             recipient_id=channel_participant_id_for_session(session_id=session_id),
             limit=limit,
         )

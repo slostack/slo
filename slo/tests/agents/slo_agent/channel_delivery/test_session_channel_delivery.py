@@ -228,9 +228,11 @@ class TestForcedRowRecovery:
         gateway, session, runner = await self._open_world(tmp_path=tmp_path)
         try:
             agent_participant: UUID = await self._agent_participant_id(session=session, gateway=gateway)
+            channel = await gateway.register_channel(kind="tui", name="tui@testhost")
+            operator = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
             forced_row: ChannelMessageDAO = await gateway.send(
                 new=NewMessageDAO(
-                    sender_id=agent_participant,
+                    sender_id=operator.id,
                     recipient_id=agent_participant,
                     message_contents="use pytest -x",
                     force=True,

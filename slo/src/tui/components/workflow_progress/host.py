@@ -59,17 +59,16 @@ class WorkflowProgressHost(Protocol):
         """
         ...
 
-    def progress_composer_for(
-        self, *, key: WorkflowSessionKeyDAO
-    ) -> Optional["AgentComposerComponent"]:
-        """Build the agent composer for one workflow session key (108.3 §5).
+    def progress_composer_for(self, *, key: WorkflowSessionKeyDAO) -> Optional["AgentComposerComponent"]:
+        """Build the agent composer for one workflow session key (108.3 §5, 108.4).
 
         Args:
             key (WorkflowSessionKeyDAO): Session row being opened.
 
         Returns:
-            Optional[AgentComposerComponent]: A composer for the orchestrator's
-                own row, or ``None`` (children, or no channel delivery).
+            Optional[AgentComposerComponent]: A composer for the row's agent
+                (children send forced by default), or ``None`` without channel
+                delivery.
         """
         ...
 

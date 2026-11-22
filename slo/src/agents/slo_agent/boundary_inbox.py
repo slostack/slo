@@ -9,12 +9,14 @@ after the history record is written. ``ChannelBoundaryInbox``
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["BoundaryDeliveryDAO", "BoundaryInbox", "MemoryBoundaryInbox"]
+__all__ = ["BoundaryDeliveryDAO", "BoundaryDeliveryKind", "BoundaryInbox", "MemoryBoundaryInbox"]
+
+BoundaryDeliveryKind = Literal["note", "forced_prompt"]
 
 
 class BoundaryDeliveryDAO(BaseModel):
@@ -26,6 +28,13 @@ class BoundaryDeliveryDAO(BaseModel):
     text: str = Field(description="Message contents added to the model context.")
     sender_name: str = Field(description="Sender label; shown in the transcript when it is not you.")
     iteration: int = Field(description="Agent loop iteration whose boundary applied it.")
+    kind: BoundaryDeliveryKind = Field(
+        default="forced_prompt",
+        description=(
+            "'forced_prompt' asks the run for work and may revive a stopping run; "
+            "'note' only adds context and never revives a run (108.3 §2)."
+        ),
+    )
 
 
 @runtime_checkable
@@ -40,11 +49,14 @@ class BoundaryInbox(Protocol):
         """Return whether a forced delivery is pending (non-destructively)."""
         ...
 
-    async def take(self, *, iteration: int) -> list[BoundaryDeliveryDAO]:
-        """Take the pending forced deliveries, FIFO.
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
+        """Take the pending deliveries, FIFO.
 
         Args:
             iteration (int): Agent loop iteration whose boundary takes them.
+            require_forced_prompt (bool): ``True`` at a revive boundary (the
+                run would otherwise stop): take nothing unless at least one
+                forced prompt is pending, so a note alone never revives a run.
 
         Returns:
             list[BoundaryDeliveryDAO]: The taken deliveries, in order.
@@ -98,11 +110,15 @@ class MemoryBoundaryInbox:
         """
         return bool(self._pending)
 
-    async def take(self, *, iteration: int) -> list[BoundaryDeliveryDAO]:
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
         """Drain every pending delivery in enqueue order.
+
+        Every memory delivery is a forced prompt, so ``require_forced_prompt``
+        never withholds a non-empty take.
 
         Args:
             iteration (int): Agent loop iteration whose boundary takes them.
+            require_forced_prompt (bool): Revive-boundary flag (see the port).
 
         Returns:
             list[BoundaryDeliveryDAO]: The drained deliveries, FIFO.
@@ -115,6 +131,6 @@ class MemoryBoundaryInbox:
         """Settle taken deliveries (nothing is persisted; a no-op).
 
         Args:
-            deliveries (list[BoundaryDeliveryDAO): The taken deliveries.
+            deliveries (list[BoundaryDeliveryDAO]): The taken deliveries.
         """
         del deliveries

@@ -15,7 +15,9 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from textual.app import App, ComposeResult
-from textual.widgets import Input
+from textual.pilot import Pilot
+from textual.screen import Screen
+from textual.widgets import Input, Static
 
 from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.channels.dao import NewMessageDAO
@@ -88,10 +90,11 @@ async def _build_composer(
     return adapter, _factory, target
 
 
-async def _settle(pilot, cycles: int = 6):  # type: ignore[no-untyped-def]
-    """Pump a few refresh cycles so the 500 ms interval ticks."""
+async def _settle(pilot: Pilot[None], cycles: int = 6) -> None:
+    """Pump a few cycles and join the composer's queue workers."""
     for _cycle in range(cycles):
         await pilot.pause()
+        await pilot.app.workers.wait_for_complete()
         await asyncio.sleep(0.02)
 
 
@@ -194,7 +197,7 @@ class TestAgentComposerRepliesAndFinish:
             async with app.run_test() as pilot:
                 await _settle(pilot)
                 composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
-                await composer._refresh_rows()
+                await composer.refresh_delivery_state()
                 row_static = composer.query_one(".agent-composer-rows")
                 rendered: str = str(row_static.render())
                 assert "how far along?" in rendered
@@ -202,9 +205,7 @@ class TestAgentComposerRepliesAndFinish:
         finally:
             await gateway.close()
 
-    async def test_closed_agent_disables_the_composer_with_the_finished_notice(
-        self, tmp_path
-    ) -> None:
+    async def test_closed_agent_disables_the_composer_with_the_finished_notice(self, tmp_path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             target_session_id: str = str(uuid4())
@@ -223,17 +224,15 @@ class TestAgentComposerRepliesAndFinish:
             async with app.run_test() as pilot:
                 await _settle(pilot)
                 composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
-                await composer._refresh_rows()
+                await composer.refresh_delivery_state()
                 assert composer.is_finished is True
                 assert composer.query_one("#agent-composer-input", Input).disabled is True
-                row_static = composer.query_one(".agent-composer-rows")
-                assert AGENT_FINISHED_NOTICE in str(row_static.render())
+                status_static = composer.query_one(".agent-composer-status")
+                assert AGENT_FINISHED_NOTICE in str(status_static.render())
         finally:
             await gateway.close()
 
-    async def test_sending_to_an_agent_that_closes_marks_the_composer_finished(
-        self, tmp_path
-    ) -> None:
+    async def test_sending_to_an_agent_that_closes_marks_the_composer_finished(self, tmp_path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             target_session_id: str = str(uuid4())
@@ -254,11 +253,154 @@ class TestAgentComposerRepliesAndFinish:
                 composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
                 # The participant status refresh has not ticked yet; the send hits it.
                 composer.query_one("#agent-composer-input", Input).value = "late message"
-                await composer._send(force=False)
+                await composer.send_draft(force=False)
                 assert composer.is_finished is True
                 assert composer.query_one("#agent-composer-input", Input).disabled is True
                 stored: Optional[object] = None
                 assert stored is None  # no row was inserted after the close
+        finally:
+            await gateway.close()
+
+
+class TestAgentComposerFinalRows:
+    """R5: once the target closes, the final ack/reply/cancel rows stay visible."""
+
+    async def test_target_closed_before_first_refresh_still_shows_final_rows(self, tmp_path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            answered = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=adapter.user_participant.id,
+                    recipient_id=target,
+                    message_contents="skip phase 3",
+                    channel_id=adapter.channel.id,
+                    force=True,
+                )
+            )
+            await gateway.accept(message_id=answered.id)
+            followed_up = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=adapter.user_participant.id,
+                    recipient_id=target,
+                    message_contents="what happened?",
+                    channel_id=adapter.channel.id,
+                )
+            )
+            await gateway.accept(message_id=followed_up.id)
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=target,
+                    recipient_id=adapter.user_participant.id,
+                    message_contents="phase 3 skipped",
+                    message_type="reply",
+                    in_reply_to_id=followed_up.id,
+                    channel_id=adapter.channel.id,
+                )
+            )
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=adapter.user_participant.id,
+                    recipient_id=target,
+                    message_contents="too late",
+                    channel_id=adapter.channel.id,
+                )
+            )
+            # W closes before the composer ever mounted or refreshed.
+            await gateway.close_agent(session_id=target, reason="recipient_closed")
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                assert composer.is_finished is True
+                assert composer.query_one("#agent-composer-input", Input).disabled is True
+                assert AGENT_FINISHED_NOTICE in str(
+                    composer.query_one(".agent-composer-status", Static).render()
+                )
+                rendered: str = str(composer.query_one(".agent-composer-rows", Static).render())
+                assert "✓ (forced) skip phase 3" in rendered
+                assert "✓ what happened? ↩ phase 3 skipped" in rendered
+                assert "✗ too late [recipient_closed]" in rendered
+        finally:
+            await gateway.close()
+
+    async def test_abort_cancels_queued_rows_and_the_composer_shows_them(self, tmp_path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                composer.query_one("#agent-composer-input", Input).value = "queued behind the run"
+                await pilot.press("enter")
+                await _settle(pilot)
+                assert "… queued behind the run" in str(
+                    composer.query_one(".agent-composer-rows", Static).render()
+                )
+                # W is aborted: its poller stops with reason ``aborted``.
+                await gateway.close_agent(session_id=target, reason="aborted")
+                await asyncio.sleep(0.6)
+                await _settle(pilot)
+                assert composer.is_finished is True
+                rendered: str = str(composer.query_one(".agent-composer-rows", Static).render())
+                assert "✗ queued behind the run [aborted]" in rendered
+                composer.query_one("#agent-composer-input", Input).value = "ignored"
+                await composer.send_draft(force=True)
+                assert len(await adapter.sent_to_agent(session_id=str(target))) == 1
+        finally:
+            await gateway.close()
+
+
+class TestChildComposer:
+    """108.4: a child's composer sends forced by default and shows notes to the viewed agent."""
+
+    async def test_enter_sends_forced_to_a_child(self, tmp_path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            adapter, _factory, target = await _build_composer(gateway=gateway, target_session_id=str(uuid4()))
+            app: _ComposerHost = _ComposerHost(
+                composer_factory=lambda: AgentComposerComponent(
+                    target_agent_id=target, target_label="review-1", adapter=adapter, default_force=True
+                )
+            )
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                composer.query_one("#agent-composer-input", Input).value = "only review src/tui"
+                await pilot.press("enter")
+                await _settle(pilot)
+                rows = await adapter.sent_to_agent(session_id=str(target))
+                assert [(row.preview, row.forced) for row in rows] == [("only review src/tui", True)]
+                assert "send (forced)" in str(composer.query_one(".agent-composer-header", Static).render())
+        finally:
+            await gateway.close()
+
+    async def test_notes_to_the_viewed_agent_are_shown(self, tmp_path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            adapter, composer_factory, target = await _build_composer(
+                gateway=gateway, target_session_id=str(uuid4())
+            )
+            child = await gateway.register_agent(session_id=uuid4(), name="review-1 (child of abcd1234)")
+            await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=child.id,
+                    recipient_id=target,
+                    message_contents="question: is src/tui/widgets in scope?",
+                    message_type="note",
+                )
+            )
+            app: _ComposerHost = _ComposerHost(composer_factory=composer_factory)
+            async with app.run_test() as pilot:
+                await _settle(pilot)
+                composer: AgentComposerComponent = app.query_one(AgentComposerComponent)
+                rendered: str = str(composer.query_one(".agent-composer-notes", Static).render())
+                assert "⊛ review-1 (child of abcd1234): question: is src/tui/widgets in scope?" in rendered
         finally:
             await gateway.close()
 
@@ -301,36 +443,52 @@ class TestWorkflowModalIntegration:
         finally:
             await gateway.close()
 
-    async def test_child_modal_mounts_no_composer(self, tmp_path) -> None:
+    async def test_app_builds_a_forced_by_default_composer_for_child_rows(self, tmp_path) -> None:
+        """108.4: the TUI's workflow modal gives child rows a composer that targets the child."""
+        from langchain_core.messages import AIMessage
+
+        from src.agents.providers.faux import FauxChatModel
+        from src.agents.slo_agent.agent import SloAgent
+        from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
+        from src.agents.slo_agent.sessions.service import SloAgentSession
+        from src.tui.app import SloTUI
+        from src.tui.workflows.dao import WorkflowSessionKeyDAO
+
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(
+                llm=FauxChatModel(responses=[AIMessage(content="unused")]), cwd=str(tmp_path), tools=[]
+            ),
+            workdir=tmp_path,
+            session_id=str(uuid4()),
+            history_store=FilesystemSessionHistoryStore(root=tmp_path / "history"),
+            enable_history=True,
+        )
+        app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
+        orchestrator_session_id: str = str(uuid4())
+        child_session_id: str = str(uuid4())
         try:
-            from src.tui.workflows.dao import ProgressViewportDAO, WorkflowSessionKeyDAO
-            from src.tui.workflows.session_progress_screen import SessionProgressScreen
-
-            orchestrator_session_id: str = str(uuid4())
-            adapter, composer_factory, _target = await _build_composer(
-                gateway=gateway, target_session_id=orchestrator_session_id
-            )
-            child_key: WorkflowSessionKeyDAO = WorkflowSessionKeyDAO(
-                orchestrator_session_id=orchestrator_session_id,
-                session_id=str(uuid4()),
-            )
-            assert child_key.is_parent is False
-            found: list = []
-
-            def _build() -> SessionProgressScreen:
-                screen: SessionProgressScreen = SessionProgressScreen(
-                    key=child_key,
-                    viewport=ProgressViewportDAO(),
-                    composer=None,
-                )
-                found.append(screen)
-                return screen
-
-            host: _ProgressHost = _ProgressHost(factory=_build)
-            async with host.run_test() as pilot:
+            async with app.run_test() as pilot:
                 await _settle(pilot)
-                assert not found[0].query(AgentComposerComponent)
+                child_composer: Optional[AgentComposerComponent] = app.progress_composer_for(
+                    key=WorkflowSessionKeyDAO(
+                        orchestrator_session_id=orchestrator_session_id, session_id=child_session_id
+                    )
+                )
+                parent_composer: Optional[AgentComposerComponent] = app.progress_composer_for(
+                    key=WorkflowSessionKeyDAO(
+                        orchestrator_session_id=orchestrator_session_id, session_id=orchestrator_session_id
+                    )
+                )
+                assert child_composer is not None and parent_composer is not None
+                assert (child_composer.target_agent_id, child_composer.default_force) == (
+                    UUID(child_session_id),
+                    True,
+                )
+                assert (parent_composer.target_agent_id, parent_composer.default_force) == (
+                    UUID(orchestrator_session_id),
+                    False,
+                )
         finally:
             await gateway.close()
 
@@ -338,7 +496,8 @@ class TestWorkflowModalIntegration:
 class _ProgressHost(App[None]):
     """Push the modal built after the Slo themes are registered."""
 
-    def __init__(self, *, factory) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, *, factory: Callable[[], Screen[None]]) -> None:
+        """Register the Slo themes and keep the modal factory."""
         super().__init__()
         from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 

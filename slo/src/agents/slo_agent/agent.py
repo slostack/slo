@@ -615,6 +615,7 @@ class SloAgent:
         accumulated_messages: list[BaseMessage],
         iteration: int,
         runtime_handler: Optional[AgentRuntimeHandler],
+        is_revive_boundary: bool = False,
     ) -> AsyncGenerator[AgentStreamEventDAO, None]:
         """Take forced deliveries at this boundary and fold them into the run context.
 
@@ -631,13 +632,19 @@ class SloAgent:
                 Extended in place with the taken forced messages.
             iteration (int): The iteration these messages are being applied to.
             runtime_handler (Optional[AgentRuntimeHandler]): Trace observer.
+            is_revive_boundary (bool): ``True`` when the run would otherwise
+                stop. The inbox then takes nothing unless a forced prompt is
+                pending, so a note alone never revives the run (108.3 O2).
 
         Yields:
             AgentStreamEventDAO: One ``steering_applied`` event per taken delivery,
                 carrying its ``channel_message_id``. Yields nothing when the inbox is
                 empty.
         """
-        deliveries: list[BoundaryDeliveryDAO] = await self._boundary_inbox.take(iteration=iteration)
+        deliveries: list[BoundaryDeliveryDAO] = await self._boundary_inbox.take(
+            iteration=iteration,
+            require_forced_prompt=is_revive_boundary,
+        )
         if not deliveries:
             return
         messages: list[HumanMessage] = [
@@ -1179,13 +1186,15 @@ class SloAgent:
                 accumulated_messages=accumulated_messages,
                 iteration=iteration,
                 runtime_handler=runtime_handler,
+                is_revive_boundary=would_stop,
             ):
                 boundary_applied = True
                 yield event
             if would_stop and not boundary_applied:
                 # Stale revive (108.2 B3): the snapshot promised a forced row
                 # that the queue no longer reports (cancelled or taken since
-                # the last refresh), so the boundary applied nothing. Stop the
+                # the last refresh), so the boundary applied nothing — pending
+                # notes are left for the next naturally continuing call. Stop the
                 # run instead of spending an extra assistant-ending model call.
                 if self._bridge_owner is not None:
                     await self._bridge_owner.finish_host_turn()

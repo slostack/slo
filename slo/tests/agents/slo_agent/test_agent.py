@@ -6,6 +6,7 @@ multi-turn ReAct loop that now lives inside ``SloAgent.invoke``.
 
 import asyncio
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -38,6 +39,10 @@ class RecordingFauxChatModel(_FauxChatModelBase):
         default_factory=list,
         description="Texts of the messages passed to each model call, in call order.",
     )
+
+    def __init__(self, *, responses: Sequence[AIMessage], **data: object) -> None:
+        """Queue the scripted responses; the remaining fields pass through to pydantic."""
+        super().__init__(responses=responses, **data)  # type: ignore[arg-type]
 
     def bind_tools(self, tools, **kwargs):
         """Clone while sharing the recorder list with the bound clone."""
@@ -89,7 +94,7 @@ class ScriptedBoundaryInbox:
         """Return whether a revealed delivery is still untaken."""
         return bool(self._visible)
 
-    async def take(self, *, iteration: int) -> list[BoundaryDeliveryDAO]:
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
         """Drain revealed deliveries, stamped with the boundary's iteration."""
         deliveries: list[BoundaryDeliveryDAO] = self._visible
         self._visible = []
@@ -121,9 +126,9 @@ class StaleSnapshotBoundaryInbox:
         """Return whether a (possibly stale) row is still promised."""
         return self._promised
 
-    async def take(self, *, iteration: int) -> list[BoundaryDeliveryDAO]:
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
         """Reconcile the snapshot on the fresh read and deliver nothing."""
-        del iteration
+        del iteration, require_forced_prompt
         self.take_calls += 1
         self._promised = False
         return []
@@ -131,6 +136,13 @@ class StaleSnapshotBoundaryInbox:
     async def confirm(self, *, deliveries: list[BoundaryDeliveryDAO]) -> None:
         """Settle taken deliveries (nothing was ever taken)."""
         del deliveries
+
+
+def _memory_inbox(*, agent: SloAgent) -> MemoryBoundaryInbox:
+    """Return the agent's default in-memory boundary inbox (no channel poller)."""
+    inbox = agent.boundary_inbox
+    assert isinstance(inbox, MemoryBoundaryInbox)
+    return inbox
 
 
 @tool
@@ -402,7 +414,7 @@ async def test_steering_message_appears_in_next_turn() -> None:
         llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="received")]),
         tools=[],
     )
-    agent.boundary_inbox.enqueue(text="please be terse")
+    _memory_inbox(agent=agent).enqueue(text="please be terse")
     result: str = await _collect_final_response(agent=agent, query="hello")
     assert result == "received"
 
@@ -414,7 +426,7 @@ async def test_steering_queued_before_run_emits_steering_applied_event() -> None
         llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
         tools=[],
     )
-    agent.boundary_inbox.enqueue(text="please be terse")
+    _memory_inbox(agent=agent).enqueue(text="please be terse")
 
     events = [evt async for evt in agent.invoke(query="hello")]
 
@@ -440,7 +452,7 @@ async def test_external_sender_name_propagates_to_steering_events() -> None:
         llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
         tools=[],
     )
-    agent.boundary_inbox.enqueue(text="deploy to staging", sender_name="orchestrator wf-12")
+    _memory_inbox(agent=agent).enqueue(text="deploy to staging", sender_name="orchestrator wf-12")
 
     events = [evt async for evt in agent.invoke(query="hello", runtime_handler=_record_trace)]
 
@@ -518,7 +530,7 @@ async def test_steer_during_final_turn_revives_the_run() -> None:
 
     async def _queue_steer_mid_turn(event) -> None:
         if not queued["done"] and event.kind == "assistant_delta":
-            agent.boundary_inbox.enqueue(text="keep going")
+            _memory_inbox(agent=agent).enqueue(text="keep going")
             queued["done"] = True
 
     events = [
@@ -1146,7 +1158,7 @@ class TestApplySteering:
         from langchain_core.messages import HumanMessage
 
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
-        agent.boundary_inbox.enqueue(text="please go on")
+        _memory_inbox(agent=agent).enqueue(text="please go on")
         accumulated: list[BaseMessage] = [HumanMessage(content="hi")]
 
         events = [
@@ -1199,7 +1211,7 @@ class TestShouldLoopContinue:
         from langchain_core.messages import HumanMessage
 
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
-        agent.boundary_inbox.enqueue(text="keep going")
+        _memory_inbox(agent=agent).enqueue(text="keep going")
         accumulated: list[BaseMessage] = [
             HumanMessage(content="hi"),
             AIMessage(content="done"),

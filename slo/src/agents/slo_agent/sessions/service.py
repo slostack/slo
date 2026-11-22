@@ -1753,6 +1753,8 @@ class SloAgentSession:
         operator_participant_id: Optional[UUID] = None,
         display: Optional["ChannelDisplaySink"] = None,
         auto_run: bool = True,
+        durable_inbox: bool = False,
+        participant_name: Optional[str] = None,
     ) -> "ChannelPoller":
         """Start the one channel poller for this session (108.1).
 
@@ -1770,6 +1772,10 @@ class SloAgentSession:
             auto_run (bool): ``False`` (headless workflow mode) keeps the
                 boundary inbox and note/notice handling live while an external
                 owner drives every run (108.3 §5).
+            durable_inbox (bool): ``True`` for an interactive (TUI) session
+                whose inbox outlives a closed process (108.3 §6).
+            participant_name (Optional[str]): Agent participant display name;
+                ``None`` keeps ``slo <short id>`` (children pass their own).
 
         Returns:
             ChannelPoller: The started poller.
@@ -1799,6 +1805,8 @@ class SloAgentSession:
             interval=interval,
             display=display,
             auto_run=auto_run,
+            durable_inbox=durable_inbox,
+            participant_name=participant_name,
         )
         await poller.start()
         self._set_boundary_inbox(boundary_inbox)

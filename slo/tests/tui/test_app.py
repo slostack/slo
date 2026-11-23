@@ -23,10 +23,7 @@ from config.logger import interactive_logging, log_info
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.compaction.compacter import Compacter
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
-from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.sessions.dao import ManualCompactionResultDAO, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
@@ -34,10 +31,7 @@ from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.providers.faux import FauxChatModel
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
-from src.channels.gateway import ChannelGateway
-from src.channels.repository import ChannelRepository
 from src.tui.app import SloTUI
-from tests.tui.test_channel_adapter import GatedFauxChatModel
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.components.chat_transcript.component import (
     LOAD_OLDER_BATCH_SIZE,
@@ -120,9 +114,9 @@ async def _await_idle(
 ) -> None:
     """Poll until no run is in flight on either owner or timeout.
 
-    Ordinary prompts now run through the session's channel poller (108.1);
-    the app-owned ``_in_flight_task`` remains only for the legacy inbox
-    ``chat_turn`` bridge. Idleness means neither owner is running.
+    Ordinary prompts run through the session's channel poller (108.1); the
+    app-owned ``_in_flight_task`` is only set by tests that drive the legacy
+    ``_run_prompt`` path directly. Idleness means neither owner is running.
 
     Args:
         app (SloTUI): The app under test.
@@ -606,8 +600,8 @@ class TestSloTUI:
             assert ("session renamed to release prep", "tool-result") in _require_adapter_lines(app=app)
 
 
-class TestSloTUISessionInbox:
-    """Lease and SessionInbox delivery behavior."""
+class TestSloTUISessionLease:
+    """Lease ownership and the retired file inbox (108.6)."""
 
     @pytest.mark.asyncio
     async def test_mount_acquires_and_unmount_releases_session_lease(self, tmp_path: Path) -> None:
@@ -639,61 +633,15 @@ class TestSloTUISessionInbox:
         assert await lease_store.is_active(session_id="session-1234") is False
 
     @pytest.mark.asyncio
-    async def test_poll_session_inbox_renders_ui_notice(self, tmp_path: Path) -> None:
-        """`ui_notice` inbox items render a low-noise notice and are acked."""
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = Path(".").resolve()
-        session.session_id = "session-1234"
-        session.session_name = None
-        session.active_model_name = "claude-sonnet-4-6"
-        session.routed_model_name = "claude-sonnet-4-6"
-        session.active_reasoning_level = "high"
-        session.history_enabled = True
-        session.history_root = history_root
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
+    async def test_idle_tui_performs_no_inbox_file_reads(self, tmp_path: Path) -> None:
+        """I5: an idle mounted TUI never polls, claims or renders a legacy ``inbox/`` file.
 
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="monitor_update",
-            delivery_mode="ui_notice",
-            title="CI monitor",
-            text="CI still running.",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            await app._poll_session_inbox()
-            await pilot.pause()
-
-            assert any(
-                "[scheduled notice] CI monitor: CI still running." in line[0]
-                for line in _require_adapter_lines(app=app)
-            )
-            assert await inbox_store.list_pending(session_id="session-1234") == []
-            assert await inbox_store.list_done(session_id="session-1234") == [message]
-
-    @pytest.mark.asyncio
-    async def test_inbox_notice_bracket_prefix_renders_literally(self, tmp_path: Path) -> None:
-        """The ``[scheduled notice]`` prefix and bracketed body render verbatim.
-
-        The prefix is exactly the shape Textual's markup parser treats as a tag, so
-        this proves the notice mounts through ``LiteralTextStatic`` and neither the
-        prefix nor a bracketed body (``list[str]``) is swallowed after the 8.x bump.
+        A pre-108.6 producer may still drop a file into ``inbox/pending``. The
+        TUI no longer has an inbox timer, so after well over one old poll
+        interval the file is untouched: not moved to ``claimed/`` or ``done/``,
+        and nothing about it reaches the transcript.
         """
         history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
         session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
@@ -704,28 +652,89 @@ class TestSloTUISessionInbox:
         session.active_reasoning_level = "high"
         session.history_enabled = True
         session.history_root = history_root
+        session.is_running = False
         session.subscribe = MagicMock()
         session.unsubscribe = MagicMock()
         session.hydrate_transcript_entries = AsyncMock(return_value=[])
         session.should_show_startup_notice = AsyncMock(return_value=False)
         session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="monitor_update",
-            delivery_mode="ui_notice",
-            title="type check",
-            text="annotate as list[str]",
+        app: SloTUI = SloTUI(session=session)
+        legacy_file: Path = (
+            history_root / "session-1234" / "inbox" / "pending" / "20261120T090000.000000Z-m1.json"
         )
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            await app._poll_session_inbox()
+            assert not legacy_file.parent.parent.exists(), "mount must not create inbox lanes"
+            legacy_file.parent.mkdir(parents=True)
+            original_bytes: bytes = (
+                b'{"message_id": "m1", "session_id": "session-1234", "schedule_id": "s1", "run_id": "r1",'
+                b' "kind": "system_notice", "delivery_mode": "ui_notice", "title": "CI monitor",'
+                b' "created_at": "2026-11-20T09:00:00+00:00", "text": "CI still running."}'
+            )
+            legacy_file.write_bytes(original_bytes)
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+
+            assert legacy_file.read_bytes() == original_bytes
+            assert sorted(path.name for path in legacy_file.parent.parent.iterdir()) == ["pending"]
+            assert not any("CI still running." in line[0] for line in _require_adapter_lines(app=app))
+
+    @pytest.mark.asyncio
+    async def test_imported_scheduled_notice_bracket_prefix_renders_literally(self, tmp_path: Path) -> None:
+        """An imported legacy notice keeps its ``[scheduled notice]`` prefix and renders it verbatim.
+
+        The prefix is exactly the shape Textual's markup parser treats as a
+        tag, so this proves a channel notice mounts through ``LiteralTextStatic``
+        and neither the prefix nor a bracketed body (``list[str]``) is swallowed.
+        """
+        from datetime import datetime, timezone
+        from uuid import uuid4
+
+        from src.channels.dao import ChannelMessageDAO
+        from src.tui.channel.adapter import TuiDisplaySink
+
+        session: MagicMock = _build_resource_free_session_mock()
+        session.preparation_status = "ready"
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = True
+        session.history_root = tmp_path / "history"
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
+        app: SloTUI = SloTUI(session=session)
+        now: datetime = datetime.now(timezone.utc)
+        notice: ChannelMessageDAO = ChannelMessageDAO(
+            id=uuid4(),
+            agent_session_id=uuid4(),
+            sender_id=uuid4(),
+            sender_name="scheduler type check",
+            recipient_id=uuid4(),
+            recipient_name="slo session",
+            sent_at=now,
+            accepted_at=None,
+            message_contents="[scheduled notice] type check: annotate as list[str]",
+            created_at=now,
+            message_index=1,
+            forced_at=None,
+            message_type="notice",
+            in_reply_to_id=None,
+            channel_id=None,
+            cancelled_at=None,
+            cancel_reason=None,
+            coalesce_key=None,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await TuiDisplaySink(transcript=app._chat_transcript).show(message=notice)
             await pilot.pause()
 
             assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
@@ -735,109 +744,6 @@ class TestSloTUISessionInbox:
                 if isinstance(child, LiteralTextStatic)
             ]
             assert any("[scheduled notice]" in text and "list[str]" in text for text in rendered)
-
-    @pytest.mark.asyncio
-    async def test_inbox_chat_turn_starts_directly_when_idle(self, tmp_path: Path) -> None:
-        """`chat_turn` inbox items start a direct machine turn when the app is idle.
-
-        The machine turn runs directly and no human-path ``user-line`` echo is
-        recorded for the inbox text.
-        """
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = Path(".").resolve()
-        session.session_id = "session-1234"
-        session.session_name = None
-        session.active_model_name = "claude-sonnet-4-6"
-        session.routed_model_name = "claude-sonnet-4-6"
-        session.active_reasoning_level = "high"
-        session.history_enabled = True
-        session.history_root = history_root
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="Morning research",
-            text="Check the repo and summarize new failures.",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            with patch.object(app, "_run_prompt", new=AsyncMock()) as mock_run_prompt:
-                await app._poll_session_inbox()
-                assert app._in_flight_task is not None
-                await app._in_flight_task
-                app._in_flight_task = None
-
-            mock_run_prompt.assert_awaited_once_with(text="Check the repo and summarize new failures.")
-            assert await inbox_store.list_done(session_id="session-1234") == [message]
-            # The machine turn never touches the human echo path.
-            assert (
-                "> Check the repo and summarize new failures.",
-                "user-line",
-            ) not in _require_adapter_lines(app=app)
-
-    @pytest.mark.asyncio
-    async def test_active_openrouter_schedule_inbox_consumption_keeps_target_session_route(
-        self, tmp_path: Path
-    ) -> None:
-        """A scheduled route is consumed by the active target without changing its selected route."""
-        history_root: Path = (tmp_path / "history").resolve()
-        assert history_root.is_relative_to(tmp_path.resolve())
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = tmp_path
-        session.session_id = "session-openrouter-target"
-        session.session_name = None
-        session.active_model_name = "openrouter:vendor/target"
-        session.routed_model_name = "openrouter:vendor/target"
-        session.active_reasoning_level = "medium"
-        session.history_enabled = True
-        session.history_root = history_root
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-openrouter",
-            session_id="session-openrouter-target",
-            schedule_id="schedule-openrouter",
-            run_id="run-openrouter",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="OpenRouter schedule",
-            text="Check the scheduled OpenRouter route.",
-            payload={"cwd": str(tmp_path), "model": "openrouter:vendor/scheduled"},
-        )
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            with patch.object(app, "_run_prompt", new=AsyncMock()) as mock_run_prompt:
-                await app._poll_session_inbox()
-                assert app._in_flight_task is not None
-                await app._in_flight_task
-                app._in_flight_task = None
-
-        mock_run_prompt.assert_awaited_once_with(text="Check the scheduled OpenRouter route.")
-        assert session.active_model_name == "openrouter:vendor/target"
-        assert await inbox_store.list_done(session_id="session-openrouter-target") == [message]
 
     @pytest.mark.asyncio
     async def test_new_session_replaces_active_session_and_clears_transcript(self) -> None:
@@ -1630,87 +1536,6 @@ class TestSloTUISessionInbox:
                 entry[0] for entry in _require_adapter_lines(app=app) if "help" in entry[0].lower()
             ]
             assert len(help_content) >= 1
-
-    @pytest.mark.asyncio
-    async def test_inbox_chat_turn_is_not_claimed_while_the_channel_poller_runs(self, tmp_path: Path) -> None:
-        """EB1: an inbox ``chat_turn`` defers while a channel-poller run is in flight.
-
-        The inbox idle gate must also require that no run is in flight on the
-        session, so a claimed machine turn can never race a poller-owned run
-        for the session's single prompt slot (which would raise the session's
-        already-processing error and lose the inbox turn). After the channel
-        run ends the item is claimed and runs to its ack.
-        """
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        release_channel_run: asyncio.Event = asyncio.Event()
-        model: GatedFauxChatModel = GatedFauxChatModel(
-            responses=[AIMessage(content="channel answer"), AIMessage(content="inbox answer")],
-            first_call_release=release_channel_run,
-        )
-        session: SloAgentSession = SloAgentSession(
-            agent=SloAgent(llm=model, cwd=str(tmp_path), tools=[]),
-            workdir=tmp_path,
-            session_id=str(uuid4()),
-            history_store=FilesystemSessionHistoryStore(root=tmp_path / "history"),
-            enable_history=True,
-        )
-        gateway: ChannelGateway = ChannelGateway(
-            repository=ChannelRepository(db_path=tmp_path / "channels.db")
-        )
-        await gateway.repository.open()
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id=session.session_id,
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="Morning research",
-            text="Check the repo and summarize new failures.",
-        )
-        await inbox_store.enqueue(message=message)
-
-        app: SloTUI = SloTUI(session=session, channel_gateway=gateway, inbox_store=inbox_store)
-        try:
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                assert app._input is not None
-                poller = session.channel_poller
-                assert poller is not None
-
-                app._input.load_text("operator prompt")
-                await pilot.press("enter")
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: poller.busy and session.is_running,
-                    max_cycles=600,
-                )
-
-                # The inbox timer fires mid-run: the gate defers the claim.
-                await app._poll_session_inbox()
-                await pilot.pause()
-                assert app._in_flight_task is None
-                assert await inbox_store.list_pending(session_id=session.session_id) == [message]
-                assert await inbox_store.list_done(session_id=session.session_id) == []
-
-                release_channel_run.set()
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: not poller.busy and not session.is_running,
-                    max_cycles=600,
-                )
-
-                # Idle again: the deferred inbox chat turn is claimed and runs.
-                await app._poll_session_inbox()
-                async with asyncio.timeout(30):
-                    while await inbox_store.list_done(session_id=session.session_id) != [message]:
-                        await pilot.pause()
-                async with asyncio.timeout(30):
-                    while session.is_running or app._in_flight_task is not None:
-                        await pilot.pause()
-        finally:
-            await gateway.close()
 
 
 class TestQueuedPromptGating:

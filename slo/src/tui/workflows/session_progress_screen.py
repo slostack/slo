@@ -199,6 +199,14 @@ class SessionProgressScreen(ModalScreen[None]):
         (0, "-progress-narrow"),
         (80, "-progress-wide"),
     ]
+    # Height tiers budget the agent composer so it fits beside the log rows,
+    # replacing the app's list-oriented tiers on this screen: a full composer
+    # (14 rows) fits from 35 rows; below that the adjacent TCSS compacts it.
+    VERTICAL_BREAKPOINTS = [
+        (0, "-progress-short"),
+        (24, "-progress-medium"),
+        (35, "-progress-tall"),
+    ]
 
     class Minimized(Message):
         """Tell the app to close this screen's observation without stopping execution."""
@@ -260,7 +268,7 @@ class SessionProgressScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         """Build the native modal once when the sink pushes it."""
-        with Vertical(id="progress-box"):
+        with Vertical(id="progress-box", classes="-with-composer" if self._composer is not None else ""):
             yield Static(
                 content=f"Session progress · {self.key.session_id}",
                 markup=False,
@@ -273,10 +281,12 @@ class SessionProgressScreen(ModalScreen[None]):
             yield self._log
             if self._composer is not None:
                 yield self._composer
-            yield Static(content=NAVIGATION_HINT, markup=False, classes="hint")
-            with Horizontal(classes="actions"):
-                yield Button(label="Minimize", id="minimize")
-                yield self._abort
+            # Docked so overflowing content clips above the controls, never them.
+            with Vertical(id="progress-footer"):
+                yield Static(content=NAVIGATION_HINT, markup=False, classes="hint")
+                with Horizontal(classes="actions"):
+                    yield Button(label="Minimize", id="minimize")
+                    yield self._abort
 
     def on_mount(self) -> None:
         """Focus the log for keyboard reading and watch for user navigation."""

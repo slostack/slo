@@ -12,7 +12,9 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "AttachmentDAO",
     "ChannelDAO",
+    "InboundTextDAO",
     "SentMessageRowDAO",
     "ChannelKind",
     "ChannelMessageDAO",
@@ -173,6 +175,41 @@ class SentMessageRowDAO(BaseModel):
         default=None,
         description="Why the row was cancelled, e.g. 'recipient_closed' or 'aborted'; None unless cancelled.",
     )
+
+
+class InboundTextDAO(BaseModel):
+    """What an external adapter hands the adapter host for one platform message (108.5 §4)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    external_user_ref: str = Field(
+        min_length=1,
+        description="Platform-side user identity, e.g. a Telegram user id.",
+    )
+    display_name: str = Field(min_length=1, description="Name to register for the user.")
+    text: str = Field(min_length=1, description="Raw text the user sent, including adapter commands.")
+    force: bool = Field(
+        default=False,
+        description="Send forced into the attached agent's current run.",
+    )
+    external_message_ref: Optional[str] = Field(
+        default=None,
+        description=(
+            "Platform-side message identity, e.g. a Telegram update id. When set the queue row id "
+            "is derived from it, so a platform redelivery after a crash creates no second row."
+        ),
+    )
+
+
+class AttachmentDAO(BaseModel):
+    """Which agent one platform user is talking to through one channel (108.5 §4)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    channel_id: UUID = Field(description="Channel the user talks through.")
+    participant_id: UUID = Field(description="Platform user this attachment belongs to.")
+    agent_id: Optional[UUID] = Field(description="Agent the user is talking to; None when detached.")
+    updated_at: datetime = Field(description="UTC time of the last /attach or /detach.")
 
 
 class ChannelMessageDAO(BaseModel):

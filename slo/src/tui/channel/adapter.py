@@ -15,7 +15,7 @@ import os
 import getpass
 import socket
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Protocol, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from config.logger import log_warning
@@ -32,6 +32,7 @@ from src.channels.gateway import ChannelGateway
 from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
 
 if TYPE_CHECKING:
+    from src.channels.protocol import AdapterContext
     from src.tui.app import SloTUI
     from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
@@ -43,30 +44,75 @@ REPLY_DISPLAY_PREFIX: str = "↩"
 """Transcript prefix for a reply from another agent (108.3)."""
 
 
+class ChannelRowObserver(Protocol):
+    """Borrowed capability told about each channel row the TUI displays or runs."""
+
+    async def __call__(self, *, message: ChannelMessageDAO) -> None:
+        """Observe one row (the app reconciles workflow lifecycle from it).
+
+        Args:
+            message (ChannelMessageDAO): The row being displayed or run.
+        """
+        ...
+
+
 class TuiDisplaySink:
     """Shows channel notes and notices as live ``⊛`` transcript lines (108.3 §3).
 
     The poller calls ``show`` the moment it sees a row that must be displayed
     but never run; acceptance is the poller's job (108.3 §5).
+
+    The line and the observation are separate effects. The line is written
+    once per row id; a failed observation raises, so the caller retries the
+    whole ``show`` (an owed note every tick, a still-pending notice on the
+    next tick), and the retry re-runs only the observation. That repeat is
+    safe because the observer reconciles from durable workflow state.
     """
 
-    def __init__(self, *, transcript: Optional["ChatTranscriptComponent"]) -> None:
+    def __init__(
+        self,
+        *,
+        transcript: Optional["ChatTranscriptComponent"],
+        observer: Optional[ChannelRowObserver] = None,
+    ) -> None:
         """Bind the sink to the mounted transcript.
 
         Args:
             transcript (Optional[ChatTranscriptComponent]): The mounted chat
                 transcript, or ``None`` while it is not mounted (rows are
                 then dropped without display).
+            observer (Optional[ChannelRowObserver]): Told about every shown
+                row after it is displayed (workflow lifecycle reconcile);
+                borrowed, never closed.
         """
         self._transcript: Optional["ChatTranscriptComponent"] = transcript
+        self._observer: Optional[ChannelRowObserver] = observer
+        self._displayed_ids: set[UUID] = set()
 
     async def show(self, *, message: ChannelMessageDAO) -> None:
-        """Display one channel row as a ``⊛`` transcript line.
+        """Display one channel row as a ``⊛`` line (once per id), then tell the observer.
+
+        Args:
+            message (ChannelMessageDAO): The note or notice being displayed.
+
+        Raises:
+            Exception: Whatever the observer raised; the line stays written
+                and a retried ``show`` repeats only the observation.
+        """
+        await self._display_once(message=message)
+        if self._observer is not None:
+            await self._observer(message=message)
+
+    async def _display_once(self, *, message: ChannelMessageDAO) -> None:
+        """Write the ``⊛`` transcript line unless this row's line was already written.
+
+        A row met while the transcript is unmounted is dropped without display
+        and not remembered.
 
         Args:
             message (ChannelMessageDAO): The note or notice being displayed.
         """
-        if self._transcript is None:
+        if self._transcript is None or message.id in self._displayed_ids:
             return
         await self._transcript.handle(
             command=TranscriptNoticeDAO(
@@ -74,15 +120,22 @@ class TuiDisplaySink:
                 classes="sub-agent-notice",
             )
         )
+        self._displayed_ids.add(message.id)
 
 
-__all__ = ["TuiChannelAdapter", "TuiDisplaySink"]
+__all__ = ["ChannelRowObserver", "TuiChannelAdapter", "TuiDisplaySink"]
 
 _POLL_SECONDS: float = 0.5
 
 
 class TuiChannelAdapter:
-    """Channel adapter connecting the mounted TUI to the shared queue."""
+    """Channel adapter connecting the mounted TUI to the shared queue.
+
+    Conforms to the public ``ChannelAdapter`` protocol (108.5): ``kind`` is
+    ``tui``, ``name`` is ``tui@<host>``. The TUI runs in-process with its own
+    outbound loop, so it is never hosted by ``AdapterHost``; ``start`` accepts
+    (and ignores) a host context only to satisfy the protocol.
+    """
 
     def __init__(self, *, app: "SloTUI", gateway: ChannelGateway) -> None:
         """Compose the adapter around the app and the shared gateway.
@@ -97,6 +150,24 @@ class TuiChannelAdapter:
         self._user: Optional[ParticipantDAO] = None
         self._outbound_task: Optional[asyncio.Task[None]] = None
         self._stopping: bool = False
+
+    @property
+    def kind(self) -> str:
+        """Return the channel kind, ``tui`` (108.5 protocol).
+
+        Returns:
+            str: ``tui``.
+        """
+        return "tui"
+
+    @property
+    def name(self) -> str:
+        """Return the channel name, ``tui@<host>`` (108.5 protocol).
+
+        Returns:
+            str: The name the channel is registered under.
+        """
+        return f"tui@{socket.gethostname()}"
 
     @property
     def channel(self) -> ChannelDAO:
@@ -126,16 +197,33 @@ class TuiChannelAdapter:
             raise RuntimeError("TuiChannelAdapter is not started.")
         return self._user
 
-    async def start(self) -> None:
+    def is_sent_by_operator(self, *, message: ChannelMessageDAO) -> bool:
+        """Return whether this TUI's own user sent one row.
+
+        Args:
+            message (ChannelMessageDAO): Row to classify.
+
+        Returns:
+            bool: ``True`` only when the adapter is started and its user is
+                the row's sender.
+        """
+        return self._user is not None and message.sender_id == self._user.id
+
+    async def start(self, *, ctx: Optional["AdapterContext"] = None) -> None:
         """Register the channel and its user, and start the outbound loop.
 
         The TUI channel id is per-install, persisted under
         ``<SLO_HOME>/channels/tui.json`` so a restarted TUI keeps its identity.
+
+        Args:
+            ctx (Optional[AdapterContext]): Accepted for ``ChannelAdapter``
+                conformance and unused: the TUI registers itself and sends
+                through ``send_prompt``. Defaults to ``None``.
         """
         channel_id: UUID = self._load_or_create_channel_id()
         self._channel = await self._gateway.register_channel(
             kind="tui",
-            name=f"tui@{socket.gethostname()}",
+            name=self.name,
             channel_id=channel_id,
         )
         self._user = await self._gateway.register_user(
@@ -179,7 +267,7 @@ class TuiChannelAdapter:
             )
         )
 
-    async def deliver(self, *, message: ChannelMessageDAO) -> None:
+    async def deliver(self, *, message: ChannelMessageDAO, user: Optional[ParticipantDAO] = None) -> bool:
         """Deliver one outbound row to the operator.
 
         ``reply`` rows for TUI-sent prompts need no rendering when they come
@@ -190,6 +278,12 @@ class TuiChannelAdapter:
 
         Args:
             message (ChannelMessageDAO): Outbound row addressed to the TUI user.
+            user (Optional[ParticipantDAO]): Accepted for ``ChannelAdapter``
+                conformance; the TUI has exactly one user. Defaults to ``None``.
+
+        Returns:
+            bool: ``True`` once the row is shown (or needs no rendering) and
+                accepted, as the protocol requires.
         """
         transcript = self._app._chat_transcript
         if message.message_type == "reply":
@@ -212,6 +306,7 @@ class TuiChannelAdapter:
                     )
                 )
         await self._gateway.accept(message_id=message.id)
+        return True
 
     async def queued(self) -> list[ChannelMessageDAO]:
         """Return the session's pending inbound rows, for the queued list.

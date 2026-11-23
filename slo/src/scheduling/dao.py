@@ -35,9 +35,13 @@ __all__ = [
 SessionMode: TypeAlias = Literal["fresh", "continuous"]
 FireStatus: TypeAlias = Literal["running", "completed", "aborted", "failed"]
 CoalescingMode: TypeAlias = Literal["none", "latest_by_key"]
-ActiveSessionDelivery: TypeAlias = Literal["session_inbox"]
+ActiveSessionDelivery: TypeAlias = Literal["session_channel", "session_inbox"]
+"""Active-session delivery: ``session_channel`` (108.6); ``session_inbox`` is the retired legacy value, still readable."""
 InactiveSessionDelivery: TypeAlias = Literal["resume"]
-DeliveryPath: TypeAlias = Literal["fresh_headless", "resume_headless", "session_inbox", "none"]
+DeliveryPath: TypeAlias = Literal[
+    "fresh_headless", "resume_headless", "session_channel", "session_inbox", "none"
+]
+"""How a fire was delivered; ``session_inbox`` appears only in records written before 108.6."""
 DeliveryState: TypeAlias = Literal[
     "executed",
     "queued",
@@ -151,8 +155,11 @@ class ScheduleSessionPolicyDAO(BaseModel):
         description="Optional target session id or unique session name.",
     )
     active_session_delivery: ActiveSessionDelivery = Field(
-        default="session_inbox",
-        description="Delivery path for an active TUI-owned target session.",
+        default="session_channel",
+        description=(
+            "Delivery path for an active TUI-owned target session: a channel prompt (108.6). "
+            "The legacy 'session_inbox' value is still accepted and delivers the same way."
+        ),
     )
     inactive_session_delivery: InactiveSessionDelivery = Field(
         default="resume",

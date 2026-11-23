@@ -447,6 +447,28 @@ async def test_operator_steering_line_stays_plain() -> None:
         assert transcript.logical_copy_text() == "> use pytest -x"
 
 
+async def test_note_steering_is_not_projected_as_a_user_turn() -> None:
+    """A note's display sink owns its one line; only forced prompts become user turns (108.3)."""
+
+    async def empty_history() -> list[TranscriptEntryDAO]:
+        """Supply an empty read-only history."""
+        return []
+
+    transcript = ChatTranscriptComponent(history_reader=empty_history)
+    async with TranscriptTestApp(transcript=transcript).run_test() as pilot:
+        await transcript.present_event(
+            event=AgentStreamEventDAO(kind="steering_applied", content="fyi note", delivery_kind="note")
+        )
+        await transcript.present_event(
+            event=AgentStreamEventDAO(
+                kind="steering_applied", content="also do X", delivery_kind="forced_prompt"
+            )
+        )
+        await pilot.pause()
+        assert [block.get_copyable_text() for block in transcript.query(UserMessageBlock)] == ["also do X"]
+        assert "fyi note" not in transcript.logical_copy_text()
+
+
 @pytest.mark.parametrize("operation", ["clear", "bind", "close"])
 async def test_older_read_cannot_publish_after_reset(tmp_path: Path, operation: str) -> None:
     """Late older results are invalidated and pending live delivery waits for cleanup."""

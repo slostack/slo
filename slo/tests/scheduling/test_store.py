@@ -551,7 +551,7 @@ class TestScheduleStoreMutations:
     def test_append_run_record_roundtrips_queued_delivery_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Queued SessionInbox records persist without executed-run fields."""
+        """Queued legacy ``session_inbox`` records stay readable without executed-run fields."""
         root: Path = _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
         definition: ScheduleDefinitionDAO = _build_definition(
             schedule_id="schedule-queued-runs",

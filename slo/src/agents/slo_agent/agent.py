@@ -1892,8 +1892,9 @@ class SloAgent:
 
         Returns:
             list[AgentStreamEventDAO]: One ``steering_applied`` event each,
-                carrying the delivery's ``channel_message_id`` and sender
-                label so the transcript can credit external senders.
+                carrying the delivery's ``channel_message_id``, sender label
+                and ``delivery_kind`` so the transcript can credit external
+                senders and leave notes to their display sink (108.3).
         """
         events: list[AgentStreamEventDAO] = []
         for delivery in deliveries:
@@ -1904,6 +1905,7 @@ class SloAgent:
                     content=delivery.text,
                     channel_message_id=delivery.message_id,
                     sender_name=delivery.sender_name,
+                    delivery_kind=delivery.kind,
                 )
             )
         return events

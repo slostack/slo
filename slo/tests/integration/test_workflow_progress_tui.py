@@ -29,6 +29,7 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage
 from textual.await_complete import AwaitComplete
+from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widgets import Button, Static
 
@@ -1275,8 +1276,14 @@ class TestTwentyChildFleetJourney:
             with patch.object(world.session, "abort") as whole_abort:
                 screen: SessionProgressScreen = _screen(app=app)
                 assert screen.key.session_id == _CHILD
+                box_content: Region = screen.query_one("#progress-box").content_region
                 for button in screen.query(Button):
                     assert button.region.right <= width and button.region.bottom <= height
+                    # Unclipped and topmost: a click at its centre reaches this button.
+                    assert box_content.contains_region(button.region), button.id
+                    center_x: int = button.region.x + button.region.width // 2
+                    center_y: int = button.region.y + button.region.height // 2
+                    assert screen.get_widget_at(center_x, center_y)[0] is button, button.id
                 log: ProgressLog = screen.query_one(ProgressLog)
                 assert "wide-tool-output-xxxx" in _painted_log_text(screen=screen)
                 assert log.max_scroll_x > 0

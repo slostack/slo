@@ -4,15 +4,19 @@ The adapter is shared by the session's poller and its agent: the poller
 refreshes the forced-row snapshot every tick (so the agent's synchronous
 ``has_forced`` stays fresh), and the agent takes pending forced prompt rows
 at each safe boundary, then confirms them (accepts) after the history record
-is written.
+is written. A note the boundary takes is shown through the session's shared
+``ChannelNoteDisplay``, so a note no poller tick saw pending is still shown,
+and one the poller already showed is not shown again (108.3 §2).
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 from uuid import UUID
 
 from src.agents.slo_agent.boundary_inbox import BoundaryDeliveryDAO
+from src.agents.slo_agent.channel_delivery.note_display import ChannelNoteDisplay
 from src.channels.dao import ChannelMessageDAO
 from src.channels.gateway import ChannelGateway
 
@@ -33,6 +37,7 @@ class ChannelBoundaryInbox:
         gateway: ChannelGateway,
         agent_id: UUID,
         operator_participant_id: Optional[UUID] = None,
+        note_display: Optional[ChannelNoteDisplay] = None,
     ) -> None:
         """Bind the adapter to the shared gateway and one agent participant.
 
@@ -44,8 +49,12 @@ class ChannelBoundaryInbox:
                 its own user); rows from that participant take the transcript
                 label ``you`` (108.2 §4), while every other sender keeps its
                 recorded ``sender_name``.
+            note_display (Optional[ChannelNoteDisplay]): The session's
+                display-once owner shared with its poller; taken notes are
+                shown through it. ``None`` (no display wired) shows nothing.
         """
         self._gateway: ChannelGateway = gateway
+        self._note_display: Optional[ChannelNoteDisplay] = note_display
         self._agent_id: UUID = agent_id
         self._operator_participant_id: Optional[UUID] = operator_participant_id
         self._forced_ids: set[UUID] = set()
@@ -133,9 +142,17 @@ class ChannelBoundaryInbox:
         if require_forced_prompt and not forced_rows:
             return []
         taken: list[ChannelMessageDAO] = notes + forced_rows
+        taken_ids: set[UUID] = {row.id for row in taken}
         # The taken rows are in flight until their confirm settles them, so a
         # refresh between take and confirm cannot reinsert them (108.2 B3).
-        self._in_flight_ids |= {row.id for row in taken}
+        self._in_flight_ids |= taken_ids
+        try:
+            await self._show_notes(notes=notes)
+        except asyncio.CancelledError:
+            # Cancelled before the take returned: nothing reaches the context,
+            # so the rows stay pending for the next boundary (or idle tick).
+            self._in_flight_ids -= taken_ids
+            raise
         return [
             BoundaryDeliveryDAO(
                 message_id=row.id,
@@ -146,6 +163,17 @@ class ChannelBoundaryInbox:
             )
             for row in taken
         ]
+
+    async def _show_notes(self, *, notes: list[ChannelMessageDAO]) -> None:
+        """Show each taken note once through the shared display, when one is wired.
+
+        Args:
+            notes (list[ChannelMessageDAO]): The notes this take returns.
+        """
+        if self._note_display is None:
+            return
+        for note in notes:
+            await self._note_display.show_once(message=note)
 
     def _sender_label(self, *, sender_id: UUID, sender_name: str) -> str:
         """Return the transcript label for one taken row's sender.

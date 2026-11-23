@@ -258,6 +258,60 @@ class ChannelRepository:
 
         return await self._run(_query)
 
+    async def claim_system_slot(self, *, participant: ParticipantDAO) -> ParticipantDAO:
+        """Store a system participant in its ``(channel_id, external_ref)`` slot, atomically.
+
+        One ``INSERT … ON CONFLICT(channel_id, external_ref) DO UPDATE``
+        statement, so concurrent processes racing on one empty slot agree on a
+        single row. The slot's occupant keeps its id (rows it already sent
+        keep their sender) and becomes an open ``system`` participant with the
+        new name and heartbeat; a former ``user`` occupant converts in place.
+
+        Args:
+            participant (ParticipantDAO): System participant to store; its
+                ``id`` is used only when the slot is empty.
+
+        Returns:
+            ParticipantDAO: The stored slot occupant.
+
+        Raises:
+            ValueError: ``channel_id`` or ``external_ref`` is missing; SQLite
+                never treats a NULL slot as a conflict, so it would duplicate.
+        """
+        if participant.channel_id is None or participant.external_ref is None:
+            raise ValueError("A system participant needs both channel_id and external_ref.")
+
+        def _write(connection: sqlite3.Connection) -> ParticipantDAO:
+            row = connection.execute(
+                """
+                INSERT INTO participants(
+                    id, kind, name, channel_id, external_ref, status, last_seen_at, created_at,
+                    durable_inbox
+                )
+                VALUES (?, 'system', ?, ?, ?, 'open', ?, ?, 0)
+                ON CONFLICT(channel_id, external_ref) DO UPDATE SET
+                    kind = 'system',
+                    name = excluded.name,
+                    status = 'open',
+                    last_seen_at = excluded.last_seen_at,
+                    durable_inbox = 0
+                RETURNING id, kind, name, channel_id, external_ref, status, last_seen_at, created_at,
+                          durable_inbox
+                """,
+                (
+                    str(participant.id),
+                    participant.name,
+                    str(participant.channel_id),
+                    participant.external_ref,
+                    _stamp(participant.last_seen_at),
+                    _stamp(participant.created_at),
+                ),
+            ).fetchone()
+            connection.commit()
+            return _participant_from_row(row=row)
+
+        return await self._run(_write)
+
     async def set_participant_status(self, *, participant_id: UUID, status: str) -> None:
         """Set a participant's ``status`` column.
 
@@ -534,35 +588,34 @@ class ChannelRepository:
         return await self._run(_write)
 
     async def force(self, *, message_id: UUID) -> bool:
-        """Stamp ``forced_at`` on a pending row (108.2).
+        """Stamp ``forced_at`` on a pending prompt row (108.2).
 
-        Only rows that are still pending and not already forced change; a
-        second call on the same forced row is a no-op success so retries and
-        repeated ``/queue force`` never fail.
+        One guarded ``UPDATE`` decides and writes atomically, so a row that
+        another connection accepts or cancels concurrently is never forced.
+        Only ``prompt`` rows are forceable (overview §3.2). Re-forcing a
+        pending forced prompt is an idempotent success that keeps its first
+        ``forced_at`` stamp.
 
         Args:
             message_id (UUID): Message to force.
 
         Returns:
-            bool: ``True`` when the row is (or already was) forced and still
-                pending; ``False`` when it was accepted, cancelled, or does
-                not exist.
+            bool: ``True`` when the row is (or already was) a forced pending
+                prompt; ``False`` when it was accepted, cancelled, is not a
+                prompt, or does not exist.
         """
 
         def _write(connection: sqlite3.Connection) -> bool:
-            row = connection.execute(
-                "SELECT accepted_at, cancelled_at, forced_at FROM messages WHERE id = ?",
-                (str(message_id),),
-            ).fetchone()
-            if row is None or row[0] is not None or row[1] is not None:
-                return False
-            if row[2] is None:
-                connection.execute(
-                    "UPDATE messages SET forced_at = ? WHERE id = ?",
-                    (_stamp(utc_now()), str(message_id)),
-                )
-                connection.commit()
-            return True
+            cursor = connection.execute(
+                """
+                UPDATE messages SET forced_at = COALESCE(forced_at, ?)
+                WHERE id = ? AND message_type = 'prompt'
+                  AND accepted_at IS NULL AND cancelled_at IS NULL
+                """,
+                (_stamp(utc_now()), str(message_id)),
+            )
+            connection.commit()
+            return cursor.rowcount == 1
 
         return await self._run(_write)
 
@@ -694,6 +747,145 @@ class ChannelRepository:
             return int(connection.execute("SELECT COUNT(*) FROM participants").fetchone()[0])
 
         return await self._run(_query)
+
+    async def list_agents(self, *, open_only: bool) -> list[ParticipantDAO]:
+        """Return agent participants, most recently seen first (108.5 ``slo channel agents``).
+
+        Args:
+            open_only (bool): ``True`` keeps only agents whose status is ``open``.
+
+        Returns:
+            list[ParticipantDAO]: Agent participants ordered by ``last_seen_at``
+                descending, then id for a stable order.
+        """
+
+        def _query(connection: sqlite3.Connection) -> list[ParticipantDAO]:
+            rows = connection.execute(
+                """
+                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at, durable_inbox
+                FROM participants
+                WHERE kind = 'agent' AND (? = 0 OR status = 'open')
+                ORDER BY last_seen_at DESC, created_at ASC, id ASC
+                """,
+                (1 if open_only else 0,),
+            ).fetchall()
+            return [_participant_from_row(row=row) for row in rows]
+
+        return await self._run(_query)
+
+    async def agents_with_id_prefix(self, *, prefix: str) -> list[ParticipantDAO]:
+        """Return every agent participant whose id text starts with ``prefix``.
+
+        The caller validates ``prefix`` to lowercase hex digits and hyphens,
+        so it never carries ``LIKE`` wildcards.
+
+        Args:
+            prefix (str): Lowercase id prefix, e.g. ``9b1e``.
+
+        Returns:
+            list[ParticipantDAO]: Matching agents, most recently seen first.
+        """
+
+        def _query(connection: sqlite3.Connection) -> list[ParticipantDAO]:
+            rows = connection.execute(
+                """
+                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at, durable_inbox
+                FROM participants
+                WHERE kind = 'agent' AND substr(id, 1, ?) = ?
+                ORDER BY last_seen_at DESC, id ASC
+                """,
+                (len(prefix), prefix),
+            ).fetchall()
+            return [_participant_from_row(row=row) for row in rows]
+
+        return await self._run(_query)
+
+    async def channel_users(self, *, channel_id: UUID) -> list[ParticipantDAO]:
+        """Return the user participants who talk through one channel.
+
+        Args:
+            channel_id (UUID): Channel whose users to list.
+
+        Returns:
+            list[ParticipantDAO]: User participants, oldest registration first.
+        """
+
+        def _query(connection: sqlite3.Connection) -> list[ParticipantDAO]:
+            rows = connection.execute(
+                """
+                SELECT id, kind, name, channel_id, external_ref, status, last_seen_at, created_at, durable_inbox
+                FROM participants
+                WHERE kind = 'user' AND channel_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (str(channel_id),),
+            ).fetchall()
+            return [_participant_from_row(row=row) for row in rows]
+
+        return await self._run(_query)
+
+    async def get_channel(self, *, channel_id: UUID) -> Optional[ChannelDAO]:
+        """Return one channel row by id.
+
+        Args:
+            channel_id (UUID): Channel to look up.
+
+        Returns:
+            Optional[ChannelDAO]: The stored channel, or ``None``.
+        """
+
+        def _query(connection: sqlite3.Connection) -> Optional[ChannelDAO]:
+            row = connection.execute(
+                "SELECT id, kind, name, created_at, last_seen_at FROM channels WHERE id = ?",
+                (str(channel_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            return ChannelDAO(
+                id=UUID(row[0]),
+                kind=row[1],
+                name=row[2],
+                created_at=_parse(row[3]),
+                last_seen_at=_parse(row[4]),
+            )
+
+        return await self._run(_query)
+
+    async def last_message_index(self, *, agent_session_id: UUID) -> int:
+        """Return the highest ``message_index`` of one conversation (0 when empty).
+
+        Args:
+            agent_session_id (UUID): Conversation to inspect.
+
+        Returns:
+            int: The newest index, or 0 for an empty conversation.
+        """
+
+        def _query(connection: sqlite3.Connection) -> int:
+            return int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(message_index), 0) FROM messages WHERE agent_session_id = ?",
+                    (str(agent_session_id),),
+                ).fetchone()[0]
+            )
+
+        return await self._run(_query)
+
+    async def heartbeat_channel(self, *, channel_id: UUID) -> None:
+        """Refresh a channel's ``last_seen_at`` (adapter heartbeat, 108.5 host).
+
+        Args:
+            channel_id (UUID): Channel to stamp.
+        """
+
+        def _write(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE channels SET last_seen_at = ? WHERE id = ?",
+                (_stamp(utc_now()), str(channel_id)),
+            )
+            connection.commit()
+
+        await self._run(_write)
 
     async def column_names(self, *, table: str) -> list[tuple[str, str]]:
         """Return ``(name, declared_type)`` for one table's columns (test support).

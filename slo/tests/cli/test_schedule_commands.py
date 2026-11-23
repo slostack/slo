@@ -252,12 +252,14 @@ class TestScheduleCommands:
         assert execute_result.exit_code == 0
         assert mock_run.call_count == 2
 
+    @pytest.mark.parametrize("delivery_path", ["session_channel", "session_inbox"])
     def test_show_report_renders_delivery_metadata(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        delivery_path: str,
     ) -> None:
-        """`schedule show-report` prints delivery-path/state/session metadata."""
+        """`schedule show-report` prints delivery metadata; the legacy inbox path stays readable."""
         _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
         definition: ScheduleDefinitionDAO = _seed_schedule(schedule_id="schedule-1")
         ScheduleStore.create(definition=definition, initial_next_run_at=None)
@@ -267,7 +269,7 @@ class TestScheduleCommands:
             started_at=_utc_datetime(year=2026, month=7, day=12, hour=9),
             finished_at=_utc_datetime(year=2026, month=7, day=12, hour=9, minute=1),
             status=None,
-            delivery_path="session_inbox",
+            delivery_path=delivery_path,  # type: ignore[arg-type]
             delivery_state="coalesced",
             session_id=None,
             target_session_id="session-123",
@@ -290,7 +292,92 @@ class TestScheduleCommands:
         )
 
         assert result.exit_code == 0
-        assert "delivery_path: session_inbox" in result.stdout
+        assert f"delivery_path: {delivery_path}" in result.stdout
         assert "delivery_state: coalesced" in result.stdout
         assert "target_session_id: session-123" in result.stdout
         assert "coalesced_fire_count: 2" in result.stdout
+
+
+class TestScheduleExecuteChannelJourney:
+    """I1 journey: ``slo schedule execute`` → executor → ``channels.db`` for an open TUI session."""
+
+    _SESSION_ID: str = "0b8f3a52-9d6e-4c1b-a7f0-3e2d1c0b9a87"
+
+    @staticmethod
+    async def _open_tui_session(*, slo_home: Path, session_id: str) -> None:
+        """Make ``session_id`` look like a mounted TUI: live lease and an open agent participant.
+
+        Args:
+            slo_home (Path): The isolated per-test ``SLO_HOME``.
+            session_id (str): Target session id.
+        """
+        from uuid import UUID
+
+        from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
+        from src.channels.gateway import ChannelGateway
+
+        lease_store = SessionOwnershipLeaseStore(history_root=slo_home / "sessions" / "history")
+        await lease_store.acquire(session_id=session_id, owner_id="tui-journey", ttl_seconds=300.0)
+        gateway: ChannelGateway = await ChannelGateway.default()
+        await gateway.register_agent(session_id=UUID(session_id), name="slo journey", durable_inbox=True)
+        await gateway.close()
+
+    @staticmethod
+    async def _pending_prompts(*, session_id: str) -> list:
+        """Read the target session's pending inbound rows back from the shared database.
+
+        Args:
+            session_id (str): Target session id.
+
+        Returns:
+            list: Pending ``ChannelMessageDAO`` rows, FIFO.
+        """
+        from uuid import UUID
+
+        from src.channels.gateway import ChannelGateway
+
+        gateway: ChannelGateway = await ChannelGateway.default()
+        try:
+            return await gateway.pending_inbound(recipient_id=UUID(session_id))
+        finally:
+            await gateway.close()
+
+    def test_execute_with_active_lease_queues_one_prompt_and_coalesces_the_next_fire(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        isolated_slo_home: Path,
+    ) -> None:
+        """Two fires with the same key leave one pending prompt row; the run records say so."""
+        import asyncio
+
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = ScheduleDefinitionDAO(
+            schedule_id="schedule-journey",
+            name="Repo Watch",
+            name_key="repo-watch",
+            trigger=CronTriggerDAO(expression="*/5 * * * *", tz="UTC"),
+            prompt="Check CI and summarise new failures.",
+            session_mode="continuous",
+            session_policy=ScheduleSessionPolicyDAO(
+                session_reference=self._SESSION_ID,
+                coalescing_mode="latest_by_key",
+                coalescing_key="repo-watch",
+            ),
+        )
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        asyncio.run(self._open_tui_session(slo_home=isolated_slo_home, session_id=self._SESSION_ID))
+
+        first = runner.invoke(app, ["schedule", "execute", "--name", definition.schedule_id])
+        second = runner.invoke(app, ["schedule", "execute", "--name", definition.schedule_id])
+        pending = asyncio.run(self._pending_prompts(session_id=self._SESSION_ID))
+        state = ScheduleStore.load(reference=definition.schedule_id).state
+
+        assert (first.exit_code, second.exit_code) == (0, 0)
+        assert len(pending) == 1
+        assert pending[0].message_type == "prompt"
+        assert pending[0].message_contents == definition.prompt
+        assert pending[0].sender_name == "scheduler Repo Watch"
+        assert state.last_delivery_path == "session_channel"
+        assert state.last_delivery_state == "coalesced"
+        assert not (isolated_slo_home / "sessions" / "history" / self._SESSION_ID / "inbox").exists()

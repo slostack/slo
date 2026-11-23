@@ -1316,9 +1316,15 @@ class ChatTranscriptComponent(Vertical):
                 self._enforce_window_soon()
 
     async def _project_parent_event(self, *, event: AgentStreamEventDAO) -> None:
-        """Project a steering-applied event as a user turn; everything else normally."""
+        """Project a forced steering delivery as a user turn; everything else normally.
+
+        A note's steering event is not projected: the channel display sink
+        already showed the note's one line when it was first seen (108.3).
+        """
         if event.kind != "steering_applied":
             await self._projector.handle(event=event)
+            return
+        if event.delivery_kind == "note":
             return
         await self._projector.handle(
             event=ProjectUserTurnDAO(text=event.content or "", sender_name=event.sender_name)

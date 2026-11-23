@@ -56,6 +56,7 @@ from src.tui.workflows.dao import (
     WorkflowListVisibilityRequestDAO,
     WorkflowListVisibilityOutcomeDAO,
     WorkflowSessionKeyDAO,
+    WorkflowLifecycleTarget,
     WorkflowSessionRowDAO,
     WorkflowSessionSnapshotDAO,
     parse_fleet_update_message,
@@ -86,6 +87,14 @@ _ABORTABLE_STATUSES: frozenset[str] = frozenset({"pending", "running"})
 
 _READABLE_PROGRESS: frozenset[str] = frozenset({"available", "empty"})
 """Progress availabilities whose status comes from a fresh, readable source."""
+
+_LIFECYCLE_TARGET_BY_STATE: dict[WorkflowState, WorkflowLifecycleTarget] = {
+    "running": "started",
+    "completed": "terminal",
+    "failed": "terminal",
+    "aborted": "terminal",
+}
+"""Reconciled handle state → the lifecycle step its arrival represents (as the retired notes did)."""
 
 
 class ChildAbortRefused(Exception):
@@ -302,6 +311,79 @@ class DetachedWorkflowAppService:
             return self._workflow_states
         self._workflow_states = {handle.workflow_id: handle.state for handle in handles}
         return self._workflow_states
+
+    async def advance_from_reconciliation(self) -> List[DetachedWorkflowUiEffectDAO]:
+        """Reconcile handles from orchestrator evidence and emit the lifecycle effects it implies.
+
+        WHAT: Runs the store's evidence-first reconcile (each orchestrator's
+            own ``orchestrator.json`` before pid liveness), replaces the state
+            cache with the result, and maps every handle whose state changed
+            since the cache was last refreshed to the typed UI effects the
+            retired inbox lifecycle notes produced: ``launch_visualizer`` on
+            entering ``running`` (the resume case; the renderer's guard keeps
+            it to one window) and ``reset_launch_guard`` on reaching a
+            terminal state.
+        WHO: The TUI, when a channel row from another participant (a
+            workflow's started note, fleet notice or terminal prompt) is
+            displayed or run.
+        WHEN: The orchestrator writes its terminal self-report before it sends
+            its terminal prompt, so the reconcile already sees that state.
+
+        Returns:
+            List[DetachedWorkflowUiEffectDAO]: Effects for the renderer; empty
+                when no handle store exists, nothing changed, or the store
+                failed (logged, never raised — channel delivery must not fail
+                on handle errors).
+        """
+        if self._store is None:
+            return []
+        previous_states: dict[str, WorkflowState] = dict(self._workflow_states)
+        try:
+            handles: List[WorkflowHandleDAO] = await self._store.reconcile(
+                owner_session_id=self._owner_session_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — delivery must not fail on handle errors
+            log_info(msg="workflow_reconcile_failed", error=str(exc))
+            return []
+        self._workflow_states = {handle.workflow_id: handle.state for handle in handles}
+        effects: List[DetachedWorkflowUiEffectDAO] = []
+        for handle in handles:
+            transition: Optional[ParsedWorkflowLifecycleMessageDAO] = self._lifecycle_transition(
+                handle=handle,
+                previous_state=previous_states.get(handle.workflow_id),
+            )
+            if transition is not None:
+                effects.extend(self._effects_for_lifecycle(parsed=transition))
+        return effects
+
+    @staticmethod
+    def _lifecycle_transition(
+        *,
+        handle: WorkflowHandleDAO,
+        previous_state: Optional[WorkflowState],
+    ) -> Optional[ParsedWorkflowLifecycleMessageDAO]:
+        """Return the lifecycle step one reconciled handle took, if it took one.
+
+        Args:
+            handle (WorkflowHandleDAO): Handle after reconciliation.
+            previous_state (Optional[WorkflowState]): Cached state before it,
+                or ``None`` when the workflow was not cached.
+
+        Returns:
+            Optional[ParsedWorkflowLifecycleMessageDAO]: ``started`` on entering
+                ``running``, ``terminal`` on entering a terminal state, else ``None``.
+        """
+        if handle.state == previous_state:
+            return None
+        target: Optional[WorkflowLifecycleTarget] = _LIFECYCLE_TARGET_BY_STATE.get(handle.state)
+        if target is None:
+            return None
+        return ParsedWorkflowLifecycleMessageDAO(
+            workflow_id=handle.workflow_id,
+            orchestrator_session_id=handle.orchestrator_session_id,
+            target_state=handle.state,
+            target=target,
+        )
 
     async def advance_from_inbox_message(
         self,

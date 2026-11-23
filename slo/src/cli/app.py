@@ -9,6 +9,7 @@ import typer
 import typer.core
 from typer._click.core import Context as ClickContext
 
+from src.cli.channel_commands import channel_app
 from src.cli.plugin import plugin_app
 from src.cli.schedule.app import schedule_app
 from src.cli.typer_dispatch import TyperDispatch
@@ -83,6 +84,7 @@ app: typer.Typer = typer.Typer(
 )
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(plugin_app, name="plugin")
+app.add_typer(channel_app, name="channel")
 
 
 @app.callback(invoke_without_command=True)

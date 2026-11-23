@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Optional, Protocol, TYPE_CHECKING, runtime_checkable
+from pathlib import Path
+from typing import Optional, TYPE_CHECKING
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from config.logger import log_error, log_warning
 from config.timeout_resolver import positive_float_env
 
 from src.agents.slo_agent.channel_delivery.boundary_inbox import ChannelBoundaryInbox
+from src.agents.slo_agent.channel_delivery.note_display import ChannelDisplaySink, ChannelNoteDisplay
 from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
 from src.agents.slo_agent.channel_delivery.turn_runner import TurnOutcomeDAO, TurnRunner
 from src.channels.dao import ChannelMessageDAO, ParticipantDAO
@@ -49,19 +51,6 @@ def workflow_id_from_note(*, text: str) -> str:
     """
     match: Optional[re.Match[str]] = _WORKFLOW_ID_PATTERN.search(text)
     return match.group(1) if match is not None else "wf-unknown"
-
-
-@runtime_checkable
-class ChannelDisplaySink(Protocol):
-    """Where the poller hands rows that must be shown but not run (108.3 §5)."""
-
-    async def show(self, *, message: ChannelMessageDAO) -> None:
-        """Display one channel row (notice or note) to this channel's user.
-
-        Args:
-            message (ChannelMessageDAO): The row being displayed.
-        """
-        ...
 
 
 def poll_interval_from_env() -> float:
@@ -117,6 +106,7 @@ class ChannelPoller:
         auto_run: bool = True,
         durable_inbox: bool = False,
         participant_name: Optional[str] = None,
+        note_display: Optional[ChannelNoteDisplay] = None,
     ) -> None:
         """Compose the poller around its injected collaborators.
 
@@ -148,6 +138,10 @@ class ChannelPoller:
             participant_name (Optional[str]): Display name registered for the
                 agent participant; defaults to ``slo <short id>``. Children use
                 ``<task_id> (child of <short parent>)`` (108.4 §5).
+            note_display (Optional[ChannelNoteDisplay]): The display-once owner
+                for notes, shared with ``boundary_inbox`` by the session
+                wiring so a note is shown once whichever side meets it first;
+                ``None`` gives the poller its own over ``display``.
         """
         self._gateway: ChannelGateway = gateway
         self._session: "SloAgentSession" = session
@@ -158,12 +152,15 @@ class ChannelPoller:
         self._task: Optional[asyncio.Task[None]] = None
         self._run_task: Optional["asyncio.Task[TurnOutcomeDAO]"] = None
         self._running_row: Optional[ChannelMessageDAO] = None
+        self._running_row_started: bool = False
         self._paused_reason: Optional[str] = None
         self._stopping: bool = False
         self._started: bool = False
         self._display: Optional[ChannelDisplaySink] = display
         self._auto_run: bool = auto_run
-        self._shown_note_ids: set[UUID] = set()
+        self._note_display: ChannelNoteDisplay = (
+            note_display if note_display is not None else ChannelNoteDisplay(sink=display)
+        )
         self._participant_id: UUID = channel_participant_id_for_session(session_id=self._session.session_id)
         self._durable_inbox: bool = durable_inbox
         self._participant_name: str = participant_name or f"slo {str(self._participant_id)[:8]}"
@@ -215,6 +212,11 @@ class ChannelPoller:
         agents and systems (a workflow that reported while the session was
         closed) never pause it (108.3 §6) — the same operator rule that
         admission and closure apply.
+
+        Then, before the first poll, a legacy file inbox left in the session's
+        history directory is imported once (108.6 section 5). It runs after
+        recovery, so the items it re-delivers (owed by the retired inbox,
+        never started by this session) never pause the poller.
         """
         if self._started:
             return
@@ -225,25 +227,71 @@ class ChannelPoller:
             durable_inbox=self._durable_inbox,
         )
         await self._recover_on_start()
+        await self._import_legacy_inbox()
         self._stopping = False
         self._task = asyncio.create_task(self._loop())
 
+    async def _import_legacy_inbox(self) -> None:
+        """Import the session's retired ``inbox/`` into the queue, when it has one (108.6).
+
+        Only a history-backed session has a session directory the retired
+        inbox could live in. An import failure is logged and never blocks the
+        poller: the importer is idempotent, so the next start retries it.
+        """
+        history_root: Optional[Path] = self._session.history_root
+        if not self._session.history_enabled or history_root is None:
+            return
+        # Imported here, not at module load: the importer reaches the
+        # scheduler's sender identity, whose package imports this module.
+        from src.channels.inbox_import import InboxImporter  # noqa: PLC0415
+
+        try:
+            await InboxImporter(
+                session_dir=history_root / self._session.session_id,
+                gateway=self._gateway,
+                agent_id=self._participant_id,
+            ).run()
+        except Exception as exc:  # noqa: BLE001 -- a legacy import must not block delivery
+            log_warning(msg=f"legacy inbox import failed; it is retried on the next start: {exc}")
+
     async def stop(self, *, reason: str) -> None:
-        """Finish the current run, stop the loop, and close the agent.
+        """Finish the current run, settle it, stop the loop, and close the agent.
+
+        The loop task is cancelled first, so the in-flight run (if any) is
+        awaited and settled here: its reply is written exactly once (the
+        reply id is stable, so a settlement the cancelled loop had already
+        begun is not duplicated) and the model is never run again. A
+        settlement that still fails is logged; the row stays accepted.
+
+        The note display is closed next, on every exit path: a note render
+        the cancelled tick left running is cancelled and joined before
+        ``stop`` returns, so the caller can retire the borrowed UI knowing no
+        render of this delivery can still publish into it.
 
         Args:
             reason (str): Cancellation reason recorded on pending rows, e.g.
                 ``session_closed``.
         """
         self._stopping = True
+        try:
+            await self._finish_loop_and_last_run()
+        finally:
+            await self._note_display.close()
+        await self._gateway.close_agent(session_id=self._participant_id, reason=reason)
+        self._started = False
+
+    async def _finish_loop_and_last_run(self) -> None:
+        """Cancel the poll loop, then await and settle the in-flight run, if any."""
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
-        if self._run_task is not None and not self._run_task.done():
+        if self._run_task is not None:
             await asyncio.gather(self._run_task, return_exceptions=True)
-        await self._gateway.close_agent(session_id=self._participant_id, reason=reason)
-        self._started = False
+            try:
+                await self._settle_finished_run()
+            except Exception as exc:  # noqa: BLE001 -- closing must still close the agent
+                log_error(msg=f"channel poller could not settle its last run on stop: {exc}")
 
     def pause(self, *, reason: str) -> None:
         """Stop starting new runs; sends are still accepted.
@@ -259,18 +307,22 @@ class ChannelPoller:
         self._gateway.local_wake(recipient_id=self._participant_id).set()
 
     async def pending_prompts(self) -> list[ChannelMessageDAO]:
-        """Return the session's pending prompt rows in display order.
+        """Return the session's queued prompt rows in display order.
 
         Forced rows come first (108.2 §4 ordering); this is the list the
-        ``/queue`` commands number and force against.
+        ``/queue`` commands number, force and cancel against. The row this
+        poller is running is excluded even before its first event stamps
+        ``accepted_at``: it is running, not queued, so a queue position never
+        names it.
 
         Returns:
-            list[ChannelMessageDAO]: Pending prompt rows, forced first.
+            list[ChannelMessageDAO]: Queued prompt rows, forced first.
         """
         rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
             recipient_id=self._participant_id,
         )
-        return [row for row in rows if row.message_type == "prompt"]
+        running_id: Optional[UUID] = self._running_row.id if self._running_row is not None else None
+        return [row for row in rows if row.message_type == "prompt" and row.id != running_id]
 
     async def force(self, *, message_id: UUID) -> bool:
         """Force one of this agent's pending rows into the current run (108.2).
@@ -412,7 +464,7 @@ class ChannelPoller:
                 and self._session.preparation_status == "ready"
             ):
                 # One run owner at a time (108.1): while the session runs a
-                # run this poller does not own (the inbox chat_turn bridge),
+                # run this poller does not own (a direct ``invoke`` caller),
                 # the tick defers so no queued row is started into a busy
                 # session and cancelled.
                 try:
@@ -430,12 +482,15 @@ class ChannelPoller:
 
         A ``notice`` is display-only: shown through the sink (when wired),
         then accepted — it never enters model context (108.3 §2). A ``note``
-        is shown once per id; when the session is idle it is recorded via
-        ``record_workflow_update`` and accepted, so it joins the context at
-        the next run without ever starting one. While the session runs, the
-        pending note stays in the queue for the boundary inbox to take before
-        forced prompts — notes never revive a run (108.3 O2).
+        is shown once per id through the shared ``ChannelNoteDisplay`` (which
+        first retries notes whose earlier render failed); when the session is
+        idle it is recorded via ``record_workflow_update`` and accepted, so it
+        joins the context at the next run without ever starting one. While
+        the session runs, the pending note stays in the queue for the boundary
+        inbox to take before forced prompts — notes never revive a run
+        (108.3 O2).
         """
+        await self._note_display.show_owed()
         rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
             recipient_id=self._participant_id,
         )
@@ -446,10 +501,8 @@ class ChannelPoller:
                 continue
             if row.message_type != "note":
                 continue
-            if row.id not in self._shown_note_ids:
-                await self._show(message=row)
-                self._shown_note_ids.add(row.id)
-            if not self._session_idle():
+            await self._note_display.show_once(message=row)
+            if not self._session_idle() or not await self._is_still_pending(message=row):
                 continue
             try:
                 await self._session.record_workflow_update(
@@ -461,6 +514,22 @@ class ChannelPoller:
                 log_warning(msg=f"channel note record failed: {exc}")
                 continue
             await self._gateway.accept(message_id=row.id)
+
+    async def _is_still_pending(self, *, message: ChannelMessageDAO) -> bool:
+        """Return whether a row read at the start of this tick is still pending.
+
+        A display can outlast a whole run, during which the boundary may take
+        and accept the note; recording it again would put it in the context
+        twice.
+
+        Args:
+            message (ChannelMessageDAO): A row from this tick's pending read.
+
+        Returns:
+            bool: ``True`` while the row is neither accepted nor cancelled.
+        """
+        current: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=message.id)
+        return current is not None and current.accepted_at is None and current.cancelled_at is None
 
     def _session_idle(self) -> bool:
         """Return whether the session currently runs nothing this poller must not interleave.
@@ -483,29 +552,61 @@ class ChannelPoller:
         await self._display.show(message=message)
 
     async def _settle_finished_run(self) -> None:
-        """Finish one completed run: accept semantics, pause on abort, reply."""
-        run_task: asyncio.Task[TurnOutcomeDAO] | None = self._run_task
+        """Settle one finished run; its state is retained until settlement succeeds.
+
+        Settlement maps the finished task to its effects: a run that never
+        started cancels its row (``start_failed``); an aborted run pauses the
+        poller; every started run gets exactly one reply. When an effect
+        raises, the run task and row stay in place, so the next tick (or
+        ``stop``) retries the settlement from the same finished task without
+        rerunning the model. Each effect is idempotent (stable reply id,
+        guarded cancel, pause), so a retry never duplicates one.
+        """
+        run_task: Optional["asyncio.Task[TurnOutcomeDAO]"] = self._run_task
         row: Optional[ChannelMessageDAO] = self._running_row
         if run_task is None or row is None:
             self._run_task = None
             self._running_row = None
             return
-        try:
-            outcome: TurnOutcomeDAO = await run_task
-        except asyncio.CancelledError:
-            self._run_task = None
-            self._boundary_inbox.release(message_id=row.id)
+        outcome: Optional[TurnOutcomeDAO] = self._finished_run_outcome(run_task=run_task)
+        if outcome is None:
             self._paused_reason = "aborted"
-            return
+        elif outcome.status == "not_started":
+            await self._gateway.cancel(message_id=row.id, reason="start_failed")
+        else:
+            if outcome.status == "aborted":
+                self._paused_reason = "aborted"
+            await self._replies.write(request=row, outcome=outcome)
         self._run_task = None
         self._running_row = None
+        self._running_row_started = False
         self._boundary_inbox.release(message_id=row.id)
-        if outcome.status == "not_started":
-            await self._gateway.cancel(message_id=row.id, reason="start_failed")
-            return
-        if outcome.status == "aborted":
-            self._paused_reason = "aborted"
-        await self._replies.write(request=row, outcome=outcome)
+
+    def _finished_run_outcome(self, *, run_task: "asyncio.Task[TurnOutcomeDAO]") -> Optional[TurnOutcomeDAO]:
+        """Return how a finished run task ended, without re-awaiting it.
+
+        A cancelled run that never reached its first event leaves its row
+        pending (``None``: it runs again after ``/queue resume``); one that
+        had started is an aborted turn. A runner that raised is a failed turn
+        once started, otherwise a turn that never started.
+
+        Args:
+            run_task (asyncio.Task[TurnOutcomeDAO]): The finished run task.
+
+        Returns:
+            Optional[TurnOutcomeDAO]: The outcome to settle, or ``None`` for a
+                cancelled run that never started.
+        """
+        if run_task.cancelled():
+            return TurnOutcomeDAO(status="aborted") if self._running_row_started else None
+        error: Optional[BaseException] = run_task.exception()
+        if error is None:
+            return run_task.result()
+        log_error(msg=f"channel turn runner raised: {error!r}")
+        return TurnOutcomeDAO(
+            status="failed" if self._running_row_started else "not_started",
+            error=f"run failed: {error}",
+        )
 
     async def _start_next_pending_prompt(self) -> bool:
         """Start a run for the first pending prompt row (forced first, FIFO).
@@ -524,7 +625,10 @@ class ChannelPoller:
         self._boundary_inbox.reserve(message_id=row.id)
         self._running_row = row
 
+        self._running_row_started = False
+
         async def _accept() -> None:
+            self._running_row_started = True
             await self._gateway.accept(message_id=row.id)
 
         run_task: asyncio.Task[TurnOutcomeDAO] = asyncio.create_task(

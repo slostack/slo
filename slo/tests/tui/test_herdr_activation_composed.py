@@ -126,7 +126,7 @@ async def test_mount_inactive_has_zero_integration_io_and_faux_parity(
         async with app.run_test() as pilot:
             await pilot.pause()
             assert session._herdr_start_task is None
-            assert app._lease_store is not None and app._inbox_store is not None
+            assert app._lease_store is not None
             assert session.workflow_visualizer_destination == "platform"
             assert app._input is not None
             app._input.load_text("offline request")
@@ -200,7 +200,7 @@ async def test_mounted_activation_unmount_joins_repeated_cancel_without_late_cla
                 assert app._delivery_quiescing
                 assert not session._herdr_reporting_started
                 assert app._preparation_task is None
-                assert app._lease_timer is None and app._inbox_timer is None
+                assert app._lease_timer is None
                 assert session._herdr_start_task is not None and session._herdr_start_task.done()
                 assert not session._herdr_reporter.retains_external_resources
                 assert not any(row[1] == "report-agent" for row in commands(fake_herdr))

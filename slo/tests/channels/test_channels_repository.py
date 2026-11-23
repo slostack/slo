@@ -321,6 +321,116 @@ class TestForcePendingRow:
             await gateway.close()
 
 
+class TestForceIsAtomicAndPromptOnly:
+    """``force`` is one guarded write: pending prompts only, never a settled row (1082-R1)."""
+
+    async def test_force_racing_an_acceptance_on_another_connection_never_forces_the_accepted_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A second real connection accepts the row while ``force`` is in flight.
+
+        The other connection holds the write lock and has already accepted the
+        row (uncommitted) when ``force`` starts, so ``force`` reads the row as
+        pending; the acceptance commits while ``force`` waits for the lock. The
+        accepted row must stay unforced and ``force`` must report ``False``.
+        """
+        import asyncio
+        import sqlite3
+
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        other: sqlite3.Connection = sqlite3.connect(
+            database=str(tmp_path / "channels.db"), timeout=5.0, isolation_level=None
+        )
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            row: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="race", channel_id=channel.id
+                )
+            )
+            other.execute("BEGIN IMMEDIATE")
+            other.execute(
+                "UPDATE messages SET accepted_at = ? WHERE id = ?",
+                ("2026-11-22T00:00:00.000000+00:00", str(row.id)),
+            )
+            force_task: asyncio.Task[bool] = asyncio.create_task(
+                gateway.force(message_id=row.id, by=user.id)
+            )
+            await asyncio.sleep(0.4)
+            other.execute("COMMIT")
+            forced: bool = await force_task
+            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            assert forced is False
+            assert stored is not None and stored.accepted_at is not None
+            assert stored.forced_at is None
+        finally:
+            other.close()
+            await gateway.close()
+
+    async def test_force_refuses_notes_replies_and_notices(self, tmp_path: Path) -> None:
+        """Only a pending ``prompt`` is forceable (overview §3.2); other types stay unforced."""
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            other_agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo w")
+            note: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=other_agent.id, recipient_id=agent.id, message_contents="n", message_type="note"
+                )
+            )
+            notice: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=other_agent.id,
+                    recipient_id=agent.id,
+                    message_contents="status",
+                    message_type="notice",
+                )
+            )
+            reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="answer",
+                    message_type="reply",
+                    channel_id=channel.id,
+                )
+            )
+            for row, actor in ((note, agent.id), (notice, agent.id), (reply, user.id)):
+                assert await gateway.force(message_id=row.id, by=actor) is False
+                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+                assert stored is not None and stored.forced_at is None
+        finally:
+            await gateway.close()
+
+    async def test_forcing_an_already_forced_pending_prompt_keeps_its_first_stamp(
+        self, tmp_path: Path
+    ) -> None:
+        """Re-forcing is an idempotent success that never moves the original ``forced_at``."""
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            row: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="now",
+                    channel_id=channel.id,
+                    force=True,
+                )
+            )
+            assert await gateway.force(message_id=row.id, by=user.id) is True
+            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            assert stored is not None and stored.forced_at == row.forced_at
+        finally:
+            await gateway.close()
+
+
 class TestForcedFirstOrdering:
     async def test_pending_inbound_orders_forced_rows_first_then_fifo(self, tmp_path: Path) -> None:
         """``pending_inbound`` sorts forced rows ahead of normal rows, FIFO within each class.

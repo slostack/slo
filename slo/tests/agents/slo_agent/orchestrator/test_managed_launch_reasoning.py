@@ -401,7 +401,6 @@ async def run_recorded_child(
 async def test_managed_child_cli_completes_registered_lifecycle(managed_journey: ManagedJourney) -> None:
     """Captured high reaches real child lazy factory and registered terminal/inbox state."""
     from src.agents.slo_agent.preferences.service import UserPreferencesStore
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
     from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 
     journey = managed_journey
@@ -446,7 +445,6 @@ async def test_managed_phase_medium_is_independent_of_high_parent(
     # replaces its class without replacing the class already imported by the pool.
     from src.agents.slo_agent.orchestrator.pool import SubAgentProcess
     from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 
     journey = managed_journey
     phases: list[SubAgentResultDAO] = []

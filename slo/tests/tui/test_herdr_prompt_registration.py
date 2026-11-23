@@ -1,9 +1,6 @@
 """Mounted prompt-admission cutoff regressions with an offline real session."""
 
 import asyncio
-import ast
-import inspect
-import textwrap
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
@@ -15,27 +12,10 @@ from langchain_core.messages import AIMessage
 
 from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
 from src.tui.components.prompt_input.component import PromptInputComponent
-
-
-def test_prompt_registration_shutdown_atomic_commit() -> None:
-    """The final check has only create/assign and return, with no suspension/hook."""
-    module = ast.parse(textwrap.dedent(inspect.getsource(SloTUI._register_prompt_task)))
-    method = module.body[0]
-    assert isinstance(method, ast.FunctionDef)
-    _, guard, assignment, result = method.body
-    assert isinstance(guard, ast.If)
-    assert ast.unparse(guard.test) == "self._app_closing or self._session_transitioning"
-    assert ast.unparse(guard.body[0]) == "return False"
-    assert isinstance(assignment, ast.Assign)
-    assert ast.unparse(assignment.targets[0]) == "self._in_flight_task"
-    assert ast.unparse(assignment.value) == "asyncio.create_task(coro=self._run_prompt(text=text))"
-    assert ast.unparse(result) == "return True"
-    assert not any(isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)) for node in ast.walk(method))
 
 
 @pytest.fixture
@@ -90,37 +70,6 @@ async def test_ordinary_entry_closed(tmp_path: Path) -> None:
                 assert app._in_flight_task is None
                 echo.assert_not_called()
                 record.assert_not_called()
-
-
-@pytest.mark.parametrize("entry", ["inbox", "direct"])
-@pytest.mark.parametrize("closing", [False, True])
-async def test_prompt_registration_shutdown_entry_matrix(
-    mounted_app: SloTUI, entry: str, closing: bool
-) -> None:
-    """All registration callers share refusal without constructing a run coroutine."""
-    app = mounted_app
-    if closing:
-        await app.on_unmount()
-    with patch.object(app, "_run_prompt", wraps=app._run_prompt) as run:
-        async with app._prompt_submission_lock:
-            if entry == "direct":
-                assert app._register_prompt_task(text="selected") is (not closing)
-            else:
-                message = SessionInboxMessageDAO(
-                    session_id=app._session.session_id,
-                    schedule_id="schedule",
-                    run_id="run",
-                    kind="system_notice",
-                    delivery_mode="chat_turn",
-                    text="selected",
-                )
-                assert await app._start_inbox_chat_turn(message=message) is (not closing)
-            task = app._in_flight_task
-            assert run.call_count == int(not closing)
-        if task is not None:
-            await asyncio.wait_for(task, timeout=5)
-        assert app._input is not None
-        assert app._input._prompt_history._entries == []
 
 
 @pytest.mark.parametrize("entry", ["submitted_slash", "direct_slash"])

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from config.cfg import cfg
 
@@ -25,9 +27,22 @@ from src.channels.dao import (
     SentMessageRowDAO,
     utc_now,
 )
+from src.channels.errors import (
+    AmbiguousAgentError,
+    MessageCancelledError,
+    ReplyTimeoutError,
+    UnknownAgentError,
+    UnknownMessageError,
+)
 from src.channels.repository import ChannelRepository
 
 __all__ = ["ChannelGateway"]
+
+_AGENT_PREFIX_PATTERN: re.Pattern[str] = re.compile(r"^[0-9a-f-]{1,36}$")
+"""An agent id prefix: lowercase UUID text characters only (no SQL wildcards)."""
+
+_WAIT_POLL_SECONDS: float = 0.2
+"""How often ``wait_for_reply`` / ``wait_for_acceptance`` re-read the queue."""
 
 
 class ChannelGateway:
@@ -52,6 +67,19 @@ class ChannelGateway:
         return self._repository
 
     @classmethod
+    def default_channels_dir(cls) -> Path:
+        """Return ``$SLO_HOME/channels``, where the queue and adapter files live.
+
+        Adapter configuration (``telegram.json``) and attachment files sit next
+        to ``channels.db`` in this directory (108.5 §2).
+
+        Returns:
+            Path: The channels directory for this user; it may not exist yet.
+        """
+        slo_home: Path = Path(str(cfg(key="SLO_HOME") or Path.home() / ".slo"))
+        return slo_home / "channels"
+
+    @classmethod
     def at_default_path(cls) -> "ChannelGateway":
         """Build (without opening) the gateway on ``$SLO_HOME/channels/channels.db``.
 
@@ -62,8 +90,24 @@ class ChannelGateway:
         Returns:
             ChannelGateway: A gateway whose repository is not open yet.
         """
-        slo_home: Path = Path(str(cfg(key="SLO_HOME") or Path.home() / ".slo"))
-        return cls(repository=ChannelRepository(db_path=slo_home / "channels" / "channels.db"))
+        return cls(repository=ChannelRepository(db_path=cls.default_channels_dir() / "channels.db"))
+
+    @staticmethod
+    def stable_channel_id(*, kind: ChannelKind, name: str) -> UUID:
+        """Return the deterministic channel id for one adapter instance (108.5 §6).
+
+        An external adapter keeps the same ``channels`` row across restarts, so
+        its users and their pending outbound rows survive while it is offline.
+        Two adapters of the same kind with different names get different rows.
+
+        Args:
+            kind (ChannelKind): Platform type, e.g. ``telegram``.
+            name (str): Adapter instance name, e.g. ``telegram``.
+
+        Returns:
+            UUID: A ``uuid5`` derived from the kind and the name.
+        """
+        return uuid5(NAMESPACE_URL, f"slo-channel:{kind}:{name}")
 
     @classmethod
     async def default(cls) -> "ChannelGateway":
@@ -157,6 +201,47 @@ class ChannelGateway:
         )
         return await self._repository.upsert_participant(participant=participant)
 
+    async def register_system(self, *, channel_id: UUID, name: str, external_ref: str) -> ParticipantDAO:
+        """Register (idempotently) one system sender talking through one channel.
+
+        WHAT: The sender's identity is the channel's ``external_ref`` slot
+            (``UNIQUE(channel_id, external_ref)``), so every process registering
+            the same slot gets the same participant. Re-registration refreshes
+            the name and heartbeat and reopens it; a slot still held by a
+            ``user`` (a scheduler sender stored before system registration
+            existed) converts in place, keeping its id and its pending rows.
+        WHO: ``ScheduleChannelSender`` for every schedule fire and for every
+            legacy scheduler item the ``InboxImporter`` re-sends.
+        WHEN: Before each send; the upsert is a single atomic statement.
+
+        A system sender is not an operator: a closed interactive session keeps
+        its rows in the durable inbox (108.3 §6), and poller recovery never
+        pauses on them (108.1 §6).
+
+        Args:
+            channel_id (UUID): Registered channel the sender talks through,
+                e.g. the shared ``scheduler`` channel.
+            name (str): Display name, e.g. ``scheduler Nightly``.
+            external_ref (str): Stable sender identity within the channel,
+                e.g. the schedule id.
+
+        Returns:
+            ParticipantDAO: The stored system participant.
+        """
+        now = utc_now()
+        return await self._repository.claim_system_slot(
+            participant=ParticipantDAO(
+                id=uuid4(),
+                kind="system",
+                name=name,
+                channel_id=channel_id,
+                external_ref=external_ref,
+                status="open",
+                last_seen_at=now,
+                created_at=now,
+            )
+        )
+
     async def register_agent(
         self, *, session_id: UUID, name: str, durable_inbox: bool = False
     ) -> ParticipantDAO:
@@ -212,6 +297,208 @@ class ChannelGateway:
             int: Number of participant rows.
         """
         return await self._repository.count_participants()
+
+    async def list_agents(self, *, open_only: bool = True) -> list[ParticipantDAO]:
+        """Return agent participants, most recently seen first (108.5 ``slo channel agents``).
+
+        Args:
+            open_only (bool): ``True`` (default) lists only open agents.
+
+        Returns:
+            list[ParticipantDAO]: Agent participants, newest heartbeat first.
+        """
+        return await self._repository.list_agents(open_only=open_only)
+
+    async def resolve_agent(self, *, prefix: str) -> ParticipantDAO:
+        """Resolve an agent id prefix such as ``9b1e`` to one agent participant.
+
+        WHAT: Matches the prefix (trimmed, case-insensitive) against agent ids.
+        One open match wins even when closed agents share the prefix, so a
+        stale closed session never shadows a live one. With no open match a
+        single closed match is returned so callers can report "closed" rather
+        than "unknown".
+        WHO: ``slo channel send/follow --to`` and the adapter host's
+        ``/attach <prefix>``.
+
+        Args:
+            prefix (str): Id prefix as typed by the user.
+
+        Returns:
+            ParticipantDAO: The resolved agent (``status`` may be ``closed``).
+
+        Raises:
+            UnknownAgentError: The prefix is empty, is not UUID text, or
+                matches no agent.
+            AmbiguousAgentError: Several open agents (or, with no open
+                match, several closed agents) match.
+        """
+        normalized: str = prefix.strip().lower()
+        if not _AGENT_PREFIX_PATTERN.fullmatch(normalized):
+            raise UnknownAgentError(prefix=prefix)
+        matches: list[ParticipantDAO] = await self._repository.agents_with_id_prefix(prefix=normalized)
+        open_matches: list[ParticipantDAO] = [agent for agent in matches if agent.status == "open"]
+        candidates: list[ParticipantDAO] = open_matches or matches
+        if not candidates:
+            raise UnknownAgentError(prefix=prefix)
+        if len(candidates) > 1:
+            raise AmbiguousAgentError(prefix=prefix, match_count=len(candidates))
+        return candidates[0]
+
+    async def wait_for_reply(self, *, message_id: UUID, timeout: float) -> ChannelMessageDAO:
+        """Wait until a ``reply`` row answers one message, and return it.
+
+        WHAT: Re-reads the queue every 200 ms (the reply is usually written by
+        another process). The reply is returned still pending: the caller
+        delivers it to its user and then accepts it.
+        WHO: ``slo channel send --wait``.
+
+        Args:
+            message_id (UUID): The request whose reply to wait for.
+            timeout (float): Seconds to wait before giving up.
+
+        Returns:
+            ChannelMessageDAO: The first reply row answering the request.
+
+        Raises:
+            UnknownMessageError: The request is not in the queue.
+            MessageCancelledError: The request was cancelled before a reply
+                arrived (for example the agent closed: ``recipient_closed``).
+            ReplyTimeoutError: No reply arrived within ``timeout``.
+        """
+
+        async def _reply_or_none() -> Optional[ChannelMessageDAO]:
+            reply: Optional[ChannelMessageDAO] = await self._repository.reply_for(message_id=message_id)
+            if reply is not None:
+                return reply
+            await self._ensure_awaited_message_live(message_id=message_id, accepted_is_final=False)
+            return None
+
+        return await self._poll_until(probe=_reply_or_none, message_id=message_id, timeout=timeout)
+
+    async def wait_for_acceptance(self, *, message_id: UUID, timeout: float) -> ChannelMessageDAO:
+        """Wait until one message is accepted, and return the accepted row.
+
+        A forced message gets no reply row; its acknowledgement is
+        ``accepted_at`` (108.3 §2), so ``slo channel send --force --wait``
+        waits for this instead of a reply.
+
+        Args:
+            message_id (UUID): The message to watch.
+            timeout (float): Seconds to wait before giving up.
+
+        Returns:
+            ChannelMessageDAO: The row with ``accepted_at`` set.
+
+        Raises:
+            UnknownMessageError: The message is not in the queue.
+            MessageCancelledError: The message was cancelled first.
+            ReplyTimeoutError: It was not accepted within ``timeout``.
+        """
+
+        async def _accepted_or_none() -> Optional[ChannelMessageDAO]:
+            return await self._ensure_awaited_message_live(message_id=message_id, accepted_is_final=True)
+
+        return await self._poll_until(probe=_accepted_or_none, message_id=message_id, timeout=timeout)
+
+    async def channel_users(self, *, channel_id: UUID) -> list[ParticipantDAO]:
+        """Return the users who talk through one channel (adapter host outbound loop).
+
+        Args:
+            channel_id (UUID): The adapter's channel.
+
+        Returns:
+            list[ParticipantDAO]: User participants of that channel.
+        """
+        return await self._repository.channel_users(channel_id=channel_id)
+
+    async def get_channel(self, *, channel_id: UUID) -> Optional[ChannelDAO]:
+        """Return one stored channel.
+
+        Args:
+            channel_id (UUID): Channel to look up.
+
+        Returns:
+            Optional[ChannelDAO]: The stored channel, or ``None``.
+        """
+        return await self._repository.get_channel(channel_id=channel_id)
+
+    async def last_message_index(self, *, agent_session_id: UUID) -> int:
+        """Return the newest ``message_index`` of one conversation (``slo channel follow``).
+
+        Args:
+            agent_session_id (UUID): Conversation to inspect.
+
+        Returns:
+            int: The newest index, or 0 when the conversation is empty.
+        """
+        return await self._repository.last_message_index(agent_session_id=agent_session_id)
+
+    async def heartbeat_channel(self, *, channel_id: UUID) -> None:
+        """Refresh one channel's ``last_seen_at`` (the adapter host's heartbeat).
+
+        Args:
+            channel_id (UUID): Channel to stamp.
+        """
+        await self._repository.heartbeat_channel(channel_id=channel_id)
+
+    async def _ensure_awaited_message_live(
+        self, *, message_id: UUID, accepted_is_final: bool
+    ) -> Optional[ChannelMessageDAO]:
+        """Reject an awaited message that is missing or cancelled.
+
+        Args:
+            message_id (UUID): The awaited message.
+            accepted_is_final (bool): ``True`` returns the row once accepted
+                (acceptance waits); ``False`` never returns it (reply waits).
+
+        Returns:
+            Optional[ChannelMessageDAO]: The accepted row when
+                ``accepted_is_final`` and it is accepted; otherwise ``None``.
+
+        Raises:
+            UnknownMessageError: The message is not in the queue.
+            MessageCancelledError: The message was cancelled.
+        """
+        stored: Optional[ChannelMessageDAO] = await self._repository.get(message_id=message_id)
+        if stored is None:
+            raise UnknownMessageError(message_id=message_id)
+        if stored.cancelled_at is not None:
+            raise MessageCancelledError(message_id=message_id, reason=stored.cancel_reason or "cancelled")
+        if accepted_is_final and stored.accepted_at is not None:
+            return stored
+        return None
+
+    async def _poll_until(
+        self,
+        *,
+        probe: Callable[[], Awaitable[Optional[ChannelMessageDAO]]],
+        message_id: UUID,
+        timeout: float,
+    ) -> ChannelMessageDAO:
+        """Run ``probe`` every 200 ms until it returns a row or ``timeout`` elapses.
+
+        Args:
+            probe (Callable[[], Awaitable[Optional[ChannelMessageDAO]]]): Reads
+                the queue once; returns the awaited row or ``None``, or raises.
+            message_id (UUID): The awaited message (for the timeout error).
+            timeout (float): Seconds before giving up.
+
+        Returns:
+            ChannelMessageDAO: The row ``probe`` returned.
+
+        Raises:
+            ReplyTimeoutError: ``probe`` returned ``None`` until the deadline.
+        """
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        deadline: float = loop.time() + timeout
+        while True:
+            found: Optional[ChannelMessageDAO] = await probe()
+            if found is not None:
+                return found
+            remaining: float = deadline - loop.time()
+            if remaining <= 0:
+                raise ReplyTimeoutError(message_id=message_id, timeout=timeout)
+            await asyncio.sleep(min(_WAIT_POLL_SECONDS, remaining))
 
     async def recent_sent_messages(
         self,

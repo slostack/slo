@@ -62,6 +62,7 @@ class TuiTurnRunner:
         transcript = app._chat_transcript
         if transcript is None:
             return TurnOutcomeDAO(status="not_started", error="transcript unavailable")
+        await app._advance_workflow_lifecycle(message=message)
         await transcript.handle(command=BeginTranscriptRunDAO())
         await transcript.handle(command=EchoUserDAO(text=message.message_contents))
         app._reset_escape_sequence()

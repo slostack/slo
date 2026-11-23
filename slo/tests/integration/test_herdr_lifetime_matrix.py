@@ -21,9 +21,7 @@ import pytest
 from src.agents.slo_agent.herdr.dao import HerdrCliCommandDAO, HerdrCommandResultDAO
 from src.agents.slo_agent.herdr.reporter import HerdrReporter
 from src.agents.slo_agent.herdr.dao import HerdrLifecycleAcknowledgementDAO, HerdrSavedRestoreDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from tests.tui.test_herdr_inbox_disposition import inbox_file
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
 from src.agents.slo_agent.herdr.restore import HerdrRestoreStore
 from src.agents.slo_agent.herdr.dao import HerdrRestoreConfigDAO, HerdrRestoreReferenceDAO
 from src.agents.slo_agent.herdr.sequence_store import HerdrSequenceUnavailableError
@@ -42,46 +40,25 @@ class MatrixOwnershipFacts:
     session: SloAgentSession
     lease_store: SessionOwnershipLeaseStore
     owner_id: str
-    timers: tuple[Timer, Timer]
+    timers: tuple[Timer]
     preparation: asyncio.Task[None] | None
-    claimed_path: Path
-    claimed_bytes: bytes
 
     @classmethod
     async def capture(cls, *, app: SloTUI) -> "MatrixOwnershipFacts":
         """Require real delivery owners before the phase acquires its barrier."""
-        assert app._lease_store is not None and app._inbox_store is not None
-        assert app._lease_timer is not None and app._inbox_timer is not None
+        assert app._lease_store is not None
+        assert app._lease_timer is not None
         assert app._retired_herdr_session is None
         lease = await app._lease_store.read(session_id=app._session.session_id)
         assert lease is not None and lease.owner_id == app._session_owner_id
         assert app._render_event in app._session._subscribers
         assert app._in_flight_task is None
-        # A previously retained claim is not pending work. Normal polls, including
-        # an open integration-only stop, must never acknowledge or replay it.
-        async with app._prompt_submission_lock:
-            message = SessionInboxMessageDAO(
-                session_id=app._session.session_id,
-                schedule_id="matrix-retained",
-                run_id="matrix",
-                kind="scheduled_prompt",
-                delivery_mode="chat_turn",
-                text="must remain claimed",
-            )
-            await app._inbox_store.enqueue(message=message)
-            assert await app._inbox_store.claim_next(session_id=message.session_id) == message
-        root = app._session.history_root
-        assert root is not None
-        claimed_path = inbox_file(root=root, message=message)
-        assert claimed_path.parent.name == "claimed"
         return cls(
             session=app._session,
             lease_store=app._lease_store,
             owner_id=app._session_owner_id,
-            timers=(app._lease_timer, app._inbox_timer),
+            timers=(app._lease_timer,),
             preparation=app._preparation_task,
-            claimed_path=claimed_path,
-            claimed_bytes=claimed_path.read_bytes(),
         )
 
     async def assert_settled(self, *, app: SloTUI, trigger: str) -> None:
@@ -102,22 +79,16 @@ class MatrixOwnershipFacts:
             assert app._session is self.session
             assert lease is not None and lease.owner_id == self.owner_id
             assert app._render_event in self.session._subscribers
-            assert app._lease_timer is self.timers[0] and app._inbox_timer is self.timers[1]
+            assert app._lease_timer is self.timers[0]
             assert all(timer._task is not None for timer in self.timers)
         await self._assert_selected_delivery(app=app, trigger=trigger)
 
     async def _assert_selected_delivery(self, *, app: SloTUI, trigger: str) -> None:
         """Distinguish a closed app from an open integration-only stop or successor."""
-        assert app._inbox_store is not None
-        await app._poll_session_inbox()
-        assert self.claimed_path.read_bytes() == self.claimed_bytes
-        assert self.claimed_path.parent.name == "claimed"
         assert app._in_flight_task is None
-        assert await app._inbox_store.list_done(session_id=self.session.session_id) == []
-        assert await app._inbox_store.list_pending(session_id=self.session.session_id) == []
         if trigger == "unmount":
             assert app._app_closing and app._delivery_quiescing
-            assert app._lease_timer is None and app._inbox_timer is None
+            assert app._lease_timer is None
             assert app._app_shutdown_task is not None and app._app_shutdown_task.done()
             assert app._selected_herdr_drain_task is not None and app._selected_herdr_drain_task.done()
             return
@@ -127,7 +98,7 @@ class MatrixOwnershipFacts:
         assert lease is not None and lease.owner_id == self.owner_id
         if trigger == "new":
             assert app._session is not self.session
-            assert app._lease_timer is not self.timers[0] and app._inbox_timer is not self.timers[1]
+            assert app._lease_timer is not self.timers[0]
 
 
 @dataclass(frozen=True)
@@ -214,7 +185,7 @@ async def test_lifetime_cutoff_matrix(
         await eventually(predicate=lambda: reporter._display_ack_revision == reporter._revision)
         assert session._herdr_visualizer is not None
         assert session._herdr_visualizer._transport is reporter._transport
-        assert app._inbox_store is not None and app._lease_store is not None
+        assert app._lease_store is not None
         owners = await MatrixOwnershipFacts.capture(app=app)
         transport = reporter._transport
         admitted = phase.startswith("admitted_")

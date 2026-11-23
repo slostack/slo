@@ -4,8 +4,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
-from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseDAO, SessionOwnershipLeaseStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
@@ -51,7 +50,7 @@ async def test_mount_initialization_is_joined_before_shutdown(tmp_path: Path) ->
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await observer
-                assert app._lease_timer is None and app._inbox_timer is None
+                assert app._lease_timer is None
                 assert app._delivery_quiescing
                 assert app._lease_store is not None
                 assert await app._lease_store.read(session_id=session.session_id) is None

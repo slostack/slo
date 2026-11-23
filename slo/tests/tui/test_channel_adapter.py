@@ -27,8 +27,6 @@ from pydantic import Field, PrivateAttr
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.channels.dao import ChannelMessageDAO, NewMessageDAO, ParticipantDAO
 from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
@@ -58,6 +56,10 @@ class GatedFauxChatModel(FauxChatModel):
     first_call_release: asyncio.Event = Field(
         description="Event the test sets to release the held first model call.",
     )
+    provider_calls: list[list[str]] = Field(
+        default_factory=list,
+        description="Text of every message sent on each provider call, shared by tool-bound clones.",
+    )
     _first_call_gate_consumed: bool = PrivateAttr(default=False)
 
     def __init__(
@@ -65,6 +67,7 @@ class GatedFauxChatModel(FauxChatModel):
         *,
         responses: Sequence[AIMessage],
         first_call_release: asyncio.Event,
+        provider_calls: Optional[list[list[str]]] = None,
     ) -> None:
         """Store the scripted responses and the event releasing the first call.
 
@@ -72,8 +75,14 @@ class GatedFauxChatModel(FauxChatModel):
             responses (Sequence[AIMessage]): Scripted responses consumed in order.
             first_call_release (asyncio.Event): Released by the test to let the
                 first held model call proceed.
+            provider_calls (Optional[list[list[str]]]): Shared call log; a fresh
+                list when omitted.
         """
-        super().__init__(responses=responses, first_call_release=first_call_release)
+        super().__init__(
+            responses=responses,
+            first_call_release=first_call_release,
+            provider_calls=provider_calls if provider_calls is not None else [],
+        )
 
     def bind_tools(
         self,
@@ -95,6 +104,7 @@ class GatedFauxChatModel(FauxChatModel):
         clone: GatedFauxChatModel = GatedFauxChatModel(
             responses=list(self.queue),
             first_call_release=self.first_call_release,
+            provider_calls=self.provider_calls,
         )
         clone.bound_tools = list(tools)
         clone._first_call_gate_consumed = self._first_call_gate_consumed
@@ -118,6 +128,7 @@ class GatedFauxChatModel(FauxChatModel):
         Yields:
             ChatGenerationChunk: The scripted chunk sequence for one response.
         """
+        self.provider_calls.append([str(message.content) for message in messages])
         if not self._first_call_gate_consumed:
             self._first_call_gate_consumed = True
             await self.first_call_release.wait()
@@ -426,101 +437,6 @@ class TestThreePromptsRunInOrder:
                 assert echo_answer_order == sorted(echo_answer_order)
                 assert len(set(echo_answer_order)) == 6
                 assert _user_echo_texts(app=app) == ["first", "second", "third"]
-        finally:
-            await gateway.close()
-
-
-class TestChannelRowWaitsForTheInboxRun:
-    async def test_channel_row_queued_during_an_inbox_run_is_not_cancelled(self, tmp_path: Path) -> None:
-        """EB1: an operator prompt sent during an inbox-owned run stays pending, then runs.
-
-        The inbox ``chat_turn`` run is app-owned. While it is in flight the
-        poller must not start a second run: the row must never be cancelled as
-        ``start_failed`` and must run after the inbox run ends.
-        """
-        release_inbox_run: asyncio.Event = asyncio.Event()
-        model: GatedFauxChatModel = GatedFauxChatModel(
-            responses=[AIMessage(content="inbox answer"), AIMessage(content="operator answer")],
-            first_call_release=release_inbox_run,
-        )
-        session: SloAgentSession = _build_session(tmp_path=tmp_path, responses=[], model=model)
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=tmp_path / "inbox")
-        inbox_message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="inbox-1",
-            session_id=session.session_id,
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="Morning research",
-            text="inbox turn text",
-        )
-        await inbox_store.enqueue(message=inbox_message)
-        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
-        app: SloTUI = SloTUI(session=session, channel_gateway=gateway, inbox_store=inbox_store)
-        try:
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                poller = session.channel_poller
-                assert poller is not None
-                agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
-
-                # The inbox chat turn starts an app-owned run held by the provider gate.
-                await app._poll_session_inbox()
-                await pump_until(pilot=pilot, predicate=lambda: session.is_running)
-                assert app._in_flight_task is not None
-                assert poller.busy is False  # the poller owns nothing here
-
-                # The operator sends a prompt while the inbox run is in flight.
-                prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
-                prompt_input.text = "operator prompt"
-                await pilot.press("enter")
-
-                async def _operator_row_stored() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
-                    )
-                    return any(row.message_contents == "operator prompt" for row in conversation)
-
-                await _wait_until_db(predicate=_operator_row_stored)
-
-                async def _row_still_pending_and_unechoed() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
-                    )
-                    row = next(
-                        (r for r in conversation if r.message_contents == "operator prompt"),
-                        None,
-                    )
-                    return (
-                        row is not None
-                        and row.accepted_at is None
-                        and row.cancelled_at is None
-                        and "operator prompt" not in _user_echo_texts(app=app)
-                    )
-
-                await _wait_until_db(predicate=_row_still_pending_and_unechoed)
-
-                release_inbox_run.set()
-
-                async def _operator_reply_arrived() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
-                    )
-                    row = next(
-                        (r for r in conversation if r.message_contents == "operator prompt"),
-                        None,
-                    )
-                    if row is None or row.accepted_at is None or row.cancelled_at is not None:
-                        return False
-                    replies = [r for r in conversation if r.in_reply_to_id == row.id]
-                    return len(replies) == 1 and replies[0].message_contents == "operator answer"
-
-                await _wait_until_db(predicate=_operator_reply_arrived, timeout_seconds=30.0)
-
-                # Forbidden effect: no queued row was cancelled as start_failed.
-                conversation = await gateway.repository.conversation(agent_session_id=agent_id)
-                assert all(row.cancel_reason != "start_failed" for row in conversation)
         finally:
             await gateway.close()
 
@@ -901,7 +817,14 @@ class TestQueueForceSlashCommandJourney:
     """F7: ``/queue force <n>`` forces a pending row; it applies at the next boundary."""
 
     async def test_queue_force_n_applies_the_row_at_the_next_boundary(self, tmp_path: Path) -> None:
-        """Two queued rows mid-run; ``/queue force 2`` makes row 2 join the current run."""
+        """F7: with rows 2 and 3 queued mid-run, ``/queue force 2`` joins row 3 into the current run.
+
+        The running row is accepted before ``/queue`` positions are read, so
+        position 2 deterministically names the second pending row. The forced
+        row reaches the very next provider call exactly once, is accepted and
+        recorded as steering (never a standalone turn or reply), and the other
+        queued row still runs afterwards in FIFO order.
+        """
         release_first_run: asyncio.Event = asyncio.Event()
         model: GatedFauxChatModel = GatedFauxChatModel(
             responses=[
@@ -916,56 +839,96 @@ class TestQueueForceSlashCommandJourney:
         app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
         try:
             async with app.run_test() as pilot:
-                await pilot.pause()
-                prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
-                poller = session.channel_poller
-                assert poller is not None
-                agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
+                try:
+                    await pilot.pause()
+                    prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
+                    poller = session.channel_poller
+                    assert poller is not None
+                    agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
 
-                async def _conversation_prompts() -> list[ChannelMessageDAO]:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    async def _conversation_prompts() -> list[ChannelMessageDAO]:
+                        conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
+                            agent_session_id=agent_id
+                        )
+                        return [row for row in conversation if row.message_type == "prompt"]
+
+                    prompt_input.text = "one"
+                    await pilot.press("enter")
+                    await pump_until(
+                        pilot=pilot,
+                        predicate=lambda: poller.busy and _user_echo_texts(app=app) == ["one"],
                     )
-                    return [row for row in conversation if row.message_type == "prompt"]
+                    # The running row is held inside its first provider call, so it
+                    # is not accepted yet; it is running, never a numbered queue row.
+                    assert [row.message_contents for row in await poller.pending_prompts()] == []
 
-                prompt_input.text = "one"
-                await pilot.press("enter")
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: poller.busy and _user_echo_texts(app=app) == ["one"],
-                )
+                    for text in ("two", "three"):
+                        prompt_input.text = text
+                        await pilot.press("enter")
 
-                prompt_input.text = "two"
-                await pilot.press("enter")
+                    async def _two_rows_pending() -> bool:
+                        return [row.message_contents for row in await poller.pending_prompts()] == ["two", "three"]
 
-                async def _two_rows_queued() -> bool:
-                    return len(await _conversation_prompts()) == 2
+                    await _wait_until_db(predicate=_two_rows_pending)
 
-                await _wait_until_db(predicate=_two_rows_queued)
-
-                prompt_input.text = "/queue force 2"
-                await pilot.press("enter")
-                await pilot.pause()
-                assert any("row 2 forced" in content for content, _ in _transcript_lines(app=app))
-
-                # The row was refused-not: forced_at is stamped while held.
-                async def _second_row_is_forced() -> bool:
+                    prompt_input.text = "/queue force 2"
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    assert any("row 2 forced" in content for content, _ in _transcript_lines(app=app))
                     prompts: list[ChannelMessageDAO] = await _conversation_prompts()
-                    return prompts[1].forced_at is not None
+                    assert [(row.message_contents, row.forced_at is not None) for row in prompts] == [
+                        ("one", False),
+                        ("two", False),
+                        ("three", True),
+                    ]
 
-                await _wait_until_db(predicate=_second_row_is_forced)
-                # Release the held run: the boundary revives for the forced row
-                # and the run's final answer becomes the steered one.
-                release_first_run.set()
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: len(_user_echo_texts(app=app)) == 2 and poller.busy is False,
-                )
-                forced_applied_echo: str = _user_echo_texts(app=app)[1]
-                assert forced_applied_echo == "two"
+                    # Release the held run: the boundary revives for the forced row,
+                    # then the remaining normal row runs as its own turn.
+                    release_first_run.set()
+
+                    async def _all_settled() -> bool:
+                        rows: list[ChannelMessageDAO] = await _conversation_prompts()
+                        return all(row.accepted_at is not None for row in rows) and all(
+                            [await gateway.reply_for(message_id=row.id) for row in (rows[0], rows[1])]
+                        )
+
+                    await _wait_until_db(predicate=_all_settled)
+                    await pump_until(pilot=pilot, predicate=lambda: poller.busy is False)
+                    echoes: list[str] = _user_echo_texts(app=app)
+                    replies: list[Optional[ChannelMessageDAO]] = [
+                        await gateway.reply_for(message_id=row.id) for row in await _conversation_prompts()
+                    ]
+                finally:
+                    # Never unmount with the provider still held (unmount joins the run).
+                    release_first_run.set()
         finally:
+            release_first_run.set()
             await session.stop_channel_delivery(reason="test_done")
             await gateway.close()
+
+        one, two, three = prompts
+        assert echoes == ["one", "three", "two"]
+        assert len(model.provider_calls) == 3
+        assert all("three" not in call for call in model.provider_calls[:1])
+        assert model.provider_calls[1].count("three") == 1
+        assert "two" not in model.provider_calls[1]
+        assert model.provider_calls[2].count("three") == 1 and "two" in model.provider_calls[2]
+        assert [(reply.in_reply_to_id, reply.message_contents) if reply else None for reply in replies] == [
+            (one.id, "steered answer"),
+            (two.id, "answer two"),
+            None,
+        ]
+        assert session.history_store is not None
+        events = await session.history_store.load_events(session_id=session.session_id)
+        user_turns: list[str] = [event.payload.content for event in events if event.kind == "user_message"]
+        steering = [
+            event
+            for event in events
+            if event.kind == "steering_message"
+            and event.payload.metadata.get("channel_message_id") == str(three.id)
+        ]
+        assert user_turns == ["one", "two"]
+        assert len(steering) == 1
 
 
 class SequencedGateFauxChatModel(FauxChatModel):
@@ -1275,5 +1238,107 @@ class TestOutboundRepliesFromOtherAgents:
                     )
 
                 await _wait_until_db(predicate=_both_accepted)
+        finally:
+            await gateway.close()
+
+
+class _FailsOnceAfterDisplayObserver:
+    """Row-observer seam (injected): the first observation of each row fails, later ones succeed."""
+
+    def __init__(self) -> None:
+        """Record no observations yet."""
+        self.calls: list[UUID] = []
+        self.observed: list[UUID] = []
+
+    async def __call__(self, *, message: ChannelMessageDAO) -> None:
+        """Fail the first observation of a row; record every later one as observed.
+
+        Args:
+            message (ChannelMessageDAO): The row the sink displayed.
+
+        Raises:
+            RuntimeError: On the first observation of ``message``.
+        """
+        first_call: bool = message.id not in self.calls
+        self.calls.append(message.id)
+        if first_call:
+            raise RuntimeError("workflow reconcile unavailable")
+        self.observed.append(message.id)
+
+
+class _NeverRunsTurnRunner:
+    """Turn-runner seam: ``auto_run=False`` never starts a poller-owned run."""
+
+    async def run(self, *, message: ChannelMessageDAO, on_started: object) -> object:
+        """Fail loudly if the poller ever starts a run."""
+        raise AssertionError("auto_run=False never starts runs")
+
+
+class TestObserverFailureNeverRepeatsADisplayedRow:
+    """A row's ``⊛`` line is written once even when its observer fails after the display (108.3 §2)."""
+
+    async def test_note_and_notice_display_once_and_their_observation_is_retried_until_it_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        from src.tui.channel.adapter import TuiDisplaySink
+
+        session: SloAgentSession = _build_session(tmp_path=tmp_path, responses=[AIMessage(content="answer")])
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
+        observer: _FailsOnceAfterDisplayObserver = _FailsOnceAfterDisplayObserver()
+        delivered: SloAgentSession = _build_session(
+            tmp_path=tmp_path, responses=[AIMessage(content="unused")]
+        )
+        try:
+            orchestrator: ParticipantDAO = await gateway.register_agent(
+                session_id=uuid4(), name="orchestrator wf-r2"
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                poller = await delivered.start_channel_delivery(
+                    gateway=gateway,
+                    runner=_NeverRunsTurnRunner(),  # type: ignore[arg-type]
+                    interval=0.02,
+                    display=TuiDisplaySink(
+                        transcript=app.query_one(ChatTranscriptComponent), observer=observer
+                    ),
+                    auto_run=False,
+                )
+                try:
+                    note: ChannelMessageDAO = await gateway.send(
+                        new=NewMessageDAO(
+                            sender_id=orchestrator.id,
+                            recipient_id=poller.participant_id,
+                            message_contents="[workflow wf-r2] phase done",
+                            message_type="note",
+                        )
+                    )
+                    notice: ChannelMessageDAO = await gateway.send(
+                        new=NewMessageDAO(
+                            sender_id=orchestrator.id,
+                            recipient_id=poller.participant_id,
+                            message_contents="fleet: 1 live",
+                            message_type="notice",
+                        )
+                    )
+                    await pump_until(
+                        pilot=pilot,
+                        predicate=lambda: sorted(observer.observed) == sorted([note.id, notice.id]),
+                    )
+
+                    async def _notice_accepted() -> bool:
+                        stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=notice.id)
+                        return stored is not None and stored.accepted_at is not None
+
+                    await _wait_until_db(predicate=_notice_accepted)
+                    # Further ticks neither repeat a line nor re-observe a settled row.
+                    for _ in range(10):
+                        await pilot.pause(0.02)
+                    lines: list[str] = [content for content, _classes in _transcript_lines(app=app)]
+                    assert lines.count("⊛ orchestrator wf-r2: [workflow wf-r2] phase done") == 1
+                    assert lines.count("⊛ orchestrator wf-r2: fleet: 1 live") == 1
+                    assert sorted(observer.calls) == sorted([note.id, note.id, notice.id, notice.id])
+                finally:
+                    await delivered.stop_channel_delivery(reason="test_done")
         finally:
             await gateway.close()

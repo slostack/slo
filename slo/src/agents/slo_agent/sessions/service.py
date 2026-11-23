@@ -1784,6 +1784,7 @@ class SloAgentSession:
             RuntimeError: Channel delivery is already running.
         """
         from src.agents.slo_agent.channel_delivery.boundary_inbox import ChannelBoundaryInbox
+        from src.agents.slo_agent.channel_delivery.note_display import ChannelNoteDisplay
         from src.agents.slo_agent.channel_delivery.poller import ChannelPoller
         from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
         from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
@@ -1791,10 +1792,14 @@ class SloAgentSession:
         if self._channel_poller is not None:
             raise RuntimeError("Channel delivery already started for this session.")
         participant_id: UUID = channel_participant_id_for_session(session_id=self._session_id)
+        # One display-once owner for both readers of the queue: a note is shown
+        # once whether a poller tick or the agent's boundary meets it first.
+        note_display: ChannelNoteDisplay = ChannelNoteDisplay(sink=display)
         boundary_inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(
             gateway=gateway,
             agent_id=participant_id,
             operator_participant_id=operator_participant_id,
+            note_display=note_display,
         )
         poller: ChannelPoller = ChannelPoller(
             gateway=gateway,
@@ -1807,6 +1812,7 @@ class SloAgentSession:
             auto_run=auto_run,
             durable_inbox=durable_inbox,
             participant_name=participant_name,
+            note_display=note_display,
         )
         await poller.start()
         self._set_boundary_inbox(boundary_inbox)

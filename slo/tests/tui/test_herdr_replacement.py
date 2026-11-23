@@ -142,6 +142,9 @@ async def test_new_failed_release_disables_successor_delivery(tmp_path: Path, fa
         if failure == "absent":
             await store.release(session_id=old.session_id)
         if failure == "mismatch":
+            # A live lease is exclusive (1081-R01): another owner takes over
+            # only after the captured lease is gone, as after its expiry.
+            await store.release(session_id=old.session_id)
             await store.acquire(session_id=old.session_id, owner_id="other", ttl_seconds=60)
         original_release = store.release
 
@@ -155,7 +158,6 @@ async def test_new_failed_release_disables_successor_delivery(tmp_path: Path, fa
             await app._start_new_session(requested_name=None)
         assert not app._replacement_delivery_safe and app._delivery_quiescing
         await app._renew_session_lease()
-        await app._poll_session_inbox()
         assert await store.read(session_id=app._session.session_id) is None
         await app._start_new_session(requested_name=None)
         assert await store.read(session_id=app._session.session_id) is None
@@ -255,6 +257,6 @@ async def test_new_candidate_lease_rollback_failure_keeps_ui_progress(tmp_path: 
         ):
             await app._start_new_session(requested_name=None)
         assert app._session is not old
-        assert app._lease_timer is None and app._inbox_timer is None
+        assert app._lease_timer is None
         assert app._workflow_app_service is None and app._workflow_renderer is None
         assert not app._replacement_delivery_safe and app._delivery_quiescing

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
-
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
+from src.channels.gateway import ChannelGateway
 from src.scheduling.dao import DeliveryPath, DeliveryState, LoadedScheduleDAO, ScheduleDefinitionDAO
+from src.scheduling.runtime.channel_sender import ScheduleChannelSender, ScheduledChannelDeliveryDAO
 from src.scheduling.runtime.dao import (
     ResolvedSessionTargetDAO,
     ScheduleExecutionOutcomeDAO,
@@ -35,7 +33,7 @@ class ScheduleExecutor:
         subprocess_runner: ScheduleSubprocessRunner | None = None,
         report_writer: ScheduleReportWriter | None = None,
         session_lease_store: SessionOwnershipLeaseStore | None = None,
-        session_inbox_store: SessionInboxStore | None = None,
+        channel_gateway: ChannelGateway | None = None,
     ) -> None:
         """Bind the executor to its collaborators.
 
@@ -46,7 +44,9 @@ class ScheduleExecutor:
             subprocess_runner (ScheduleSubprocessRunner | None): Optional injected subprocess runner.
             report_writer (ScheduleReportWriter | None): Optional injected report writer.
             session_lease_store (SessionOwnershipLeaseStore | None): Optional injected lease store.
-            session_inbox_store (SessionInboxStore | None): Optional injected inbox store.
+            channel_gateway (ChannelGateway | None): Channel queue used to reach a
+                session with an active TUI lease (108.6). The caller owns its
+                lifetime; the executor only opens it (idempotently) on that path.
         """
         self._store: type[ScheduleStore] = store
         self._locks: ScheduleFireLockFactory = fire_lock_factory or ScheduleFireLockFactory()
@@ -54,7 +54,7 @@ class ScheduleExecutor:
         self._runner: ScheduleSubprocessRunner = subprocess_runner or ScheduleSubprocessRunner()
         self._reports: ScheduleReportWriter = report_writer or ScheduleReportWriter(store=store)
         self._leases: SessionOwnershipLeaseStore | None = session_lease_store
-        self._inbox: SessionInboxStore | None = session_inbox_store
+        self._channel_gateway: ChannelGateway | None = channel_gateway
 
     async def execute(self, *, reference: str) -> int:
         """Execute one schedule fire and return the scheduler-facing exit code.
@@ -171,41 +171,52 @@ class ScheduleExecutor:
         definition: ScheduleDefinitionDAO,
         target: ResolvedSessionTargetDAO,
     ) -> ScheduleExecutionOutcomeDAO:
-        """Enqueue work for an active TUI-owned session.
+        """Send the fire to the open TUI session as one channel prompt (108.6).
+
+        WHAT: The schedule's sender participant sends ``definition.prompt`` to
+            the target session's agent; the session's poller runs it as its
+            next queued turn. The schedule's coalescing key maps to the row's
+            ``coalesce_key``, so a newer pending fire replaces an older one.
+        WHO: ``_execute_with_lock`` when the target session holds a live lease.
+        WHEN: Once per fire, under the per-schedule fire lock.
 
         Args:
             definition (ScheduleDefinitionDAO): Loaded schedule definition.
             target (ResolvedSessionTargetDAO): Resolved target session info.
 
         Returns:
-            ScheduleExecutionOutcomeDAO: Queue/coalesce outcome.
+            ScheduleExecutionOutcomeDAO: ``coalesced`` when an older pending
+                fire was superseded, otherwise ``queued``.
+
+        Raises:
+            RuntimeError: No channel gateway or target session id is configured.
+            UnknownParticipantError: The leased session never registered on the queue.
+            RecipientClosedError: The leased session's agent refuses this sender.
         """
-        if self._inbox is None or target.target_session_id is None:
-            raise RuntimeError("SessionInbox delivery requested without an inbox store or target session id.")
+        if self._channel_gateway is None or target.target_session_id is None:
+            raise RuntimeError(
+                "Session channel delivery requested without a channel gateway or target session id."
+            )
         started_at: datetime = datetime.now(timezone.utc)
-        run_id: str = str(uuid4())
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            session_id=target.target_session_id,
+        await self._channel_gateway.open()
+        delivery: ScheduledChannelDeliveryDAO = await ScheduleChannelSender(
+            gateway=self._channel_gateway
+        ).send(
             schedule_id=definition.schedule_id,
-            run_id=run_id,
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
+            schedule_name=definition.name,
+            target_session_id=target.target_session_id,
+            contents=definition.prompt,
             coalesce_key=(
                 definition.session_policy.coalescing_key if definition.session_policy is not None else None
             ),
-            title=definition.name,
-            text=definition.prompt,
-            payload={"cwd": definition.cwd, "model": definition.model},
         )
-        enqueue_result = await self._inbox.enqueue(message=message)
-        finished_at: datetime = datetime.now(timezone.utc)
         return ScheduleExecutionOutcomeDAO(
-            run_id=run_id,
+            run_id=str(delivery.message.id),
             started_at=started_at,
-            finished_at=finished_at,
+            finished_at=datetime.now(timezone.utc),
             status=None,
-            delivery_path="session_inbox",
-            delivery_state="coalesced" if enqueue_result.result == "coalesced" else "queued",
+            delivery_path="session_channel",
+            delivery_state="coalesced" if delivery.superseded_older else "queued",
             session_id=None,
             target_session_id=target.target_session_id,
             exit_code=None,
@@ -213,7 +224,7 @@ class ScheduleExecutor:
             stdout_summary="",
             stderr_summary="",
             skipped_reason=None,
-            coalesced_fire_count=1 if enqueue_result.result == "coalesced" else 0,
+            coalesced_fire_count=1 if delivery.superseded_older else 0,
         )
 
     @staticmethod

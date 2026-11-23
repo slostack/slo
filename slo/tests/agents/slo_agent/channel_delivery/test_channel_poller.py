@@ -704,3 +704,259 @@ class TestPollerAutoRunDisabled:
         finally:
             await poller.stop(reason="test_done")
             await gateway.close()
+
+
+class TestPollerDefersToARunItDoesNotOwn:
+    async def test_row_sent_during_a_direct_invoke_waits_then_runs_once(self, tmp_path: Path) -> None:
+        """EB1 (rehomed from the retired inbox run): one run owner at a time.
+
+        While the session runs a turn the poller did not start (a direct
+        ``invoke`` caller), a queued operator row stays pending — never started
+        into the busy session and cancelled as ``start_failed`` — and runs once
+        after the direct run ends.
+        """
+        from tests.tui.test_channel_adapter import GatedFauxChatModel
+
+        release_direct_run: asyncio.Event = asyncio.Event()
+        session_id: UUID = uuid4()
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(
+                llm=GatedFauxChatModel(
+                    responses=[AIMessage(content="direct answer"), AIMessage(content="queued answer")],
+                    first_call_release=release_direct_run,
+                ),
+                cwd=str(tmp_path),
+                tools=[],
+            ),
+            workdir=tmp_path,
+            session_id=str(session_id),
+            history_store=FilesystemSessionHistoryStore(root=tmp_path / "history"),
+            enable_history=True,
+        )
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        poller: ChannelPoller = _build_poller(
+            gateway=gateway, session=session, runner=SessionTurnRunner(session=session)
+        )
+
+        async def _drain_direct_run() -> None:
+            async for _event in session.invoke(text="direct turn"):
+                pass
+
+        await poller.start()
+        direct_run: asyncio.Task[None] = asyncio.create_task(_drain_direct_run())
+        try:
+            await _wait_until(predicate=lambda: session.is_running)
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="queued", channel_id=channel.id
+                )
+            )
+            await asyncio.sleep(0.2)
+            while_busy: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            busy_poller: bool = poller.busy
+
+            release_direct_run.set()
+            await asyncio.wait_for(direct_run, timeout=10)
+            async with asyncio.timeout(15.0):
+                while not await gateway.pending_outbound(recipient_ids=[user.id]):
+                    await asyncio.sleep(0.02)
+            answered: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            replies: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+        finally:
+            release_direct_run.set()
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+        assert while_busy is not None
+        assert (while_busy.accepted_at, while_busy.cancelled_at) == (None, None)
+        assert busy_poller is False
+        assert answered is not None and answered.accepted_at is not None and answered.cancelled_at is None
+        assert [(reply.in_reply_to_id, reply.message_contents) for reply in replies] == [
+            (request.id, "queued answer")
+        ]
+
+
+class CommitThenFailReplyWriter(ReplyWriter):
+    """Injected reply writer whose first write commits the row and then raises.
+
+    Models an uncertain write (the row is stored but the caller sees an
+    error), so a settlement retry must neither lose nor duplicate the reply.
+    """
+
+    def __init__(self, *, gateway: ChannelGateway) -> None:
+        """Bind the real writer and arm one failure."""
+        super().__init__(gateway=gateway)
+        self.attempts: int = 0
+
+    async def write(self, *, request: ChannelMessageDAO, outcome: TurnOutcomeDAO) -> None:
+        """Delegate to the real writer; raise after the first committed write."""
+        self.attempts += 1
+        await super().write(request=request, outcome=outcome)
+        if self.attempts == 1:
+            raise OSError("reply write outcome unknown")
+
+
+class RaisingAfterStartTurnRunner:
+    """TurnRunner stub that starts the turn and then raises an unexpected error."""
+
+    def __init__(self) -> None:
+        """Record no runs."""
+        self.ran: list[UUID] = []
+
+    async def run(
+        self,
+        *,
+        message: ChannelMessageDAO,
+        on_started: Callable[[], Awaitable[None]],
+    ) -> TurnOutcomeDAO:
+        """Accept the row, then fail on the first row only."""
+        self.ran.append(message.id)
+        await on_started()
+        if len(self.ran) == 1:
+            raise RuntimeError("runner crashed")
+        return TurnOutcomeDAO(status="completed", final_text="second ok")
+
+
+async def _replies_to(*, gateway: ChannelGateway, user_id: UUID, request_id: UUID) -> list[ChannelMessageDAO]:
+    """Return every reply row (pending outbound) that answers one request."""
+    outbound: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user_id])
+    return [row for row in outbound if row.in_reply_to_id == request_id]
+
+
+class TestPollerSettlementIsRetained:
+    """A finished run's settlement survives stop and write failure (1081-R05)."""
+
+    async def test_stop_during_a_run_settles_it_with_exactly_one_reply(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        release: asyncio.Event = asyncio.Event()
+        runner: BlockingTurnRunner = BlockingTurnRunner(release=release)
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, session_id=str(session_id), responses=[AIMessage(content="unused")]
+        )
+        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner)
+        try:
+            await poller.start()
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="long", channel_id=channel.id
+                )
+            )
+            await _wait_until(predicate=lambda: len(runner.ran) == 1)
+            stopping: asyncio.Task[None] = asyncio.create_task(poller.stop(reason="session_closed"))
+            await asyncio.sleep(0.1)
+            release.set()
+            await asyncio.wait_for(stopping, timeout=10)
+            replies: list[ChannelMessageDAO] = await _replies_to(
+                gateway=gateway, user_id=user.id, request_id=request.id
+            )
+            assert [reply.message_contents for reply in replies] == ["unblocked"]
+            assert runner.ran == [request.id]
+        finally:
+            release.set()
+            await gateway.close()
+
+    async def test_a_failed_reply_write_is_retried_without_rerunning_or_duplicating(
+        self, tmp_path: Path
+    ) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        runner: RecordingTurnRunner = RecordingTurnRunner()
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, session_id=str(session_id), responses=[AIMessage(content="unused")]
+        )
+        from src.agents.slo_agent.channel_delivery.boundary_inbox import ChannelBoundaryInbox
+
+        writer: CommitThenFailReplyWriter = CommitThenFailReplyWriter(gateway=gateway)
+        poller: ChannelPoller = ChannelPoller(
+            gateway=gateway,
+            session=session,
+            runner=runner,
+            replies=writer,
+            boundary_inbox=ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id),
+            interval=0.02,
+        )
+        try:
+            await poller.start()
+            first: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="one", channel_id=channel.id
+                )
+            )
+            second: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="two", channel_id=channel.id
+                )
+            )
+            async with asyncio.timeout(10.0):
+                while len(await _replies_to(gateway=gateway, user_id=user.id, request_id=second.id)) != 1:
+                    await asyncio.sleep(0.02)
+            first_replies: list[ChannelMessageDAO] = await _replies_to(
+                gateway=gateway, user_id=user.id, request_id=first.id
+            )
+            assert [reply.message_contents for reply in first_replies] == ["done:one"]
+            assert runner.ran == [first.id, second.id]
+            assert writer.attempts >= 3
+        finally:
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+    async def test_a_runner_crash_after_start_replies_once_and_the_queue_continues(
+        self, tmp_path: Path
+    ) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        runner: RaisingAfterStartTurnRunner = RaisingAfterStartTurnRunner()
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, session_id=str(session_id), responses=[AIMessage(content="unused")]
+        )
+        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner)
+        try:
+            await poller.start()
+            first: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="one", channel_id=channel.id
+                )
+            )
+            second: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="two", channel_id=channel.id
+                )
+            )
+            async with asyncio.timeout(10.0):
+                while len(await _replies_to(gateway=gateway, user_id=user.id, request_id=second.id)) != 1:
+                    await asyncio.sleep(0.02)
+            first_replies: list[ChannelMessageDAO] = await _replies_to(
+                gateway=gateway, user_id=user.id, request_id=first.id
+            )
+            assert len(first_replies) == 1 and "runner crashed" in first_replies[0].message_contents
+            assert runner.ran == [first.id, second.id]
+        finally:
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+    async def test_writing_the_same_reply_twice_stores_one_row_with_a_stable_id(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        try:
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="q", channel_id=channel.id
+                )
+            )
+            writer: ReplyWriter = ReplyWriter(gateway=gateway)
+            outcome: TurnOutcomeDAO = TurnOutcomeDAO(status="completed", final_text="a")
+            await writer.write(request=request, outcome=outcome)
+            await writer.write(request=request, outcome=outcome)
+            replies: list[ChannelMessageDAO] = await _replies_to(
+                gateway=gateway, user_id=user.id, request_id=request.id
+            )
+            assert len(replies) == 1
+            assert replies[0].id == ReplyWriter.reply_id_for(request_id=request.id)
+        finally:
+            await gateway.close()

@@ -88,7 +88,7 @@ async def test_replacement_drains_gate_using_viewer(
                     await asyncio.gather(viewer, replacement, return_exceptions=True)
 
 
-@pytest.mark.parametrize("entry", ["submit", "register", "inbox", "viewer"])
+@pytest.mark.parametrize("entry", ["submit", "viewer"])
 async def test_transition_refuses_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
@@ -106,14 +106,9 @@ async def test_transition_refuses_admission(
             patch.object(app, "_run_prompt") as run,
             patch.object(app._chat_transcript, "echo_user") as echo,
             patch.object(app, "_run_visualizer_launch") as viewer,
-            patch.object(app._inbox_store, "claim_next", return_value=None) as claim,
         ):
             async with app._prompt_submission_lock:
-                if entry == "register":
-                    app._register_prompt_task(text="refused")
-                elif entry == "inbox":
-                    await app._claim_and_handle_idle_inbox_message()
-                elif entry == "viewer":
+                if entry == "viewer":
                     app._schedule_visualizer_launch(parent_session_id="refused")
             if entry == "submit":
                 await app._submit_or_queue_prompt(text="refused")
@@ -126,7 +121,6 @@ async def test_transition_refuses_admission(
             run.assert_not_called()
             echo.assert_not_called()
             viewer.assert_not_called()
-            claim.assert_not_called()
 
 
 @pytest.mark.parametrize("shutdown", [False, True])

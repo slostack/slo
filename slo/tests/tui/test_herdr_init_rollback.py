@@ -1,4 +1,4 @@
-"""Mounted delivery rollback with real temporary lease and inbox storage."""
+"""Mounted delivery rollback with real temporary lease storage."""
 
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 
 from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseDAO, SessionOwnershipLeaseStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
@@ -90,7 +90,7 @@ async def test_displaced_failed_timer_remains_owned(tmp_path: Path, fails: bool)
         assert app._lease_timer is None
 
 
-@pytest.mark.parametrize("phase", ["inbox", "timer1", "timer2"])
+@pytest.mark.parametrize("phase", ["acquire", "timer1"])
 @pytest.mark.parametrize("change_owner", [False, True])
 @pytest.mark.parametrize("stop_fails", [False, True])
 async def test_init_rollback_never_stops_successor_timers(
@@ -102,7 +102,7 @@ async def test_init_rollback_never_stops_successor_timers(
     )
     app = SloTUI(session=session)
     original_interval = app.set_interval
-    original_inbox = SessionInboxStore.ensure_session_inbox
+    original_acquire = SessionOwnershipLeaseStore.acquire
     original_stop = Timer.stop
     created: list[Timer] = []
     successors: list[Timer] = []
@@ -112,8 +112,8 @@ async def test_init_rollback_never_stops_successor_timers(
         """Install distinct successor handles at the real continuation seam."""
         if change_owner:
             app._session_owner_id = "new-owner"
-        successors.extend(original_interval(interval=60, callback=lambda: None) for _ in range(2))
-        app._lease_timer, app._inbox_timer = successors
+        successors.append(original_interval(interval=60, callback=lambda: None))
+        app._lease_timer = successors[0]
 
     def interval(
         interval: float,
@@ -125,17 +125,22 @@ async def test_init_rollback_never_stops_successor_timers(
     ) -> Timer:
         """Capture each actually created delivery timer before displacing its slots."""
         timer = original_interval(interval=interval, callback=callback, name=name, repeat=repeat, pause=pause)
-        if callback in (app._renew_session_lease, app._poll_session_inbox):
+        if callback == app._renew_session_lease:
             created.append(timer)
             if phase == f"timer{len(created)}":
                 displace()
         return timer
 
-    async def inbox(self: SessionInboxStore, *, session_id: str) -> None:
-        """Complete real storage before simulating a changed binding."""
-        await original_inbox(self, session_id=session_id)
-        if phase == "inbox":
+    async def acquire(
+        self: SessionOwnershipLeaseStore, *, session_id: str, owner_id: str, ttl_seconds: float
+    ) -> SessionOwnershipLeaseDAO:
+        """Complete the real acquisition before simulating a changed binding."""
+        lease = await original_acquire(
+            self, session_id=session_id, owner_id=owner_id, ttl_seconds=ttl_seconds
+        )
+        if phase == "acquire":
             displace()
+        return lease
 
     def stop(timer: Timer) -> None:
         """Record exact handles, not merely stop invocation counts."""
@@ -146,24 +151,24 @@ async def test_init_rollback_never_stops_successor_timers(
 
     with (
         patch.object(app, "set_interval", side_effect=interval),
-        patch.object(SessionInboxStore, "ensure_session_inbox", new=inbox),
+        patch.object(SessionOwnershipLeaseStore, "acquire", new=acquire),
         patch.object(Timer, "stop", new=stop),
     ):
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert (app._lease_timer, app._inbox_timer) == tuple(successors)
+            assert (app._lease_timer,) == tuple(successors)
             assert all(timer not in stopped for timer in successors)
             assert all(timer in stopped for timer in created)
-            assert len(created) == {"inbox": int(not change_owner), "timer1": 1, "timer2": 2}[phase]
+            assert len(created) == {"acquire": int(not change_owner), "timer1": 1}[phase]
             assert app._delivery_quiescing and not app._replacement_delivery_safe
             assert app._lease_store is not None
             assert await app._lease_store.read(session_id=session.session_id) is None
             assert app._failed_delivery_timers == (tuple(created) if stop_fails else ())
-            assert len(app._failed_delivery_timers) <= 2
+            assert len(app._failed_delivery_timers) <= 1
             before = tuple(created)
             await app._initialize_session_delivery()
             assert tuple(created) == before
-            assert (app._lease_timer, app._inbox_timer) == tuple(successors)
+            assert (app._lease_timer,) == tuple(successors)
             # Retry after leaving the failing stop seam, while still mounted.
             with patch.object(Timer, "stop", autospec=True, side_effect=original_stop) as retry:
                 app._stop_delivery_timers()
@@ -171,7 +176,7 @@ async def test_init_rollback_never_stops_successor_timers(
                 (*successors, *(created if stop_fails else []))
             )
             assert app._failed_delivery_timers == ()
-            assert app._lease_timer is None and app._inbox_timer is None
+            assert app._lease_timer is None
 
 
 async def test_timer_stop_preserves_successor_slot(tmp_path: Path) -> None:
@@ -207,12 +212,12 @@ async def test_timer_stop_preserves_successor_slot(tmp_path: Path) -> None:
                 successor.stop()
 
 
-@pytest.mark.parametrize("stop_failure", ["lease", "inbox", "both"])
+@pytest.mark.parametrize("stop_failure", ["lease", "none"])
 @pytest.mark.parametrize("release_failure", ["none", "false", "error"])
 async def test_failed_stops_retain_handles_until_later_cleanup(
     tmp_path: Path, stop_failure: str, release_failure: str
 ) -> None:
-    """Both timers and the lease are attempted despite stop/release/notice faults."""
+    """The lease timer and the lease are both attempted despite stop/release/notice faults."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
@@ -226,8 +231,8 @@ async def test_failed_stops_retain_handles_until_later_cleanup(
     ):
         async with app.run_test() as pilot:
             await pilot.pause()
-            lease_timer, inbox_timer = app._lease_timer, app._inbox_timer
-            assert lease_timer is not None and inbox_timer is not None
+            lease_timer = app._lease_timer
+            assert lease_timer is not None
             assert app._lease_store is not None
             original_stop = Timer.stop
             original_release = app._lease_store.release
@@ -235,10 +240,9 @@ async def test_failed_stops_retain_handles_until_later_cleanup(
 
             def stop(timer: Timer) -> None:
                 """Fail selected exact handles; leave unrelated framework timers alone."""
-                kind = "lease" if timer is lease_timer else "inbox"
-                if timer in (lease_timer, inbox_timer):
-                    calls.append(kind)
-                    if stop_failure in (kind, "both"):
+                if timer is lease_timer:
+                    calls.append("lease")
+                    if stop_failure == "lease":
                         raise RuntimeError("injected stop failure")
                 original_stop(timer)
 
@@ -257,16 +261,15 @@ async def test_failed_stops_retain_handles_until_later_cleanup(
                 patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice failure")),
             ):
                 await app._rollback_session_delivery(session=session, owner_id=app._session_owner_id)
-            assert calls == ["lease", "inbox", "release"]
-            assert app._lease_timer is (lease_timer if stop_failure in ("lease", "both") else None)
-            assert app._inbox_timer is (inbox_timer if stop_failure in ("inbox", "both") else None)
+            assert calls == ["lease", "release"]
+            assert app._lease_timer is (lease_timer if stop_failure == "lease" else None)
             assert app._delivery_quiescing and not app._replacement_delivery_safe
             await app._close_selected_delivery()
-            assert app._lease_timer is None and app._inbox_timer is None
+            assert app._lease_timer is None
             assert await app._lease_store.read(session_id=session.session_id) is None
 
 
-@pytest.mark.parametrize("failure", ["inbox", "timer1", "timer2", "cutoff1", "cutoff2"])
+@pytest.mark.parametrize("failure", ["after_acquire", "timer1", "cutoff1"])
 async def test_mount_setup_failure_rolls_back(tmp_path: Path, failure: str) -> None:
     """Partial initialization is contained before mount returns, not only at unmount."""
     session = SloAgentSession.build(
@@ -274,7 +277,7 @@ async def test_mount_setup_failure_rolls_back(tmp_path: Path, failure: str) -> N
     )
     app = SloTUI(session=session)
     original_timer = app.set_interval
-    original_inbox = SessionInboxStore.ensure_session_inbox
+    original_acquire = SessionOwnershipLeaseStore.acquire
     registered: list[Timer] = []
 
     def interval(
@@ -286,7 +289,7 @@ async def test_mount_setup_failure_rolls_back(tmp_path: Path, failure: str) -> N
         pause: bool = False,
     ) -> Timer:
         """Fail only delivery registration, leaving Textual's own timers intact."""
-        if callback in (app._renew_session_lease, app._poll_session_inbox):
+        if callback == app._renew_session_lease:
             if failure == f"timer{len(registered) + 1}":
                 raise RuntimeError("injected timer failure")
             timer = original_timer(
@@ -298,15 +301,20 @@ async def test_mount_setup_failure_rolls_back(tmp_path: Path, failure: str) -> N
             return timer
         return original_timer(interval=interval, callback=callback, name=name, repeat=repeat, pause=pause)
 
-    async def inbox(self: SessionInboxStore, *, session_id: str) -> None:
-        """Create the real inbox before injecting the initialization failure."""
-        await original_inbox(self, session_id=session_id)
-        if failure == "inbox":
-            raise RuntimeError("injected inbox failure")
+    async def acquire(
+        self: SessionOwnershipLeaseStore, *, session_id: str, owner_id: str, ttl_seconds: float
+    ) -> SessionOwnershipLeaseDAO:
+        """Persist the real lease before injecting the initialization failure."""
+        lease = await original_acquire(
+            self, session_id=session_id, owner_id=owner_id, ttl_seconds=ttl_seconds
+        )
+        if failure == "after_acquire":
+            raise RuntimeError("injected post-acquisition failure")
+        return lease
 
     with (
         patch.object(app, "set_interval", side_effect=interval),
-        patch.object(SessionInboxStore, "ensure_session_inbox", new=inbox),
+        patch.object(SessionOwnershipLeaseStore, "acquire", new=acquire),
         patch(
             "src.agents.slo_agent.graph.service.LLMFactory.create",
             return_value=LLMBuildResult(
@@ -319,31 +327,33 @@ async def test_mount_setup_failure_rolls_back(tmp_path: Path, failure: str) -> N
             await pilot.pause()
             assert app._delivery_quiescing
             assert not app._replacement_delivery_safe
-            assert app._lease_timer is None and app._inbox_timer is None
+            assert app._lease_timer is None
             assert app._workflow_app_service is None
             assert app._lease_store is not None
             assert await app._lease_store.read(session_id=session.session_id) is None
 
 
 async def test_rollback_closes_captured_observation_owner(tmp_path: Path) -> None:
-    """Inbox-init failure closes the captured observation owner exactly once; unmount is inert."""
+    """A post-acquisition init failure closes the captured observation owner once; unmount is inert."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
     app = SloTUI(session=session)
     captured: dict[str, Optional[object]] = {}
-    original_inbox = SessionInboxStore.ensure_session_inbox
+    original_acquire = SessionOwnershipLeaseStore.acquire
 
-    async def inbox(self: SessionInboxStore, *, session_id: str) -> None:
-        """Capture the real observation owner, then fail real inbox initialization."""
+    async def acquire(
+        self: SessionOwnershipLeaseStore, *, session_id: str, owner_id: str, ttl_seconds: float
+    ) -> SessionOwnershipLeaseDAO:
+        """Capture the real observation owner, then fail right after the real acquisition."""
         captured["service"] = app._workflow_app_service
         captured["coordinator"] = app._workflow_progress_coordinator
         captured["sink"] = app._workflow_progress_updates_adapter
-        await original_inbox(self, session_id=session_id)
-        raise RuntimeError("injected inbox failure")
+        await original_acquire(self, session_id=session_id, owner_id=owner_id, ttl_seconds=ttl_seconds)
+        raise RuntimeError("injected post-acquisition failure")
 
     with (
-        patch.object(SessionInboxStore, "ensure_session_inbox", new=inbox),
+        patch.object(SessionOwnershipLeaseStore, "acquire", new=acquire),
         patch(
             "src.agents.slo_agent.graph.service.LLMFactory.create",
             return_value=LLMBuildResult(

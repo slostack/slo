@@ -118,7 +118,9 @@ class TestOnlyTheLeaseOwnerRunsTheQueue:
         ]
         assert stored is not None and stored.accepted_at is not None
         assert len(model_a.queue) == 0 and len(model_b.queue) == 1
-        events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(session_id=session_id)
+        events = await FilesystemSessionHistoryStore(root=tmp_path / "history").load_events(
+            session_id=session_id
+        )
         user_turns = [event for event in events if event.kind == "user_message"]
         assert [event.payload.content for event in user_turns] == ["shared prompt"]
         assert user_turns[0].payload.metadata.get("channel_message_id") == str(request.id)

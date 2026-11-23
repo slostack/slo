@@ -200,10 +200,10 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     ),
     SlashCommandSpecDAO(
         name="queue",
-        description="queue delivery controls; resume continues a paused poller; force runs a pending row now",
+        description="list, resume, cancel, edit, or force pending prompts",
         argument_mode="free_text",
-        usage="/queue [resume | force <n>] (bare: list)",
-        argument_hint="resume | force <n>",
+        usage="/queue [resume | cancel <n|all> | edit <n> | force <n>] (bare: list)",
+        argument_hint="resume | cancel <n|all> | edit <n> | force <n>",
         display_order=55,
     ),
     SlashCommandSpecDAO(

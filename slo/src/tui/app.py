@@ -407,6 +407,7 @@ class SloTUI(App):
         self._lease_timer: Optional[Timer] = None
         self._channel_adapter: Optional[TuiChannelAdapter] = None
         self._queued_refresh_timer: Optional[Timer] = None
+        self._queued_refresh_failure_reported: bool = False
         self._queued_rows_snapshot: Callable[[], Awaitable[tuple[list[ChannelMessageDAO], bool]]] = (
             self._read_queue_snapshot
         )
@@ -1029,6 +1030,7 @@ class SloTUI(App):
         async with self._prompt_submission_lock:
             await self._finish_replacement_runtime()
         await self._announce_recovered_queue_pause()
+        await self._announce_recovered_channel_database()
 
     async def _initialize_session_delivery(self) -> None:
         """Contain partial startup before mount or replacement continues.
@@ -1758,15 +1760,7 @@ class SloTUI(App):
         """
         if self._app_closing or self._session_transitioning:
             return
-        if self._session.preparation_status != "ready":
-            if self._chat_transcript is not None:
-                await self._chat_transcript.handle(
-                    command=TranscriptNoticeDAO(
-                        content="Model preparation required; use /auth or /model refresh.",
-                        classes="tool-result",
-                    )
-                )
-            return
+        model_preparation_is_pending: bool = self._session.preparation_status != "ready"
         if self._input is not None:
             await self._input.handle(command=RecordAcceptedPromptDAO(text=text))
         adapter: Optional[TuiChannelAdapter] = self._channel_adapter
@@ -1781,8 +1775,7 @@ class SloTUI(App):
             return
         try:
             await adapter.send_prompt(text=text, force=force)
-            await self._refresh_queued_display()
-        except Exception as exc:  # noqa: BLE001 — a locked/corrupt DB must not lose the text
+        except Exception as exc:  # noqa: BLE001 — a failed enqueue must not lose the text
             if self._input is not None:
                 await self._input.handle(command=ReplacePromptDAO(text=text))
             if self._chat_transcript is not None:
@@ -1792,6 +1785,13 @@ class SloTUI(App):
                         classes="tool-result",
                     )
                 )
+            return
+        await self._refresh_queued_display()
+        if model_preparation_is_pending:
+            await self._write_lifecycle_notice(
+                content="Model preparation required; use /auth or /model refresh.",
+                classes="tool-result",
+            )
 
     async def _send_forced_slash_prompt(self, *, text: str) -> None:
         """Enqueue one slash-command forced message (``/steer`` / ``/force``, 108.2).
@@ -1897,7 +1897,9 @@ class SloTUI(App):
                 gateway=self._channel_gateway,
                 runner=TuiTurnRunner(app=self),
                 operator_participant_id=(adapter.user_participant.id if adapter is not None else None),
-                display=TuiDisplaySink(transcript=self._chat_transcript, observer=self._advance_workflow_lifecycle),
+                display=TuiDisplaySink(
+                    transcript=self._chat_transcript, observer=self._advance_workflow_lifecycle
+                ),
                 durable_inbox=True,
             )
         except Exception as exc:  # noqa: BLE001 — a broken queue must not block the TUI
@@ -1946,7 +1948,18 @@ class SloTUI(App):
         component = self._queued_messages
         if component is None:
             return
-        rows, paused = await self._queued_rows_snapshot()
+        try:
+            rows, paused = await self._queued_rows_snapshot()
+        except Exception as exc:  # noqa: BLE001 — a queue read must not crash a timer or mutation flow
+            log_error(msg=f"queued prompt refresh failed: {exc}")
+            if not self._queued_refresh_failure_reported:
+                self._queued_refresh_failure_reported = True
+                await self._write_lifecycle_notice(
+                    content="Queued prompts could not be refreshed; queue delivery may still have changed.",
+                    classes="tool-result",
+                )
+            return
+        self._queued_refresh_failure_reported = False
         if not rows:
             component.handle(command=ClearQueuedDAO())
             return
@@ -1969,6 +1982,10 @@ class SloTUI(App):
             await adapter.cancel(message_id=event.message_id)
         except Exception as exc:  # noqa: BLE001 — a locked DB must not kill the TUI
             log_error(msg=f"queued row cancel failed: {exc}")
+            await self._write_lifecycle_notice(
+                content="Queued prompt cancellation failed; the prompt may still be pending.",
+                classes="tool-result",
+            )
         await self._refresh_queued_display()
 
     async def _announce_recovered_queue_pause(self) -> None:
@@ -1992,6 +2009,25 @@ class SloTUI(App):
                 ),
                 classes="tool-result",
             )
+        )
+
+    async def _announce_recovered_channel_database(self) -> None:
+        """Tell the operator when startup preserved a corrupt channel database.
+
+        WHAT: Renders a fixed recovery notice naming the preserved database copy.
+        WHO: ``_initialize_mounted_delivery`` calls this after startup and queue recovery.
+        WHEN: Once the gateway opened a fresh queue in place of a corrupt database.
+        """
+        gateway: Optional[ChannelGateway] = self._channel_gateway
+        recovery_path: Optional[Path] = gateway.recovery_path if gateway is not None else None
+        if recovery_path is None:
+            return
+        await self._write_lifecycle_notice(
+            content=(
+                "The channel queue database was corrupt; a fresh queue is active. "
+                f"The preserved database is {recovery_path.name}."
+            ),
+            classes="tool-result",
         )
 
     async def _stop_channel_delivery(self, *, reason: str) -> None:
@@ -2359,6 +2395,7 @@ class SloTUI(App):
         Args:
             line (str): The full input line including the leading slash.
         """
+        queue_edit_original_draft: Optional[str] = self._input.text if self._input is not None else None
         if self._input is not None:
             await self._input.handle(command=HideSuggestionsDAO())
         self._reset_escape_sequence()
@@ -2413,6 +2450,9 @@ class SloTUI(App):
             self._escalate_abort()
         if result.forced_prompt_text is not None:
             await self._send_forced_slash_prompt(text=result.forced_prompt_text)
+        queue_result: Optional[str] = await self._apply_queue_command_intent(
+            result=result, original_draft=queue_edit_original_draft
+        )
         if result.render_tree is not None:
             await self._mount_tree_viewer(tree=result.render_tree, tree_format=result.tree_format)
         git_diff_path: Optional[str] = result.git_diff_path if isinstance(result.git_diff_path, str) else None
@@ -2427,10 +2467,11 @@ class SloTUI(App):
         if tui_visibility is not None:
             await self._apply_workflow_list_visibility(request=tui_visibility)
             return
-        if result.rendered is not None:
+        rendered: Optional[str] = queue_result if queue_result is not None else result.rendered
+        if rendered is not None:
             if self._chat_transcript is not None:
                 await self._chat_transcript.handle(
-                    command=TranscriptNoticeDAO(content=result.rendered, classes="tool-result")
+                    command=TranscriptNoticeDAO(content=rendered, classes="tool-result")
                 )
         self._apply_workflow_command_result(result=result)
         if result.refresh_title:
@@ -2450,6 +2491,84 @@ class SloTUI(App):
             self._push_auth_modal()
         if result.should_exit:
             self.exit()
+
+    async def _apply_queue_command_intent(
+        self, *, result: SlashCommandResultDAO, original_draft: Optional[str]
+    ) -> Optional[str]:
+        """Cancel selected pending prompts or restore one in the editor.
+
+        WHAT: Applies queue command intent through the poller and TUI adapter,
+            retaining the original prompt row in channel history.
+        WHO: ``_dispatch_slash_command`` calls this for every slash outcome.
+        WHEN: After slash dispatch and before the command result is rendered.
+
+        Args:
+            result (SlashCommandResultDAO): The slash router's command outcome.
+
+        Returns:
+            Optional[str]: A queue result line, or ``None`` when no queue effect exists.
+        """
+        if (
+            result.queue_cancel_position is None
+            and not result.queue_cancel_all
+            and result.queue_edit_position is None
+        ):
+            return None
+        poller = self._session.channel_poller
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if poller is None or adapter is None:
+            return "channel queue is not running"
+        try:
+            pending: list[ChannelMessageDAO] = await poller.pending_prompts()
+            if result.queue_cancel_all:
+                cancelled_count: int = 0
+                for pending_message in pending:
+                    if await adapter.cancel(message_id=pending_message.id):
+                        cancelled_count += 1
+                await self._refresh_queued_display()
+                return f"(cancelled {cancelled_count} queued prompt(s))"
+            return await self._cancel_selected_queue_prompt(
+                result=result,
+                adapter=adapter,
+                pending=pending,
+                original_draft=original_draft,
+            )
+        except Exception as exc:  # noqa: BLE001 — queue mutation errors are operator-visible, not fatal
+            log_error(msg=f"queue command mutation failed: {exc}")
+            await self._refresh_queued_display()
+            return "Queue update failed; pending prompts may have changed. Check /queue before retrying."
+
+    async def _cancel_selected_queue_prompt(
+        self,
+        *,
+        result: SlashCommandResultDAO,
+        adapter: TuiChannelAdapter,
+        pending: list[ChannelMessageDAO],
+        original_draft: Optional[str],
+    ) -> str:
+        """Cancel one queued prompt and avoid overwriting a newer editor draft."""
+        position: Optional[int] = result.queue_edit_position
+        if position is None:
+            position = result.queue_cancel_position
+        if position is None:
+            raise RuntimeError("Queue mutation outcome has no row position.")
+        if position > len(pending):
+            return f"(row {position} is already running or no longer pending)"
+        queued_message: ChannelMessageDAO = pending[position - 1]
+        if not await adapter.cancel(message_id=queued_message.id):
+            return f"(row {position} is already running or no longer pending)"
+        if result.queue_edit_position is not None:
+            if self._input is not None and self._input.text == original_draft:
+                await self._input.handle(command=ReplacePromptDAO(text=queued_message.message_contents))
+            else:
+                await self._refresh_queued_display()
+                return (
+                    f"(row {position} cancelled; your draft changed, so its queued text was not restored)\n"
+                    f"Copy this text to recover it:\n{queued_message.message_contents}"
+                )
+        await self._refresh_queued_display()
+        action: str = "restored for editing" if result.queue_edit_position is not None else "cancelled"
+        return f"(row {position} {action})"
 
     def _schedule_editor_launch(self, *, argument: str) -> None:
         """Capture the session before background validation without blocking prompt input.

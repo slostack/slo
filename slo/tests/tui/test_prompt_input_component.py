@@ -41,7 +41,7 @@ from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggesti
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from tests.tui._scroll_settle import pump_until
-from tests.tui.test_channel_adapter import GatedFauxChatModel
+from tests.conftest import GatedFauxChatModel
 from tests.tui.test_prompt_input_rules import _recording_invoke, _submit_prompt
 
 

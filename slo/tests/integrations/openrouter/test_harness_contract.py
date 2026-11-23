@@ -11,7 +11,7 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from tests.integrations.openrouter.test_live_openrouter import OpenRouterLiveHarness
 from tests.integrations.openrouter import test_live_openrouter as harness_module
 from src.integrations.openrouter.exceptions import OpenRouterAPIError
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 from src.auth.credential_store import CredentialStore
 from src.auth.openrouter_authentication import OpenRouterAuthenticationService
 from src.integrations.openrouter.client import OpenRouterAPIClient

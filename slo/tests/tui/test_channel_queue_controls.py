@@ -10,35 +10,82 @@ boundary. Rows are read back from ``channels.db`` and from the recorded calls.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
+import httpx
 from langchain_core.messages import AIMessage
+from textual.pilot import Pilot
 
-from src.agents.model_catalog.seed import SeedModelCatalog
-from src.agents.model_catalog.service import ModelCatalogService
+from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+from src.auth.credential_store import CredentialStore
 from src.channels.dao import ChannelMessageDAO
 from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
+from src.integrations.openrouter.client import OpenRouterAPIClient
 from src.tui.app import SloTUI
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.components.prompt_input.component import PromptInputComponent
+from tests.conftest import GatedFauxChatModel
 from tests.tui._scroll_settle import pump_until
-from tests.tui.test_channel_adapter import (
-    GatedFauxChatModel,
-    _build_session,
-    _open_gateway,
-    _transcript_lines,
-    _user_echo_texts,
-    _wait_until_db,
-)
 
 _QUEUE_SETTLE_SECONDS: float = 15.0
+
+
+def _build_session(
+    *,
+    tmp_path: Path,
+    responses: list[AIMessage],
+    model: Optional[FauxChatModel] = None,
+    session_id: Optional[str] = None,
+) -> SloAgentSession:
+    """Build a session with the scripted provider and a real history store."""
+    return SloAgentSession(
+        agent=SloAgent(llm=model or FauxChatModel(responses=responses), cwd=str(tmp_path), tools=[]),
+        workdir=tmp_path,
+        session_id=session_id or str(uuid4()),
+        history_store=FilesystemSessionHistoryStore(root=tmp_path / "history"),
+        enable_history=True,
+    )
+
+
+async def _open_gateway(*, tmp_path: Path) -> ChannelGateway:
+    """Open one real gateway on a fresh temporary SQLite database."""
+    repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+    await repository.open()
+    return ChannelGateway(repository=repository)
+
+
+def _transcript_lines(*, app: SloTUI) -> list[tuple[str, str]]:
+    """Read recorded transcript lines from the mounted presentation adapter."""
+    transcript: ChatTranscriptComponent = app.query_one(ChatTranscriptComponent)
+    assert transcript._adapter is not None
+    return transcript._adapter.lines
+
+
+def _user_echo_texts(*, app: SloTUI) -> list[str]:
+    """Return user message text in transcript order."""
+    return [
+        content.removeprefix("> ")
+        for content, classes in _transcript_lines(app=app)
+        if classes == "user-line"
+    ]
+
+
+async def _wait_until_db(*, predicate: Callable[[], Awaitable[bool]], timeout_seconds: float = 20.0) -> None:
+    """Wait for a real database-backed condition with a strict time bound."""
+    async with asyncio.timeout(timeout_seconds):
+        while not await predicate():
+            await asyncio.sleep(0.02)
 
 
 async def _prompts_for(*, gateway: ChannelGateway, session: SloAgentSession) -> list[ChannelMessageDAO]:
@@ -125,6 +172,7 @@ class TestQueueCancelCommands:
         scenario: _QueueScenario = _QueueScenario(tmp_path=tmp_path)
         app: SloTUI = await scenario.open()
         assert scenario.gateway is not None
+        gateway: ChannelGateway = scenario.gateway
         try:
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -140,28 +188,33 @@ class TestQueueCancelCommands:
                     await _submit(pilot=pilot, prompt_input=prompt_input, text=text)
 
                 async def _two_rows_pending() -> bool:
-                    return [row.message_contents for row in await poller.pending_prompts()] == ["two", "three"]
+                    return [row.message_contents for row in await poller.pending_prompts()] == [
+                        "two",
+                        "three",
+                    ]
 
                 await _wait_until_db(predicate=_two_rows_pending, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                 await _submit(pilot=pilot, prompt_input=prompt_input, text="/queue cancel 1")
 
                 async def _two_cancelled() -> bool:
-                    rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+                    rows = await _prompts_for(gateway=gateway, session=scenario.session)
                     return _row_named(rows=rows, text="two").cancelled_at is not None
 
                 await _wait_until_db(predicate=_two_cancelled, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                 scenario.release_first_run.set()
 
                 async def _survivor_replied() -> bool:
-                    rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
-                    return await scenario.gateway.reply_for(message_id=_row_named(rows=rows, text="three").id) is not None
+                    rows = await _prompts_for(gateway=gateway, session=scenario.session)
+                    return (
+                        await gateway.reply_for(message_id=_row_named(rows=rows, text="three").id) is not None
+                    )
 
                 await _wait_until_db(predicate=_survivor_replied, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                 await pump_until(pilot=pilot, predicate=lambda: poller.busy is False)
-                rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+                rows = await _prompts_for(gateway=gateway, session=scenario.session)
                 cancelled = _row_named(rows=rows, text="two")
                 survivor = _row_named(rows=rows, text="three")
-                assert await scenario.gateway.reply_for(message_id=cancelled.id) is None
+                assert await gateway.reply_for(message_id=cancelled.id) is None
         finally:
             await scenario.close()
 
@@ -177,6 +230,7 @@ class TestQueueCancelCommands:
         scenario: _QueueScenario = _QueueScenario(tmp_path=tmp_path)
         app: SloTUI = await scenario.open()
         assert scenario.gateway is not None
+        gateway: ChannelGateway = scenario.gateway
         try:
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -192,19 +246,22 @@ class TestQueueCancelCommands:
                     await _submit(pilot=pilot, prompt_input=prompt_input, text=text)
 
                 async def _two_rows_pending() -> bool:
-                    return [row.message_contents for row in await poller.pending_prompts()] == ["two", "three"]
+                    return [row.message_contents for row in await poller.pending_prompts()] == [
+                        "two",
+                        "three",
+                    ]
 
                 await _wait_until_db(predicate=_two_rows_pending, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                 await _submit(pilot=pilot, prompt_input=prompt_input, text="/queue cancel all")
 
                 async def _both_cancelled() -> bool:
-                    rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+                    rows = await _prompts_for(gateway=gateway, session=scenario.session)
                     return all(row.cancelled_at is not None for row in rows if row.message_contents != "one")
 
                 await _wait_until_db(predicate=_both_cancelled, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                 scenario.release_first_run.set()
                 await pump_until(pilot=pilot, predicate=lambda: poller.busy is False)
-                rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+                rows = await _prompts_for(gateway=gateway, session=scenario.session)
         finally:
             await scenario.close()
 
@@ -220,6 +277,7 @@ class TestQueueCancelCommands:
         scenario: _QueueScenario = _QueueScenario(tmp_path=tmp_path)
         app: SloTUI = await scenario.open()
         assert scenario.gateway is not None
+        gateway: ChannelGateway = scenario.gateway
         try:
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -235,13 +293,16 @@ class TestQueueCancelCommands:
                     await _submit(pilot=pilot, prompt_input=prompt_input, text=text)
 
                 async def _two_rows_pending() -> bool:
-                    return [row.message_contents for row in await poller.pending_prompts()] == ["two", "three"]
+                    return [row.message_contents for row in await poller.pending_prompts()] == [
+                        "two",
+                        "three",
+                    ]
 
                 await _wait_until_db(predicate=_two_rows_pending, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                 await _submit(pilot=pilot, prompt_input=prompt_input, text="/queue edit 2")
 
                 async def _three_cancelled() -> bool:
-                    rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+                    rows = await _prompts_for(gateway=gateway, session=scenario.session)
                     return _row_named(rows=rows, text="three").cancelled_at is not None
 
                 await _wait_until_db(predicate=_three_cancelled, timeout_seconds=_QUEUE_SETTLE_SECONDS)
@@ -252,7 +313,7 @@ class TestQueueCancelCommands:
                     timeout_seconds=_QUEUE_SETTLE_SECONDS,
                 )
                 await pump_until(pilot=pilot, predicate=lambda: poller.busy is False)
-                rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+                rows = await _prompts_for(gateway=gateway, session=scenario.session)
                 edited_text: str = prompt_input.text
         finally:
             await scenario.close()
@@ -274,9 +335,10 @@ async def _prompts_settled(*, scenario: _QueueScenario, texts: tuple[str, ...]) 
         bool: True once each named row has its reply.
     """
     assert scenario.gateway is not None
-    rows = await _prompts_for(gateway=scenario.gateway, session=scenario.session)
+    gateway: ChannelGateway = scenario.gateway
+    rows = await _prompts_for(gateway=gateway, session=scenario.session)
     for text in texts:
-        if await scenario.gateway.reply_for(message_id=_row_named(rows=rows, text=text).id) is None:
+        if await gateway.reply_for(message_id=_row_named(rows=rows, text=text).id) is None:
             return False
     return True
 
@@ -285,30 +347,61 @@ class TestPromptSentBeforeModelReadiness:
     """1081-R04: a prompt sent while the model is not ready is persisted pending, then runs exactly once."""
 
     async def test_prompt_sent_while_the_model_is_pending_waits_as_a_row_and_runs_once_when_ready(
-        self, tmp_path: Path
+        self, tmp_path: Path, isolated_catalog: CredentialStore
     ) -> None:
-        """Submit while preparation is held: a pending row exists and no provider call is made.
-
-        Releasing the catalog boundary makes the session ready; the poller then runs
-        that row exactly once and writes its reply.
-        """
+        """Exercise real catalog preparation and queue admission without a provider request."""
         catalog_release: asyncio.Event = asyncio.Event()
+        catalog_request_started: asyncio.Event = asyncio.Event()
+        provider_requests: list[str] = []
 
-        async def _held_catalog(*, model_names: tuple[str, ...]) -> object:
-            """Answer the catalog boundary only after the test releases it."""
-            await catalog_release.wait()
-            return SeedModelCatalog.load()
+        async def _catalog_response(request: httpx.Request) -> httpx.Response:
+            """Hold OpenRouter key verification at the third-party HTTP boundary."""
+            assert request.url.host == "openrouter.ai"
+            assert request.headers["authorization"] == "Bearer fixture-queue-readiness"
+            provider_requests.append(request.url.path)
+            if request.url.path == "/api/v1/key":
+                catalog_request_started.set()
+                await catalog_release.wait()
+                return httpx.Response(status_code=200, json={"data": {}}, request=request)
+            if request.url.path == "/api/v1/models/user":
+                return httpx.Response(
+                    status_code=200,
+                    json={
+                        "data": [
+                            {
+                                "id": "vendor/queue-readiness",
+                                "name": "Queue Readiness",
+                                "context_length": 64000,
+                                "supported_parameters": ["tools"],
+                                "architecture": {
+                                    "input_modalities": ["text"],
+                                    "output_modalities": ["text"],
+                                },
+                            }
+                        ]
+                    },
+                    request=request,
+                )
+            raise AssertionError(f"Unexpected catalog request: {request.url.path}")
 
         model: GatedFauxChatModel = GatedFauxChatModel(
             responses=[AIMessage(content="ready answer")],
             first_call_release=asyncio.Event(),
         )
         model.first_call_release.set()
+        isolated_catalog.persist(
+            cred=CredentialDAO(
+                provider=ProviderName.OPENROUTER,
+                auth_type=AuthType.API_KEY,
+                access_token="fixture-queue-readiness",
+            )
+        )
+        route: str = "openrouter:vendor/queue-readiness"
         session: SloAgentSession = SloAgentSession(
             agent=SloAgent(llm=model, cwd=str(tmp_path), tools=[]),
             workdir=tmp_path,
             session_id=str(uuid4()),
-            config=SessionConfigDAO(workdir=tmp_path, model_name="gpt-5.4", enable_history=True),
+            config=SessionConfigDAO(workdir=tmp_path, model_name=route, enable_history=True),
             history_store=FilesystemSessionHistoryStore(root=tmp_path / "history"),
             enable_history=True,
             pending_preparation=True,
@@ -316,37 +409,60 @@ class TestPromptSentBeforeModelReadiness:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         app: SloTUI = SloTUI(session=session, channel_gateway=gateway)
         try:
-            with patch.object(ModelCatalogService, "prepare_models", side_effect=_held_catalog):
-                async with app.run_test() as pilot:
-                    await pilot.pause()
-                    assert session.preparation_status == "pending"
-                    prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
-                    await _submit(pilot=pilot, prompt_input=prompt_input, text="hello")
+            async with httpx.AsyncClient(transport=httpx.MockTransport(_catalog_response)) as http_client:
 
-                    async def _hello_pending() -> bool:
-                        rows = await _prompts_for(gateway=gateway, session=session)
-                        return [(row.message_contents, row.accepted_at) for row in rows] == [("hello", None)]
+                def _client_factory(*, credential: CredentialDAO) -> OpenRouterAPIClient:
+                    """Inject synthetic catalog HTTP at the external client boundary."""
+                    return OpenRouterAPIClient(credential=credential, http_client=http_client)
 
-                    await _wait_until_db(predicate=_hello_pending, timeout_seconds=_QUEUE_SETTLE_SECONDS)
-                    assert model.provider_calls == []
+                with patch(
+                    "src.agents.model_catalog.service.OpenRouterAPIClient", side_effect=_client_factory
+                ):
+                    async with app.run_test() as pilot:
+                        await asyncio.wait_for(catalog_request_started.wait(), timeout=5.0)
+                        assert session.preparation_status == "pending"
+                        prompt_input: PromptInputComponent = app.query_one(PromptInputComponent)
+                        await _submit(pilot=pilot, prompt_input=prompt_input, text="hello")
 
-                    catalog_release.set()
+                        async def _hello_pending() -> bool:
+                            rows: list[ChannelMessageDAO] = await _prompts_for(
+                                gateway=gateway, session=session
+                            )
+                            return [(row.message_contents, row.accepted_at) for row in rows] == [
+                                ("hello", None)
+                            ]
 
-                    async def _hello_replied() -> bool:
-                        rows = await _prompts_for(gateway=gateway, session=session)
-                        return await gateway.reply_for(message_id=rows[0].id) is not None
+                        await _wait_until_db(predicate=_hello_pending, timeout_seconds=_QUEUE_SETTLE_SECONDS)
+                        assert model.provider_calls == []
+                        await pump_until(
+                            pilot=pilot,
+                            predicate=lambda: any(
+                                "Model preparation required" in content
+                                for content, _classes in _transcript_lines(app=app)
+                            ),
+                        )
 
-                    await _wait_until_db(predicate=_hello_replied, timeout_seconds=_QUEUE_SETTLE_SECONDS)
-                    await pump_until(pilot=pilot, predicate=lambda: session.preparation_status == "ready")
-                    rows = await _prompts_for(gateway=gateway, session=session)
-                    reply = await gateway.reply_for(message_id=rows[0].id)
+                        catalog_release.set()
+
+                        async def _hello_replied() -> bool:
+                            rows: list[ChannelMessageDAO] = await _prompts_for(
+                                gateway=gateway, session=session
+                            )
+                            return (
+                                len(rows) == 1 and await gateway.reply_for(message_id=rows[0].id) is not None
+                            )
+
+                        await _wait_until_db(predicate=_hello_replied, timeout_seconds=_QUEUE_SETTLE_SECONDS)
+                        await pump_until(pilot=pilot, predicate=lambda: session.preparation_status == "ready")
+                        rows: list[ChannelMessageDAO] = await _prompts_for(gateway=gateway, session=session)
+                        reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=rows[0].id)
         finally:
             catalog_release.set()
             await session.stop_channel_delivery(reason="test_done")
             await gateway.close()
 
-        assert rows[0].accepted_at is not None
+        assert len(rows) == 1 and rows[0].accepted_at is not None
         assert reply is not None and reply.message_contents == "ready answer"
         assert sum("hello" in call for call in model.provider_calls) == 1
         assert len(model.provider_calls) == 1
-
+        assert provider_requests == ["/api/v1/key", "/api/v1/models/user"]

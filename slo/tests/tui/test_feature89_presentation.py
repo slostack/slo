@@ -9,7 +9,7 @@ import pytest
 import httpx
 
 from tests.agents.model_catalog.test_feature89_jev_lifecycle import NOW, ROUTE, jev_transport
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_store import CredentialStore
 from src.auth.credential_resolver import CredentialResolver

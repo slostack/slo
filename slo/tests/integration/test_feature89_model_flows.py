@@ -31,7 +31,7 @@ from src.cli.headless import HeadlessRunner
 from src.cli.typer_dispatch import TyperDispatch
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from tests.agents.providers.feature89_responses import answer_frames, tool_frames
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 from tests.agents.model_catalog.test_feature89_jev_lifecycle import ROUTE, jev_transport
 
 

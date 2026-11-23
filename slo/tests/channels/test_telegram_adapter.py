@@ -100,7 +100,10 @@ class FakeBotAPI:
         return httpx.Response(404, json={"ok": False, "error_code": 404, "description": "Not Found"})
 
     async def _get_updates(self, *, body: dict[str, object]) -> httpx.Response:
-        offset: Optional[int] = body.get("offset")  # type: ignore[assignment]
+        offset_value: object | None = body.get("offset")
+        if offset_value is not None and not isinstance(offset_value, int):
+            raise AssertionError(f"Telegram update offset must be an integer, got {offset_value!r}.")
+        offset: Optional[int] = offset_value
         self.offsets.append(offset)
         if self.update_failures:
             failure: httpx.Response | Exception = self.update_failures.pop(0)
@@ -108,11 +111,19 @@ class FakeBotAPI:
                 raise failure
             return failure
         pending: list[dict[str, object]] = [
-            update for update in self._updates if offset is None or int(update["update_id"]) >= offset  # type: ignore[arg-type]
+            update for update in self._updates if offset is None or self._update_id(update=update) >= offset
         ]
         if not pending:
             await asyncio.sleep(0.05)  # a short long-poll
         return httpx.Response(200, json={"ok": True, "result": pending})
+
+    @staticmethod
+    def _update_id(*, update: dict[str, object]) -> int:
+        """Return the integer update id from a scripted Telegram update."""
+        update_id: object = update["update_id"]
+        if not isinstance(update_id, int):
+            raise AssertionError(f"Telegram update id must be an integer, got {update_id!r}.")
+        return update_id
 
 
 def _client(*, fake: FakeBotAPI) -> TelegramBotAPIClient:

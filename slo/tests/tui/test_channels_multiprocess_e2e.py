@@ -39,7 +39,8 @@ from src.tui.components.agent_composer.component import AgentComposerComponent
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.workflows.dao import WorkflowSessionKeyDAO
 from tests.tui._scroll_settle import pump_until
-from tests.tui.test_channel_adapter import GatedFauxChatModel, _transcript_lines
+from tests.conftest import GatedFauxChatModel
+from tests.tui.test_channel_adapter import _transcript_lines
 
 pytestmark = pytest.mark.e2e
 

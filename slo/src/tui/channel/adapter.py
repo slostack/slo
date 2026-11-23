@@ -319,16 +319,19 @@ class TuiChannelAdapter:
         )
 
     async def cancel(self, *, message_id: UUID) -> bool:
-        """Cancel one queued row on the operator's behalf (108.1 §5.5).
+        """Ask the recipient poller to cancel a queued prompt as its operator.
 
         Args:
-            message_id (UUID): The queued row's id.
+            message_id (UUID): The queued prompt's id.
 
         Returns:
             bool: Whether the row was cancelled; ``False`` when it is no
-                longer pending (already running or already gone).
+                longer queued or the session has no active poller.
         """
-        return await self._gateway.cancel(message_id=message_id)
+        poller = self._app._session.channel_poller
+        if poller is None:
+            return False
+        return await poller.cancel_queued(message_id=message_id)
 
     async def send_prompt_to_agent(
         self,

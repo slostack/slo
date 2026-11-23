@@ -13,7 +13,7 @@ from src.agents.model_catalog.service import ModelCatalogService, ModelPreparati
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
 from src.integrations.openrouter.client import OpenRouterAPIClient
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 
 ROUTE = "openrouter:typesafe/jev-router"
 NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)

@@ -10,7 +10,7 @@ from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
 from src.integrations.openrouter.client import OpenRouterAPIClient
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 
 
 @pytest.mark.parametrize("failure", ["repeat", "http", "partial"])

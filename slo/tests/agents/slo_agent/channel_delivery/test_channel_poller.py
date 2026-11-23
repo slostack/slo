@@ -715,7 +715,7 @@ class TestPollerDefersToARunItDoesNotOwn:
         into the busy session and cancelled as ``start_failed`` — and runs once
         after the direct run ends.
         """
-        from tests.tui.test_channel_adapter import GatedFauxChatModel
+        from tests.conftest import GatedFauxChatModel
 
         release_direct_run: asyncio.Event = asyncio.Event()
         session_id: UUID = uuid4()
@@ -775,6 +775,94 @@ class TestPollerDefersToARunItDoesNotOwn:
         assert [(reply.in_reply_to_id, reply.message_contents) for reply in replies] == [
             (request.id, "queued answer")
         ]
+
+
+class BlockingBeforeFirstEventRunner:
+    """Hold the real session runner before its first yielded event."""
+
+    def __init__(self, *, session: SloAgentSession) -> None:
+        """Compose a real session runner behind an observable release gate."""
+        self._session_runner: SessionTurnRunner = SessionTurnRunner(session=session)
+        self.entered: asyncio.Event = asyncio.Event()
+        self.release: asyncio.Event = asyncio.Event()
+        self.started_message_ids: list[UUID] = []
+
+    async def run(
+        self,
+        *,
+        message: ChannelMessageDAO,
+        on_started: Callable[[], Awaitable[None]],
+    ) -> TurnOutcomeDAO:
+        """Wait before first-event admission, then delegate to the real runner."""
+        self.started_message_ids.append(message.id)
+        self.entered.set()
+        await self.release.wait()
+        return await self._session_runner.run(message=message, on_started=on_started)
+
+
+class TestPollerQueuedCancellation:
+    async def test_reserved_prompt_cannot_be_cancelled_before_its_first_event(self, tmp_path: Path) -> None:
+        """A blocked real runner leaves the reserved prompt durable and runs it once."""
+        session_id: UUID = uuid4()
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(
+                llm=FauxChatModel(responses=[AIMessage(content="accepted after release")]),
+                cwd=str(tmp_path),
+                tools=[],
+            ),
+            workdir=tmp_path,
+            session_id=str(session_id),
+            history_store=FilesystemSessionHistoryStore(root=tmp_path / "history"),
+            enable_history=True,
+        )
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        runner: BlockingBeforeFirstEventRunner = BlockingBeforeFirstEventRunner(session=session)
+        poller: ChannelPoller = _build_poller(gateway=gateway, session=session, runner=runner)
+        await poller.start()
+        try:
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="hold before first event",
+                    channel_id=channel.id,
+                )
+            )
+            await asyncio.wait_for(runner.entered.wait(), timeout=10.0)
+            assert poller.busy is True
+
+            cancellation_result: bool = await poller.cancel_queued(message_id=request.id)
+            stored_before_first_event: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            assert cancellation_result is False
+            assert stored_before_first_event is not None
+            assert (stored_before_first_event.accepted_at, stored_before_first_event.cancelled_at) == (
+                None,
+                None,
+            )
+
+            runner.release.set()
+            async with asyncio.timeout(10.0):
+                while await gateway.reply_for(message_id=request.id) is None:
+                    await asyncio.sleep(0.02)
+            stored_after_completion: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            replies: list[ChannelMessageDAO] = await _replies_to(
+                gateway=gateway,
+                user_id=user.id,
+                request_id=request.id,
+            )
+        finally:
+            runner.release.set()
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+        assert stored_after_completion is not None
+        assert stored_after_completion.accepted_at is not None
+        assert stored_after_completion.cancelled_at is None
+        assert [(reply.in_reply_to_id, reply.message_contents) for reply in replies] == [
+            (request.id, "accepted after release")
+        ]
+        assert runner.started_message_ids == [request.id]
 
 
 class CommitThenFailReplyWriter(ReplyWriter):

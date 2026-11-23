@@ -1,8 +1,8 @@
 """SQLite repository for the channel queue (108.1).
 
-One ``sqlite3`` connection per process, used through a single worker thread
-(``asyncio.to_thread`` with a ``threading.Lock``) so blocking database work
-never touches the UI loop. PRAGMAs: ``journal_mode=WAL``,
+One ``sqlite3`` connection per process, used through a single dedicated
+``ThreadPoolExecutor`` worker and serialized with a ``threading.Lock`` so
+blocking database work never touches the UI loop. PRAGMAs: ``journal_mode=WAL``,
 ``synchronous=NORMAL``, ``foreign_keys=ON``, ``busy_timeout=5000``.
 
 Index allocation uses ``BEGIN IMMEDIATE`` so concurrent writers across
@@ -13,14 +13,17 @@ processes serialize the ``MAX+1`` computation and the UNIQUE constraint on
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import sqlite3
+import stat
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from src.channels.dao import ChannelDAO, ChannelMessageDAO, NewMessageDAO, ParticipantDAO, utc_now
 from src.channels.errors import RecipientClosedError, UnknownParticipantError
@@ -32,6 +35,19 @@ _T = TypeVar("_T")
 
 _BUSY_TIMEOUT_MS: int = 5000
 _RETENTION_DAYS: int = 30
+
+
+class _CorruptChannelDatabaseError(sqlite3.DatabaseError):
+    """A completed SQLite integrity check found corruption in the queue file."""
+
+
+def _is_sqlite_corruption(error: sqlite3.DatabaseError) -> bool:
+    """Return whether SQLite identifies an error as database corruption."""
+    if isinstance(error, _CorruptChannelDatabaseError):
+        return True
+    if error.sqlite_errorcode is None:
+        return False
+    return error.sqlite_errorcode & 0xFF in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
 
 
 class ChannelRepository:
@@ -46,6 +62,8 @@ class ChannelRepository:
         """
         self._db_path: Path = db_path
         self._connection: Optional[sqlite3.Connection] = None
+        self._recovery_path: Optional[Path] = None
+        self._open_lock: asyncio.Lock = asyncio.Lock()
         self._lock: threading.Lock = threading.Lock()
         self._worker: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=1,
@@ -61,25 +79,54 @@ class ChannelRepository:
         """
         return self._db_path
 
+    @property
+    def recovery_path(self) -> Optional[Path]:
+        """Return the preserved corrupt database path from the last successful open.
+
+        Returns:
+            Optional[Path]: The recovery copy path, or ``None`` when opening did
+                not recover a corrupt database.
+        """
+        return self._recovery_path
+
     async def open(self) -> None:
         """Create the directory/file, open the connection, migrate, prune.
 
         Creates the parent directory (0700) and database file (0600) when
         missing, applies schema migrations, then deletes accepted or
-        cancelled rows older than the retention window. Re-opening after
-        ``close`` recreates the worker thread.
+        cancelled rows older than the retention window. It publishes the
+        connection only after startup succeeds; cancellation joins and cleans
+        up startup work before returning. Re-opening after ``close`` recreates
+        the worker thread.
         """
-        if self._connection is not None:
-            return
-        self._worker = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="channel-repository",
-        )
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(path=self._db_path.parent, mode=0o700)
-        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-        await loop.run_in_executor(self._worker, self._open_sync)
-        await self._prune()
+        async with self._open_lock:
+            if self._connection is not None:
+                return
+            self._recovery_path = None
+            self._worker = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="channel-repository",
+            )
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(path=self._db_path.parent, mode=0o700)
+            loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+            open_future: asyncio.Future[tuple[sqlite3.Connection, Optional[Path]]] = loop.run_in_executor(
+                self._worker, self._open_sync
+            )
+            opened_connection: Optional[sqlite3.Connection] = None
+            recovery_path: Optional[Path] = None
+            try:
+                opened_connection, recovery_path = await asyncio.shield(open_future)
+                self._connection = opened_connection
+                self._recovery_path = recovery_path
+            except BaseException:
+                self._connection = None
+                await self._cleanup_open_attempt(
+                    open_future=open_future,
+                    opened_connection=opened_connection,
+                    loop=loop,
+                )
+                raise
 
     async def close(self) -> None:
         """Close the connection; further calls re-open lazily.
@@ -1044,40 +1091,197 @@ class ChannelRepository:
 
     # ---- internal ---------------------------------------------------------
 
-    async def _prune(self) -> None:
+    @staticmethod
+    def _prune(connection: sqlite3.Connection) -> None:
         """Delete accepted or cancelled rows older than the retention window."""
+        from datetime import timedelta
 
-        def _write(connection: sqlite3.Connection) -> None:
-            from datetime import timedelta
-
-            cutoff: datetime = datetime.now(timezone.utc) - timedelta(days=_RETENTION_DAYS)
-            connection.execute(
-                """
-                DELETE FROM messages
-                WHERE (accepted_at IS NOT NULL OR cancelled_at IS NOT NULL)
-                  AND created_at < ?
-                """,
-                (_stamp(cutoff),),
-            )
-            connection.commit()
-
-        await self._run(_write)
-
-    def _open_sync(self) -> None:
-        """Open and configure the connection on the worker thread."""
-        self._db_path.touch(mode=0o600, exist_ok=True)
-        os.chmod(path=self._db_path, mode=0o600)
-        opened: sqlite3.Connection = sqlite3.connect(
-            database=str(self._db_path),
-            timeout=_BUSY_TIMEOUT_MS / 1000.0,
-            isolation_level=None,
+        cutoff: datetime = datetime.now(timezone.utc) - timedelta(days=_RETENTION_DAYS)
+        connection.execute(
+            """
+            DELETE FROM messages
+            WHERE (accepted_at IS NOT NULL OR cancelled_at IS NOT NULL)
+              AND created_at < ?
+            """,
+            (_stamp(cutoff),),
         )
-        opened.execute("PRAGMA journal_mode=WAL")
-        opened.execute("PRAGMA synchronous=NORMAL")
-        opened.execute("PRAGMA foreign_keys=ON")
-        opened.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-        migrate(connection=opened)
-        self._connection = opened
+        connection.commit()
+
+    def _open_sync(self) -> tuple[sqlite3.Connection, Optional[Path]]:
+        """Open the database while serializing startup recovery across processes."""
+        lock_path: Path = self._db_path.with_name(f"{self._db_path.name}.recovery.lock")
+        lock_descriptor: int = os.open(
+            path=str(lock_path),
+            flags=os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            mode=0o600,
+        )
+        lock_acquired: bool = False
+        try:
+            if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+                raise OSError(f"Channel recovery lock is not a regular file: {lock_path}")
+            self._acquire_recovery_lock(lock_descriptor=lock_descriptor)
+            lock_acquired = True
+            return self._open_database_sync()
+        finally:
+            if lock_acquired:
+                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            os.close(lock_descriptor)
+
+    def _acquire_recovery_lock(self, *, lock_descriptor: int) -> None:
+        """Wait up to the SQLite busy timeout for exclusive recovery ownership."""
+        deadline: float = time.monotonic() + (_BUSY_TIMEOUT_MS / 1000.0)
+        while True:
+            try:
+                fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise sqlite3.OperationalError("database is locked")
+                time.sleep(0.01)
+
+    def _open_database_sync(self) -> tuple[sqlite3.Connection, Optional[Path]]:
+        """Open and validate a queue, preserving corrupt database files before replacement."""
+        if not os.path.lexists(self._db_path):
+            try:
+                self._create_queue_file()
+            except FileExistsError:
+                pass
+        self._ensure_regular_queue_file(path=self._db_path)
+        original_database_mode: int = stat.S_IMODE(self._db_path.lstat().st_mode)
+        recovery_path: Optional[Path] = None
+        if not self._has_sqlite_database_header():
+            recovery_path = self._set_corrupt_queue_files_aside()
+            self._create_queue_file()
+        for recovery_attempt in range(2):
+            opened: sqlite3.Connection = sqlite3.connect(
+                database=str(self._db_path),
+                timeout=_BUSY_TIMEOUT_MS / 1000.0,
+                isolation_level=None,
+            )
+            try:
+                self._check_database_integrity(connection=opened)
+                os.chmod(path=self._db_path, mode=0o600, follow_symlinks=False)
+                self._configure_connection(connection=opened)
+                migrate(connection=opened)
+                self._prune(connection=opened)
+            except sqlite3.DatabaseError as error:
+                opened.close()
+                if not _is_sqlite_corruption(error) or recovery_attempt > 0:
+                    if recovery_path is None:
+                        os.chmod(path=self._db_path, mode=original_database_mode, follow_symlinks=False)
+                    raise
+                os.chmod(path=self._db_path, mode=original_database_mode, follow_symlinks=False)
+                recovery_path = self._set_corrupt_queue_files_aside()
+                self._create_queue_file()
+                continue
+            except BaseException:
+                opened.close()
+                if recovery_path is None:
+                    os.chmod(path=self._db_path, mode=original_database_mode, follow_symlinks=False)
+                raise
+            return opened, recovery_path
+        raise RuntimeError("Channel database recovery did not produce an open database.")
+
+    @staticmethod
+    def _check_database_integrity(*, connection: sqlite3.Connection) -> None:
+        """Reject corrupt pages before changing permissions, journal mode or schema."""
+        integrity_results: list[tuple[object, ...]] = connection.execute("PRAGMA quick_check").fetchall()
+        if integrity_results != [("ok",)]:
+            raise _CorruptChannelDatabaseError("SQLite quick_check found corrupt channel data.")
+
+    @staticmethod
+    def _configure_connection(*, connection: sqlite3.Connection) -> None:
+        """Configure SQLite's journal, sync and transaction settings."""
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+
+    def _create_queue_file(self) -> None:
+        """Create a fresh database file with private permissions without following links."""
+        database_descriptor: int = os.open(
+            path=str(self._db_path),
+            flags=os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            mode=0o600,
+        )
+        os.close(database_descriptor)
+
+    @staticmethod
+    def _ensure_regular_queue_file(*, path: Path) -> None:
+        """Reject a queue path that could redirect SQLite or file operations."""
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise OSError(f"Channel database path is not a regular file: {path}")
+
+    def _has_sqlite_database_header(self) -> bool:
+        """Return whether the nonempty queue file carries SQLite's stable file signature."""
+        with self._db_path.open("rb") as database_file:
+            header: bytes = database_file.read(16)
+        return len(header) == 0 or header == b"SQLite format 3\x00"
+
+    def _set_corrupt_queue_files_aside(self) -> Path:
+        """Preserve the database and SQLite sidecars under one collision-safe backup stem."""
+        queue_files: list[Path] = [
+            self._db_path,
+            self._db_path.with_name(f"{self._db_path.name}-wal"),
+            self._db_path.with_name(f"{self._db_path.name}-shm"),
+            self._db_path.with_name(f"{self._db_path.name}-journal"),
+        ]
+        existing_queue_files: list[Path] = [path for path in queue_files if os.path.lexists(path)]
+        for queue_file in existing_queue_files:
+            self._ensure_regular_queue_file(path=queue_file)
+
+        timestamp: str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_stem: str = f"{self._db_path.name}.corrupt-{timestamp}-{uuid4().hex}"
+        backup_paths: list[Path] = [
+            self._db_path.with_name(f"{backup_stem}{queue_file.name[len(self._db_path.name):]}")
+            for queue_file in existing_queue_files
+        ]
+        for queue_file, backup_path in zip(existing_queue_files, backup_paths):
+            os.link(src=queue_file, dst=backup_path, follow_symlinks=False)
+        for queue_file in (*existing_queue_files[1:], existing_queue_files[0]):
+            queue_file.unlink()
+        return backup_paths[existing_queue_files.index(self._db_path)]
+
+    async def _cleanup_open_attempt(
+        self,
+        *,
+        open_future: asyncio.Future[tuple[sqlite3.Connection, Optional[Path]]],
+        opened_connection: Optional[sqlite3.Connection],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Join startup work, close an unclaimed connection and stop its worker off-loop."""
+        cleanup_task: asyncio.Task[None] = asyncio.create_task(
+            self._finish_open_cleanup(
+                open_future=open_future,
+                opened_connection=opened_connection,
+                loop=loop,
+            )
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                continue
+        cleanup_task.result()
+
+    async def _finish_open_cleanup(
+        self,
+        *,
+        open_future: asyncio.Future[tuple[sqlite3.Connection, Optional[Path]]],
+        opened_connection: Optional[sqlite3.Connection],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Close a completed startup connection on its owner thread and shut down off-loop."""
+        try:
+            if opened_connection is None:
+                try:
+                    opened_connection, _recovery_path = await asyncio.shield(open_future)
+                except BaseException:
+                    opened_connection = None
+            if opened_connection is not None:
+                await loop.run_in_executor(self._worker, opened_connection.close)
+        finally:
+            await asyncio.to_thread(self._worker.shutdown, wait=True)
 
     def _get_sync(self, *, connection: sqlite3.Connection, message_id: UUID) -> Optional[ChannelMessageDAO]:
         """Read one message row on the worker thread (caller holds the lock).

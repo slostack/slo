@@ -355,9 +355,7 @@ class TestForceIsAtomicAndPromptOnly:
                 "UPDATE messages SET accepted_at = ? WHERE id = ?",
                 ("2026-11-22T00:00:00.000000+00:00", str(row.id)),
             )
-            force_task: asyncio.Task[bool] = asyncio.create_task(
-                gateway.force(message_id=row.id, by=user.id)
-            )
+            force_task: asyncio.Task[bool] = asyncio.create_task(gateway.force(message_id=row.id, by=user.id))
             await asyncio.sleep(0.4)
             other.execute("COMMIT")
             forced: bool = await force_task

@@ -26,7 +26,9 @@ _WAIT_SECONDS: float = 120.0
 _PAGE_SIZE: int = 200
 
 
-async def _start_sender(*, db_path: Path, user: ParticipantDAO, agent_id: UUID, channel: ChannelDAO, label: str, log_path: Path) -> asyncio.subprocess.Process:
+async def _start_sender(
+    *, db_path: Path, user: ParticipantDAO, agent_id: UUID, channel: ChannelDAO, label: str, log_path: Path
+) -> asyncio.subprocess.Process:
     """Launch one sender process that writes its prompts to the shared queue.
 
     Args:
@@ -83,7 +85,12 @@ async def _reap_senders(*, senders: list[asyncio.subprocess.Process]) -> list[in
             if sender.returncode is None:
                 sender.kill()
                 await sender.wait()
-    return [sender.returncode for sender in senders]
+    exit_codes: list[int] = []
+    for sender in senders:
+        if sender.returncode is None:
+            raise RuntimeError("Channel sender exited without an exit code.")
+        exit_codes.append(sender.returncode)
+    return exit_codes
 
 
 async def _read_every_row(*, gateway: ChannelGateway, agent_id: UUID) -> list[ChannelMessageDAO]:
@@ -157,5 +164,7 @@ class TestFourProcessesShareOneQueue:
         assert [row.message_index for row in rows] == list(range(1, _PROCESS_COUNT * _SENDS_PER_PROCESS + 1))
         assert len({row.id for row in rows}) == len(rows)
         for label in labels:
-            bodies: list[str] = [row.message_contents for row in rows if row.message_contents.startswith(f"{label}-")]
+            bodies: list[str] = [
+                row.message_contents for row in rows if row.message_contents.startswith(f"{label}-")
+            ]
             assert sorted(bodies) == sorted(f"{label}-{index}" for index in range(_SENDS_PER_PROCESS))

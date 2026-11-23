@@ -153,6 +153,7 @@ class ChannelPoller:
         self._run_task: Optional["asyncio.Task[TurnOutcomeDAO]"] = None
         self._running_row: Optional[ChannelMessageDAO] = None
         self._running_row_started: bool = False
+        self._queue_admission_lock: asyncio.Lock = asyncio.Lock()
         self._paused_reason: Optional[str] = None
         self._stopping: bool = False
         self._started: bool = False
@@ -318,11 +319,59 @@ class ChannelPoller:
         Returns:
             list[ChannelMessageDAO]: Queued prompt rows, forced first.
         """
+        async with self._queue_admission_lock:
+            return await self._read_pending_prompts()
+
+    async def _read_pending_prompts(self) -> list[ChannelMessageDAO]:
+        """Read pending prompt rows while the caller owns queue admission.
+
+        WHAT: Excludes the row reserved for the current run before its first
+            event is accepted.
+        WHO: Queue listing and the poller's atomic admission step call this.
+        WHEN: While ``_queue_admission_lock`` serializes row selection against
+            operator cancellation.
+
+        Returns:
+            list[ChannelMessageDAO]: Pending prompts in gateway display order.
+        """
         rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
             recipient_id=self._participant_id,
         )
         running_id: Optional[UUID] = self._running_row.id if self._running_row is not None else None
         return [row for row in rows if row.message_type == "prompt" and row.id != running_id]
+
+    async def cancel_queued(self, *, message_id: UUID) -> bool:
+        """Cancel a queued prompt as its recipient agent's operator.
+
+        WHAT: Serializes prompt cancellation against the pending-read and run
+            reservation, and records the standard ``operator`` cancellation.
+        WHO: The TUI channel adapter delegates operator cancellation here.
+        WHEN: Before a prompt's first event is accepted; a reserved or running
+            prompt is never cancelled.
+
+        Args:
+            message_id (UUID): Queued prompt to cancel.
+
+        Returns:
+            bool: ``True`` only when the still-queued prompt was cancelled.
+        """
+        async with self._queue_admission_lock:
+            if self._running_row is not None and self._running_row.id == message_id:
+                return False
+            message: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=message_id)
+            if (
+                message is None
+                or message.recipient_id != self._participant_id
+                or message.message_type != "prompt"
+                or message.accepted_at is not None
+                or message.cancelled_at is not None
+            ):
+                return False
+            return await self._gateway.cancel(
+                message_id=message_id,
+                by=self._participant_id,
+                reason="operator",
+            )
 
     async def force(self, *, message_id: UUID) -> bool:
         """Force one of this agent's pending rows into the current run (108.2).
@@ -609,35 +658,40 @@ class ChannelPoller:
         )
 
     async def _start_next_pending_prompt(self) -> bool:
-        """Start a run for the first pending prompt row (forced first, FIFO).
+        """Reserve and start the first pending prompt row (forced first, FIFO).
 
         Returns:
             bool: ``True`` when a run was started and more prompt rows may
                 still be pending behind it (the loop skips its wait once).
         """
-        prompts: list[ChannelMessageDAO] = await self.pending_prompts()
-        if not prompts:
-            return False
-        row: ChannelMessageDAO = prompts[0]
-        # Reserve the run's own row so the agent's first boundary cannot take
-        # it again as steering (the row is still pending until its first event
-        # stamps ``accepted_at``).
-        self._boundary_inbox.reserve(message_id=row.id)
-        self._running_row = row
+        async with self._queue_admission_lock:
+            prompts: list[ChannelMessageDAO] = await self._read_pending_prompts()
+            if not prompts:
+                return False
+            row: ChannelMessageDAO = prompts[0]
+            # Reserve the run's own row before cancellation or another
+            # admission can observe the still-unaccepted row as pending.
+            self._boundary_inbox.reserve(message_id=row.id)
+            self._running_row = row
+            self._running_row_started = False
+            self._run_task = asyncio.create_task(
+                self._runner.run(message=row, on_started=self._accept_running_row)
+            )
+            self._run_task.add_done_callback(
+                lambda _task: self._gateway.local_wake(recipient_id=self._participant_id).set()
+            )
+            return len(prompts) > 1
 
-        self._running_row_started = False
+    async def _accept_running_row(self) -> None:
+        """Accept the reserved row when its runner yields the first event.
 
-        async def _accept() -> None:
-            self._running_row_started = True
-            await self._gateway.accept(message_id=row.id)
-
-        run_task: asyncio.Task[TurnOutcomeDAO] = asyncio.create_task(
-            self._runner.run(message=row, on_started=_accept)
-        )
-        self._run_task = run_task
-        # A finished run must settle promptly (reply row, next queued run),
-        # so its completion wakes the loop even when the wake was consumed.
-        run_task.add_done_callback(
-            lambda _task: self._gateway.local_wake(recipient_id=self._participant_id).set()
-        )
-        return len(prompts) > 1
+        WHAT: Records first-event admission and persists ``accepted_at`` for
+            the poller's reserved row.
+        WHO: The ``TurnRunner`` callback created by ``_start_next_pending_prompt``.
+        WHEN: Once the underlying session invoke yields its first event.
+        """
+        row: Optional[ChannelMessageDAO] = self._running_row
+        if row is None:
+            raise RuntimeError("Channel poller has no reserved prompt to accept.")
+        self._running_row_started = True
+        await self._gateway.accept(message_id=row.id)

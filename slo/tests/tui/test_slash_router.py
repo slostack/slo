@@ -230,7 +230,7 @@ class TestSlashRouterDispatch:
         """``/queue`` is a registered command whose usage names resume and force."""
         command: Optional[SlashCommandSpecDAO] = SlashRouter._REGISTRY.resolve(token="queue")
         assert command is not None
-        assert command.usage == "/queue [resume | force <n>] (bare: list)"
+        assert command.usage == "/queue [resume | cancel <n|all> | edit <n> | force <n>] (bare: list)"
 
     @pytest.mark.asyncio
     async def test_queue_resume_is_admitted_before_model_preparation(self) -> None:
@@ -1475,6 +1475,22 @@ class TestQueueAndSteerOverARealChannelQueue:
             assert stored is not None and stored.forced_at is not None
             stored_first = await gateway.get(message_id=first.id)
             assert stored_first is not None and stored_first.forced_at is None
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()
+
+    @pytest.mark.asyncio
+    async def test_queue_mutations_reject_unicode_numeric_indices(self, tmp_path: Path) -> None:
+        """Queue action handlers reject digit glyphs that Python cannot parse as integers."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            poller = session.channel_poller
+            assert poller is not None
+            poller.pause(reason="held")
+            for command in ("/queue cancel ²", "/queue edit ²", "/queue force ²"):
+                result: SlashCommandResultDAO = await SlashRouter.dispatch(line=command, session=session)
+                assert result.rendered is not None
+                assert result.rendered.startswith("usage: /queue")
         finally:
             await session.stop_channel_delivery(reason="test_done")
             await gateway.close()

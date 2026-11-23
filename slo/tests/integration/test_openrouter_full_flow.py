@@ -11,7 +11,6 @@ from __future__ import annotations
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.components.prompt_input.component import PromptInputComponent
 from pathlib import Path
-from collections.abc import Iterator
 from unittest.mock import patch
 import asyncio
 import json
@@ -21,7 +20,6 @@ import pytest
 
 from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_store import CredentialStore
-from src.auth.credential_resolver import CredentialResolver
 from src.auth.openrouter_authentication import OpenRouterAuthenticationService
 
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
@@ -36,38 +34,6 @@ from src.tui.authentication.widgets.api_key_input import ApiKeyInputWidget
 from src.tui.authentication.widgets.provider_select import ProviderSelectWidget
 from textual.widgets import Button, Input, Static
 from langchain_core.tools import tool
-
-
-@pytest.fixture
-def isolated_catalog(tmp_path: Path) -> Iterator[CredentialStore]:
-    """Redirect real persistence owners and reject any default HTTP transport.
-
-    Args:
-        tmp_path: Pytest-owned directory; all persistent targets stay beneath it.
-
-    Yields:
-        CredentialStore: Real private store used by both authentication and resolver.
-    """
-    private = (tmp_path / "private").resolve()
-    assert private.is_relative_to(tmp_path.resolve())
-    store = CredentialStore(path=private / "authentication.json")
-    with (
-        patch("src.auth.credential_resolver.CredentialStore", return_value=store),
-        patch.object(CredentialResolver, "_env_var_for", return_value=None),
-        patch("src.agents.model_catalog.store._CFG_SLO_HOME", private),
-        patch("src.agents.model_catalog.store._cfg", return_value=None),
-        patch("src.agents.slo_agent.preferences.service._CFG_SLO_HOME", private),
-        patch("src.agents.slo_agent.preferences.service._cfg", return_value=None),
-        patch.object(
-            httpx.AsyncHTTPTransport, "handle_async_request", side_effect=AssertionError("Network forbidden")
-        ),
-        patch.object(httpx.HTTPTransport, "handle_request", side_effect=AssertionError("Network forbidden")),
-    ):
-        ModelCatalogService.reset()
-        try:
-            yield store
-        finally:
-            ModelCatalogService.reset()
 
 
 async def test_default_transports_are_blocked(isolated_catalog: CredentialStore) -> None:

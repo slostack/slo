@@ -12,12 +12,10 @@ restart recovery pause shows a visible notice (108.1 §2/§6).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 from uuid import UUID, uuid4
-
-from collections.abc import Callable
-from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.messages import AIMessage
@@ -37,103 +35,12 @@ from src.tui.channel.adapter import TuiChannelAdapter
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.components.prompt_input.component import PromptInputComponent
 from tests.tui._scroll_settle import pump_until
+from tests.conftest import GatedFauxChatModel
 
 _RECOVERY_PAUSE_NOTICE: str = (
     "channel queue paused after restart — 1 queued prompt(s) held; /queue resume to continue"
 )
 _ABORT_HOLD_NOTICE: str = "(aborting… queued prompts held — /queue resume to continue)"
-
-
-class GatedFauxChatModel(FauxChatModel):
-    """Provider-boundary test double: the first model call waits on an event.
-
-    The first ``_astream`` call awaits ``first_call_release`` before streaming,
-    so the owning run stays in flight while the test drives the TUI. Later
-    calls stream immediately. The gate lives at the LLM provider boundary —
-    ``session.invoke`` and every internal collaborator stay real.
-    """
-
-    first_call_release: asyncio.Event = Field(
-        description="Event the test sets to release the held first model call.",
-    )
-    provider_calls: list[list[str]] = Field(
-        default_factory=list,
-        description="Text of every message sent on each provider call, shared by tool-bound clones.",
-    )
-    _first_call_gate_consumed: bool = PrivateAttr(default=False)
-
-    def __init__(
-        self,
-        *,
-        responses: Sequence[AIMessage],
-        first_call_release: asyncio.Event,
-        provider_calls: Optional[list[list[str]]] = None,
-    ) -> None:
-        """Store the scripted responses and the event releasing the first call.
-
-        Args:
-            responses (Sequence[AIMessage]): Scripted responses consumed in order.
-            first_call_release (asyncio.Event): Released by the test to let the
-                first held model call proceed.
-            provider_calls (Optional[list[list[str]]]): Shared call log; a fresh
-                list when omitted.
-        """
-        super().__init__(
-            responses=responses,
-            first_call_release=first_call_release,
-            provider_calls=provider_calls if provider_calls is not None else [],
-        )
-
-    def bind_tools(
-        self,
-        tools: Sequence[dict[str, object] | type | Callable[..., object] | BaseTool],
-        *,
-        tool_choice: Optional[str] = None,
-        **kwargs: object,
-    ) -> "GatedFauxChatModel":
-        """Return a gate-preserving clone so tool binding cannot drop the hold.
-
-        Args:
-            tools: Upstream tool schemas, classes, callables or tools.
-            tool_choice (Optional[str]): Unused upstream tool-choice option.
-            **kwargs (object): Unused LangChain passthrough.
-
-        Returns:
-            GatedFauxChatModel: Clone sharing the release event and gate state.
-        """
-        clone: GatedFauxChatModel = GatedFauxChatModel(
-            responses=list(self.queue),
-            first_call_release=self.first_call_release,
-            provider_calls=self.provider_calls,
-        )
-        clone.bound_tools = list(tools)
-        clone._first_call_gate_consumed = self._first_call_gate_consumed
-        return clone
-
-    async def _astream(
-        self,
-        messages: list,
-        stop: Optional[list[str]] = None,
-        run_manager=None,
-        **kwargs: object,
-    ):
-        """Hold the first call until released, then stream the scripted chunks.
-
-        Args:
-            messages (list): Unused prompt history.
-            stop (Optional[list[str]]): Unused stop sequence.
-            run_manager (Optional[AsyncCallbackManagerForLLMRun]): Unused callback manager.
-            **kwargs (object): LangChain passthrough.
-
-        Yields:
-            ChatGenerationChunk: The scripted chunk sequence for one response.
-        """
-        self.provider_calls.append([str(message.content) for message in messages])
-        if not self._first_call_gate_consumed:
-            self._first_call_gate_consumed = True
-            await self.first_call_release.wait()
-        async for chunk in super()._astream(messages=messages, stop=stop, run_manager=run_manager, **kwargs):
-            yield chunk
 
 
 def _build_session(
@@ -867,7 +774,10 @@ class TestQueueForceSlashCommandJourney:
                         await pilot.press("enter")
 
                     async def _two_rows_pending() -> bool:
-                        return [row.message_contents for row in await poller.pending_prompts()] == ["two", "three"]
+                        return [row.message_contents for row in await poller.pending_prompts()] == [
+                            "two",
+                            "three",
+                        ]
 
                     await _wait_until_db(predicate=_two_rows_pending)
 
@@ -920,7 +830,11 @@ class TestQueueForceSlashCommandJourney:
         ]
         assert session.history_store is not None
         events = await session.history_store.load_events(session_id=session.session_id)
-        user_turns: list[str] = [event.payload.content for event in events if event.kind == "user_message"]
+        user_turns: list[str] = [
+            event.payload.content
+            for event in events
+            if event.kind == "user_message" and event.payload.content is not None
+        ]
         steering = [
             event
             for event in events

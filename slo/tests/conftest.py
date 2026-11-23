@@ -1,8 +1,12 @@
 """Shared test fixtures."""
 
+import asyncio
 import importlib
 import shutil
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Optional
+from unittest.mock import patch
 
 from tests.state_isolation import (
     INHERITED_STATE_OVERRIDES,
@@ -17,6 +21,142 @@ from tests.state_isolation import (
 _SUITE_SLO_HOME: Path = isolate_suite_slo_home()
 
 import pytest  # noqa: E402
+
+import httpx
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.tools import BaseTool
+from pydantic import Field, PrivateAttr
+
+from src.agents.providers.faux import FauxChatModel
+from src.agents.model_catalog.service import ModelCatalogService
+from src.auth.credential_resolver import CredentialResolver
+from src.auth.credential_store import CredentialStore
+
+
+class GatedFauxChatModel(FauxChatModel):
+    """Provider-boundary test double whose first model call waits on an event.
+
+    The first ``_astream`` call awaits ``first_call_release`` before streaming,
+    so the owning run stays in flight while the test drives the TUI. Later
+    calls stream immediately. The gate lives at the LLM provider boundary;
+    ``session.invoke`` and every internal collaborator stay real.
+    """
+
+    first_call_release: asyncio.Event = Field(description="Event releasing the first held model call.")
+    provider_calls: list[list[str]] = Field(
+        default_factory=list,
+        description="Provider messages recorded across tool-bound clones.",
+    )
+    _first_call_gate_consumed: bool = PrivateAttr(default=False)
+
+    def __init__(
+        self,
+        *,
+        responses: Sequence[AIMessage],
+        first_call_release: asyncio.Event,
+        provider_calls: Optional[list[list[str]]] = None,
+    ) -> None:
+        """Store the scripted responses and the event releasing the first call.
+
+        Args:
+            responses (Sequence[AIMessage]): Scripted responses consumed in order.
+            first_call_release (asyncio.Event): Released by the test to let the
+                first held model call proceed.
+            provider_calls (Optional[list[list[str]]]): Shared call log; a fresh
+                list when omitted.
+        """
+        super().__init__(
+            responses=responses,
+            first_call_release=first_call_release,
+            provider_calls=provider_calls if provider_calls is not None else [],
+        )
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, object] | type | Callable[..., object] | BaseTool],
+        *,
+        tool_choice: Optional[str] = None,
+        **kwargs: object,
+    ) -> "GatedFauxChatModel":
+        """Return a gate-preserving clone so tool binding cannot drop the hold.
+
+        Args:
+            tools: Upstream tool schemas, classes, callables or tools.
+            tool_choice (Optional[str]): Unused upstream tool-choice option.
+            **kwargs (object): Unused LangChain passthrough.
+
+        Returns:
+            GatedFauxChatModel: Clone sharing the release event and gate state.
+        """
+        clone: GatedFauxChatModel = GatedFauxChatModel(
+            responses=list(self.queue),
+            first_call_release=self.first_call_release,
+            provider_calls=self.provider_calls,
+        )
+        clone.bound_tools = list(tools)
+        clone._first_call_gate_consumed = self._first_call_gate_consumed
+        return clone
+
+    async def _astream(
+        self,
+        messages: list,
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: object,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Hold the first call until released, then stream the scripted chunks.
+
+        Args:
+            messages (list): Prompt messages sent to the provider boundary.
+            stop (Optional[list[str]]): Optional stop sequences.
+            run_manager (Optional[AsyncCallbackManagerForLLMRun]): LangChain callback manager.
+            **kwargs (object): Additional LangChain model options.
+
+        Yields:
+            ChatGenerationChunk: A chunk from the next scripted response.
+        """
+        self.provider_calls.append([str(message.content) for message in messages])
+        if not self._first_call_gate_consumed:
+            self._first_call_gate_consumed = True
+            await self.first_call_release.wait()
+        async for chunk in super()._astream(messages=messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield chunk
+
+
+@pytest.fixture
+def isolated_catalog(tmp_path: Path) -> Iterator[CredentialStore]:
+    """Redirect catalog persistence and refuse unconfigured network transports.
+
+    Args:
+        tmp_path (Path): Pytest-owned directory for credentials and catalog state.
+
+    Yields:
+        CredentialStore: Real private credential store used by catalog admission.
+    """
+    private: Path = (tmp_path / "private").resolve()
+    assert private.is_relative_to(tmp_path.resolve())
+    store: CredentialStore = CredentialStore(path=private / "authentication.json")
+    with (
+        patch("src.auth.credential_resolver.CredentialStore", return_value=store),
+        patch.object(CredentialResolver, "_env_var_for", return_value=None),
+        patch("src.agents.model_catalog.store._CFG_SLO_HOME", private),
+        patch("src.agents.model_catalog.store._cfg", return_value=None),
+        patch("src.agents.slo_agent.preferences.service._CFG_SLO_HOME", private),
+        patch("src.agents.slo_agent.preferences.service._cfg", return_value=None),
+        patch.object(
+            httpx.AsyncHTTPTransport,
+            "handle_async_request",
+            side_effect=AssertionError("Network forbidden"),
+        ),
+        patch.object(httpx.HTTPTransport, "handle_request", side_effect=AssertionError("Network forbidden")),
+    ):
+        ModelCatalogService.reset()
+        try:
+            yield store
+        finally:
+            ModelCatalogService.reset()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:

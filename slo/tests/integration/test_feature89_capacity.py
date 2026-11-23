@@ -17,7 +17,7 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
 from tests.agents.providers.feature89_responses import answer_frames
 from tests.agents.slo_agent.test_session_manual_compaction import _viable_events
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 
 
 @pytest.mark.parametrize("model_name", ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol"])

@@ -66,6 +66,16 @@ class ChannelGateway:
         """
         return self._repository
 
+    @property
+    def recovery_path(self) -> Optional[Path]:
+        """Return the corrupt database copy preserved during the last successful open.
+
+        Returns:
+            Optional[Path]: The recovery copy path, or ``None`` if opening did
+                not recover a corrupt database.
+        """
+        return self._repository.recovery_path
+
     @classmethod
     def default_channels_dir(cls) -> Path:
         """Return ``$SLO_HOME/channels``, where the queue and adapter files live.
@@ -122,7 +132,11 @@ class ChannelGateway:
         return gateway
 
     async def open(self) -> None:
-        """Open the repository; a no-op when it is already open."""
+        """Open the repository and retain any recovery-copy path for inspection.
+
+        The path is available through ``recovery_path`` after a successful open;
+        it is ``None`` when startup did not replace a corrupt database.
+        """
         await self._repository.open()
 
     async def close(self) -> None:

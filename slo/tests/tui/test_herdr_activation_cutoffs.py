@@ -267,7 +267,7 @@ async def test_mount_public_unmount_blocks_focus_and_auth(tmp_path: Path, phase:
                     credential.assert_not_called()
                     auth.assert_not_called()
                     preparation.assert_not_called()
-                    assert app._lease_timer is None and app._inbox_timer is None
+                    assert app._lease_timer is None
                     assert app._app_shutdown_task is not None and app._app_shutdown_task.done()
                     assert app._app_closing and app._delivery_quiescing
             finally:

@@ -27,23 +27,23 @@ def test_delivery_construction_is_inert_and_reuses_stores(tmp_path: Path) -> Non
     assert not history_root.exists()
     with patch.object(app, "set_interval") as interval:
         app._build_session_delivery(session=session)
-        assert app._lease_store is not None and app._inbox_store is not None
+        assert app._lease_store is not None
         assert app._workflow_handle_store is None and app._workflow_app_service is None
         app._workflow_app_service = app._build_workflow_service()
-        stores = (app._lease_store, app._inbox_store, app._workflow_handle_store, app._workflow_app_service)
+        stores = (app._lease_store, app._workflow_handle_store, app._workflow_app_service)
         assert all(store is not None for store in stores)
         app._build_session_delivery(session=session)
         assert all(
             left is right
             for left, right in zip(
                 stores,
-                (app._lease_store, app._inbox_store, app._workflow_handle_store, app._workflow_app_service),
+                (app._lease_store, app._workflow_handle_store, app._workflow_app_service),
             )
         )
         interval.assert_not_called()
     assert not history_root.exists()
     assert app._mount_runtime_task is None
-    assert app._lease_timer is None and app._inbox_timer is None
+    assert app._lease_timer is None
     assert session._herdr_start_task is None
 
 
@@ -64,9 +64,9 @@ async def test_historyless_initialization_has_no_delivery_effects(tmp_path: Path
             await app._initialize_session_delivery()
         interval.assert_not_called()
         acquire.assert_not_awaited()
-    assert app._lease_store is None and app._inbox_store is None
+    assert app._lease_store is None
     assert app._workflow_handle_store is None and app._workflow_app_service is None
-    assert app._lease_timer is None and app._inbox_timer is None
+    assert app._lease_timer is None
     assert app._delivery_quiescing and app._replacement_delivery_safe
     assert not (tmp_path / "history").exists()
 
@@ -160,9 +160,8 @@ async def test_mount_phase_order_and_preparation_branch(tmp_path: Path, history:
                 "focus/auth",
             ]
             assert (app._lease_timer is not None) is history
-            assert (app._inbox_timer is not None) is history
             assert app._delivery_quiescing is not history
-    assert app._lease_timer is None and app._inbox_timer is None
+    assert app._lease_timer is None
     assert app._app_closing and app._delivery_quiescing
     if history:
         assert app._lease_store is not None

@@ -1,10 +1,10 @@
 """TUI integration tests for the detached-workflow receive path (spec 57.a.5).
 
-Proves ``SloTUI`` delegates to the ``src/tui/workflows`` namespace: inbox
-lifecycle messages advance durable handles and execute renderer effects,
+Proves ``SloTUI`` delegates to the ``src/tui/workflows`` namespace:
 ``launch_workflow`` tool results seed the live-state cache and launch the
-visualizer, the startup reconcile feeds the resume/exit hint, and inbox
-delivery modes keep their existing rendering behaviour.
+visualizer, and the startup reconcile feeds the resume/exit hint. The file
+inbox that once carried workflow lifecycle messages is retired (108.6); the
+service-level lifecycle advance remains covered at the end of this module.
 """
 
 from __future__ import annotations
@@ -12,16 +12,14 @@ from __future__ import annotations
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import asyncio
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from langchain_core.messages import AIMessage
 
 import pytest
 
-from src.agents.slo_agent.history.inbox.dao import (
-    InboxDeliveryMode,
-    InboxMessageKind,
-    SessionInboxMessageDAO,
-)
-from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO, SubAgentStatusDAO
+from src.agents.slo_agent.orchestrator.dao import AttachedDispatchSnapshotDAO
 from src.agents.slo_agent.orchestrator.workflow_registry import (
     WorkflowHandleDAO,
     WorkflowHandleStore,
@@ -31,7 +29,12 @@ from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.usage import SessionUsageSnapshotDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
+from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
 from src.tui.app import SloTUI
+from src.tui.components.prompt_input.component import PromptInputComponent
+from tests.tui._scroll_settle import pump_until
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.workflows.service import DetachedWorkflowAppService
@@ -72,6 +75,10 @@ def _mock_session(*, history_root: Path) -> MagicMock:
     session.active_reasoning_level = "high"
     session.history_enabled = True
     session.history_root = history_root
+    # An idle session: the TUI is not running a prompt and owns no channel
+    # poller (108.1).
+    session.is_running = False
+    session.channel_poller = None
     session.subscribe = MagicMock()
     session.unsubscribe = MagicMock()
     session.hydrate_transcript_entries = AsyncMock(return_value=[])
@@ -133,97 +140,6 @@ async def _write_handle(
     )
     await store.write(handle=handle)
     return handle
-
-
-def _workflow_message(
-    *,
-    kind: InboxMessageKind,
-    delivery_mode: InboxDeliveryMode = "context_note",
-    message_id: str = "message-1",
-    workflow_id: str = "wf-1",
-    orchestrator_session_id: str = "orch-1",
-) -> SessionInboxMessageDAO:
-    """Build one workflow lifecycle inbox message.
-
-    Args:
-        kind (InboxMessageKind): Workflow lifecycle message kind.
-        delivery_mode (InboxDeliveryMode): Inbox delivery mode.
-        message_id (str): Stable message id.
-        workflow_id (str): Owning workflow id.
-        orchestrator_session_id (str): Detached orchestrator session id.
-
-    Returns:
-        SessionInboxMessageDAO: The built message.
-    """
-    return SessionInboxMessageDAO(
-        message_id=message_id,
-        session_id="session-1234",
-        schedule_id=f"workflow:{workflow_id}",
-        run_id="run-1",
-        kind=kind,
-        delivery_mode=delivery_mode,
-        title=f"{workflow_id} update",
-        text=f"[workflow {workflow_id}] lifecycle note",
-        payload={
-            "workflow_id": workflow_id,
-            "orchestrator_session_id": orchestrator_session_id,
-        },
-    )
-
-
-class TestContextNoteDelivery:
-    """The ``context_note`` inbox branch (spec 57.a.4)."""
-
-    @pytest.mark.asyncio
-    async def test_context_note_renders_line_and_persists_event(self, tmp_path: Path) -> None:
-        """A claimed context_note writes the ``⊛`` line AND records the event."""
-        session: MagicMock = _mock_session(history_root=tmp_path / "history")
-        app: SloTUI = SloTUI(session=session)
-        message: SessionInboxMessageDAO = _workflow_message(kind="workflow_phase_update")
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            async with app._prompt_submission_lock:
-                admitted = await app._handle_inbox_message(message=message)
-            assert admitted is True
-
-            assert app.query_one(ChatTranscriptComponent)._adapter is not None
-            assert any(
-                content == "⊛ wf-1 update: [workflow wf-1] lifecycle note" and classes == "sub-agent-notice"
-                for content, classes in app.query_one(ChatTranscriptComponent)._adapter.lines
-            )
-            session.record_workflow_update.assert_awaited_once_with(
-                text="[workflow wf-1] lifecycle note",
-                message_id="message-1",
-                workflow_id="wf-1",
-            )
-
-    @pytest.mark.asyncio
-    async def test_context_note_missing_payload_defaults_workflow_unknown(self, tmp_path: Path) -> None:
-        """A context_note without workflow payload records ``wf-unknown``."""
-        session: MagicMock = _mock_session(history_root=tmp_path / "history")
-        app: SloTUI = SloTUI(session=session)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="workflow:wf-1",
-            run_id="run-1",
-            kind="workflow_phase_update",
-            delivery_mode="context_note",
-            text="phase note",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            async with app._prompt_submission_lock:
-                admitted = await app._handle_inbox_message(message=message)
-            assert admitted is True
-
-            session.record_workflow_update.assert_awaited_once_with(
-                text="phase note",
-                message_id="message-1",
-                workflow_id="wf-unknown",
-            )
 
 
 class TestVisualizerRetarget:
@@ -349,301 +265,9 @@ class TestVisualizerRetarget:
                 for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
             )
 
-    @pytest.mark.asyncio
-    async def test_workflow_started_note_triggers_fallback_launch(self, tmp_path: Path) -> None:
-        """The resume case: a claimed workflow_started note opens the visualizer."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch(
-                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
-                return_value=True,
-            ) as mock_launch:
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            mock_launch.assert_called_once_with(parent_session_id="orch-1")
-
-    @pytest.mark.asyncio
-    async def test_terminal_note_resets_guard_and_relaunch_opens_new_window(self, tmp_path: Path) -> None:
-        """After a terminal note, a re-run of the workflow gets a fresh window."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with (
-                patch(
-                    "src.tui.visualizer_launcher.VisualizerLauncher.launch",
-                    return_value=True,
-                ) as mock_launch,
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(
-                            kind="workflow_completed",
-                            delivery_mode="chat_turn",
-                            message_id="message-2",
-                        ),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-                await _write_handle(store=store, workflow_id="wf-2", state="launching")
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(
-                            kind="workflow_started",
-                            message_id="message-3",
-                            workflow_id="wf-2",
-                        ),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            assert mock_launch.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_terminal_note_never_launches_itself(self, tmp_path: Path) -> None:
-        """A terminal note frees the guard but never opens a window on its own."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="running")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with (
-                patch(
-                    "src.tui.visualizer_launcher.VisualizerLauncher.launch",
-                    return_value=True,
-                ) as mock_launch,
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(
-                            kind="workflow_completed",
-                            delivery_mode="chat_turn",
-                        ),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            mock_launch.assert_not_called()
-
-
-class TestAppServiceRendererBoundary:
-    """The app passes raw input to the service once, then executes typed effects."""
-
-    @pytest.mark.asyncio
-    async def test_inbox_message_routes_raw_kind_and_payload_to_service_once(self, tmp_path: Path) -> None:
-        """The app hands the untouched kind/payload to the service — no extraction."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-        message: SessionInboxMessageDAO = _workflow_message(kind="workflow_started")
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert app._workflow_app_service is not None
-            with (
-                patch.object(
-                    app._workflow_app_service,
-                    "advance_from_inbox_message",
-                    wraps=app._workflow_app_service.advance_from_inbox_message,
-                    new_callable=AsyncMock,
-                ) as advance_spy,
-                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(message=message)
-                assert admitted is True
-                await _join_viewers(app)
-
-        advance_spy.assert_awaited_once_with(kind="workflow_started", payload=message.payload)
-
-    @pytest.mark.asyncio
-    async def test_app_executes_exactly_the_emitted_typed_effects(self, tmp_path: Path) -> None:
-        """The renderer receives exactly the effect list the service emitted."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            renderer = app._ensure_workflow_renderer()
-            with (
-                patch.object(renderer, "apply_effects", wraps=renderer.apply_effects) as apply_spy,
-                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-        apply_spy.assert_called_once()
-        effects = apply_spy.call_args.kwargs["effects"]
-        assert [(effect.effect, effect.state) for effect in effects] == [("launch_visualizer", "running")]
-
-    @pytest.mark.asyncio
-    async def test_terminal_advance_reaches_renderer_as_reset_only_effect(self, tmp_path: Path) -> None:
-        """A terminal lifecycle note yields a reset-only effect end-to-end."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="running")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            renderer = app._ensure_workflow_renderer()
-            with (
-                patch.object(renderer, "apply_effects", wraps=renderer.apply_effects) as apply_spy,
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
-                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(
-                            kind="workflow_completed",
-                            delivery_mode="chat_turn",
-                        ),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-        apply_spy.assert_called_once()
-        effects = apply_spy.call_args.kwargs["effects"]
-        assert [(effect.effect, effect.state) for effect in effects] == [("reset_launch_guard", "completed")]
-
 
 class TestWorkflowHandleStateAdvance:
     """Claimed lifecycle notes advance the durable handle (spec 57.a.5)."""
-
-    @pytest.mark.asyncio
-    async def test_started_note_advances_handle_to_running(self, tmp_path: Path) -> None:
-        """``workflow_started`` maps to state ``running`` on disk."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
-            assert handle is not None
-            assert handle.state == "running"
-            assert app._workflow_app_service is not None
-            labels = app._workflow_app_service.live_workflow_labels()
-            assert [(label.workflow_id, label.state) for label in labels] == [("wf-1", "running")]
-
-    @pytest.mark.asyncio
-    async def test_terminal_note_advances_handle_and_clears_live_label(self, tmp_path: Path) -> None:
-        """Terminal notes reach terminal states and leave the live-label set."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="running")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_completed", delivery_mode="chat_turn"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
-            assert handle is not None
-            assert handle.state == "completed"
-            assert app._workflow_app_service is not None
-            assert app._workflow_app_service.live_workflow_labels() == []
-
-    @pytest.mark.asyncio
-    async def test_unknown_workflow_id_is_logged_not_raised(self, tmp_path: Path) -> None:
-        """A missing handle file never fails inbox delivery."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch(
-                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
-                return_value=True,
-            ) as mock_launch:
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started", workflow_id="wf-missing"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            mock_launch.assert_not_called()
-            assert app._workflow_app_service is not None
-            assert app._workflow_app_service.live_workflow_labels() == []
-
-    @pytest.mark.asyncio
-    async def test_illegal_transition_is_swallowed(self, tmp_path: Path) -> None:
-        """An illegal transition (e.g. late failure on aborted) never raises."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="aborted")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_failed", delivery_mode="chat_turn"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
-            assert handle is not None
-            assert handle.state == "aborted"
 
     @pytest.mark.asyncio
     async def test_mount_reconciles_handles(self, tmp_path: Path) -> None:
@@ -684,47 +308,6 @@ class TestWorkflowHandleStateAdvance:
 
             assert snapshot == {}
 
-    @pytest.mark.asyncio
-    async def test_nonworkflow_inbox_message_is_a_workflow_noop(self, tmp_path: Path) -> None:
-        """A non-workflow kind renders its delivery mode without touching handles."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-9",
-            session_id="session-1234",
-            schedule_id="sched-1",
-            run_id="run-1",
-            kind="monitor_update",
-            delivery_mode="ui_notice",
-            title="monitor",
-            text="monitor tick",
-            payload={"workflow_id": "wf-1", "orchestrator_session_id": "orch-1"},
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch(
-                "src.tui.visualizer_launcher.VisualizerLauncher.launch",
-                return_value=True,
-            ) as mock_launch:
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(message=message)
-                assert admitted is True
-                await _join_viewers(app)
-
-            mock_launch.assert_not_called()
-            handle = await store.read(owner_session_id="session-1234", workflow_id="wf-1")
-            assert handle is not None
-            assert handle.state == "launching"
-            assert app.query_one(ChatTranscriptComponent)._adapter is not None
-            assert any(
-                content == "[scheduled notice] monitor: monitor tick"
-                for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
-            )
-
 
 class TestAbortSeparationAndExit:
     """Abort separation and the live-workflow exit hint (spec 57.a.5)."""
@@ -751,100 +334,6 @@ class TestAbortSeparationAndExit:
             assert handle.state == "running"
             app._in_flight_task.cancel()
             app._in_flight_task = None
-
-    @pytest.mark.asyncio
-    async def test_detached_lifecycle_never_touches_fleet_panel(self, tmp_path: Path) -> None:
-        """A full detached lifecycle keeps the real mounted fleet panel idle (v1 decision)."""
-        history_root: Path = tmp_path / "history"
-        store: WorkflowHandleStore = _build_store(history_root=history_root)
-        await _write_handle(store=store, state="launching")
-        session: MagicMock = _mock_session(history_root=history_root)
-        app: SloTUI = SloTUI(session=session, workflow_handle_store=store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with (
-                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_phase_update", message_id="message-2"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(
-                            kind="workflow_completed",
-                            delivery_mode="chat_turn",
-                            message_id="message-3",
-                        ),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            # Observable state through the real mounted component: a detached
-            # lifecycle never paints or resets the fleet panel; it stays hidden
-            # and empty. A MagicMock oracle on query_one cannot prove this, so we
-            # assert the real mounted widget's public state instead. Seeding an
-            # unrelated visible row proves the detached lifecycle cannot reset
-            # a populated panel: an empty-to-empty oracle cannot detect a
-            # forbidden reset.
-            panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
-            assert panel.display is False
-            assert len(panel.query(SubAgentFleetRow)) == 0
-
-            # Seed an unrelated visible row through the real coordinator path,
-            # then run another detached lifecycle. The row must survive: a
-            # forbidden legacy reset would clear it. The mock session's attached
-            # snapshot supplier is configured directly (not via _build_session).
-            assert isinstance(app._workflow_app_service, DetachedWorkflowAppService)
-            app._workflow_app_service._attached_snapshot = lambda: AttachedDispatchSnapshotDAO(
-                dispatch_id="0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
-                dispatch_sequence=1,
-                entries=(
-                    SubAgentStatusDAO(
-                        task_id="seeded-task",
-                        session_id="seeded-child",
-                        status="running",
-                        prompt_preview="seeded row",
-                        execution_id="11111111-1111-4111-8111-111111111111",
-                    ),
-                ),
-            )
-            assert app._workflow_progress_coordinator is not None
-            app._workflow_progress_coordinator.request_refresh()
-            await pilot.pause()
-            await pilot.pause()
-            assert panel.display is True
-            assert len(panel.query(SubAgentFleetRow)) == 2
-            panel.focus_sessions()
-            await pilot.pause()
-            assert panel.has_focus or panel.has_focus_within
-
-            with (
-                patch("src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True),
-                patch.object(app, "_start_inbox_chat_turn", new=AsyncMock(return_value=True)),
-            ):
-                async with app._prompt_submission_lock:
-                    admitted = await app._handle_inbox_message(
-                        message=_workflow_message(kind="workflow_started", message_id="message-4"),
-                    )
-                assert admitted is True
-                await _join_viewers(app)
-
-            # The unrelated visible row and its selection survive the detached
-            # lifecycle; no forbidden legacy reset touched the panel.
-            assert panel.display is True
-            assert len(panel.query(SubAgentFleetRow)) == 2
-            assert panel.has_focus or panel.has_focus_within
 
     @pytest.mark.asyncio
     async def test_exit_hint_lists_live_workflows(self, tmp_path: Path) -> None:
@@ -914,11 +403,219 @@ class TestLaunchResultSeedsExitHint:
             )
 
 
+def _launch_result_event(*, workflow_id: str) -> AgentStreamEventDAO:
+    """Build the ``launch_workflow`` tool result for one workflow of orchestrator ``orch-1``.
+
+    Args:
+        workflow_id (str): Launched workflow id.
+
+    Returns:
+        AgentStreamEventDAO: The streamed tool result.
+    """
+    return AgentStreamEventDAO(
+        kind="tool_result",
+        tool_name="launch_workflow",
+        tool_call_id=f"call-{workflow_id}",
+        content=f'{{"workflow_id": "{workflow_id}", "orchestrator_session_id": "orch-1", "state": "launching"}}',
+    )
+
+
+class RecordingHandleStore(WorkflowHandleStore):
+    """Real handle store that also counts reconcile passes (injected through the app constructor)."""
+
+    def __init__(self, *, history_root: Path) -> None:
+        """Build the real store with every pid reported alive.
+
+        Args:
+            history_root (Path): Test-owned history root.
+        """
+        super().__init__(history_root=history_root, pid_alive=lambda pid: True)
+        self.reconcile_calls: int = 0
+
+    async def reconcile(self, *, owner_session_id: str) -> list[WorkflowHandleDAO]:
+        """Count the pass, then reconcile for real.
+
+        Args:
+            owner_session_id (str): Owning TUI session id.
+
+        Returns:
+            list[WorkflowHandleDAO]: Reconciled handles.
+        """
+        self.reconcile_calls += 1
+        return await super().reconcile(owner_session_id=owner_session_id)
+
+
+class _LifecycleWorld:
+    """A real mounted-TUI world: session, gateway, handle store and the workflow's real notifier."""
+
+    def __init__(self, *, tmp_path: Path) -> None:
+        """Build (without opening) every real collaborator under ``tmp_path``.
+
+        Args:
+            tmp_path (Path): Test-owned root for history and ``channels.db``.
+        """
+        from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+        from tests.tui.test_channel_adapter import _build_session
+
+        self.history_root: Path = tmp_path / "history"
+        self.session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, responses=[AIMessage(content="presented")], session_id="session-1234"
+        )
+        self.gateway: ChannelGateway = ChannelGateway(
+            repository=ChannelRepository(db_path=tmp_path / "channels.db")
+        )
+        self.store: RecordingHandleStore = RecordingHandleStore(history_root=self.history_root)
+        self.status: OrchestratorStatusStore = OrchestratorStatusStore(
+            history_root=self.history_root, orchestrator_session_id="orch-1", workflow_id="wf-1"
+        )
+        self.notifier: WorkflowNotifier = WorkflowNotifier(
+            gateway=self.gateway,
+            target_session_id="session-1234",
+            orchestrator_session_id="orch-1",
+            workflow_id="wf-1",
+        )
+
+    def build_app(self) -> SloTUI:
+        """Return the TUI wired to this world's real gateway and handle store.
+
+        Returns:
+            SloTUI: The unmounted app.
+        """
+        return SloTUI(session=self.session, channel_gateway=self.gateway, workflow_handle_store=self.store)
+
+    async def handle_state(self) -> Optional[WorkflowState]:
+        """Return the durable state of ``wf-1``.
+
+        Returns:
+            Optional[WorkflowState]: The stored state, or ``None`` when absent.
+        """
+        handle: Optional[WorkflowHandleDAO] = await self.store.read(
+            owner_session_id="session-1234", workflow_id="wf-1"
+        )
+        return handle.state if handle is not None else None
+
+
+class TestChannelLifecycleReconcile:
+    """Workflow rows arriving through the channel queue keep handle lifecycle truthful (57.a.5).
+
+    Journey: the real ``WorkflowNotifier`` sends through the real gateway; the
+    mounted session's real poller hands the row to the TUI's display sink
+    (notes) or turn runner (the terminal prompt); the app reconciles the
+    durable handles from the orchestrator's own ``orchestrator.json``, which the
+    orchestrator writes before its terminal prompt. Only the platform window
+    launcher is replaced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_terminal_prompt_reconciles_handle_clears_live_label_and_resets_guard(
+        self, tmp_path: Path
+    ) -> None:
+        """A workflow's terminal prompt: handle terminal, exit hint clean, and a relaunch opens a window."""
+        world: _LifecycleWorld = _LifecycleWorld(tmp_path=tmp_path)
+        await _write_handle(store=world.store, state="running")
+        app: SloTUI = world.build_app()
+        try:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                panel: SubAgentFleetPanel = app.query_one(SubAgentFleetPanel)
+                panel_before: tuple[bool, int] = (bool(panel.display), len(panel.query(SubAgentFleetRow)))
+                with patch(
+                    "src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True
+                ) as launch:
+                    await app._render_event(_launch_result_event(workflow_id="wf-1"))
+                    await _join_viewers(app)
+                    world.status.write_terminal(state="completed", exit_code=0, phase="done")
+                    await world.notifier.completed(synthesis="all green", result_json="{}")
+                    await pump_until(pilot=pilot, predicate=lambda: not app._live_workflow_labels())
+                    await _join_viewers(app)
+                    hint_after_terminal: str = app._resume_command_hint()
+                    await app._render_event(_launch_result_event(workflow_id="wf-2"))
+                    await _join_viewers(app)
+                state_after_terminal: Optional[WorkflowState] = await world.handle_state()
+                # The channel lifecycle neither paints nor resets the fleet panel (57.a.5 v1
+                # decision); its rows belong to owner-scoped observation, which shows the owned
+                # handle from mount on.
+                panel_after: tuple[bool, int] = (bool(panel.display), len(panel.query(SubAgentFleetRow)))
+        finally:
+            await world.gateway.close()
+
+        assert state_after_terminal == "completed"
+        assert hint_after_terminal == "Resume this session: slo --resume session-1234"
+        assert launch.call_count == 2
+        assert panel_after == panel_before
+
+    @pytest.mark.asyncio
+    async def test_started_note_reconciles_to_running_and_opens_the_resume_visualizer(
+        self, tmp_path: Path
+    ) -> None:
+        """The resume case: a started note with fresh running evidence opens the visualizer once."""
+        world: _LifecycleWorld = _LifecycleWorld(tmp_path=tmp_path)
+        await _write_handle(store=world.store, state="launching")
+        app: SloTUI = world.build_app()
+        try:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                world.status.write_running(phase="model")
+                with patch(
+                    "src.tui.visualizer_launcher.VisualizerLauncher.launch", return_value=True
+                ) as launch:
+                    await world.notifier.started(brief_preview="run the workflow")
+                    await pump_until(pilot=pilot, predicate=lambda: bool(app._live_workflow_labels()))
+                    await world.notifier.phase_update(phase_summary="review done")
+                    await pump_until(
+                        pilot=pilot,
+                        predicate=lambda: sum("phase 1" in line for line, _classes in _lines(app=app)) == 1,
+                    )
+                    await _join_viewers(app)
+                labels = app._live_workflow_labels()
+                state_after_started: Optional[WorkflowState] = await world.handle_state()
+        finally:
+            await world.gateway.close()
+
+        assert state_after_started == "running"
+        assert [(label.workflow_id, label.state) for label in labels] == [("wf-1", "running")]
+        launch.assert_called_once_with(parent_session_id="orch-1")
+
+    @pytest.mark.asyncio
+    async def test_the_operators_own_prompt_never_reconciles_workflow_handles(self, tmp_path: Path) -> None:
+        """Only rows from other participants are workflow traffic; the user's prompt reconciles nothing."""
+        world: _LifecycleWorld = _LifecycleWorld(tmp_path=tmp_path)
+        await _write_handle(store=world.store, state="running")
+        app: SloTUI = world.build_app()
+        try:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                passes_after_mount: int = world.store.reconcile_calls
+                app.query_one(PromptInputComponent).text = "hello"
+                await pilot.press("enter")
+                await pump_until(
+                    pilot=pilot, predicate=lambda: any("presented" in line for line, _c in _lines(app=app))
+                )
+                passes_after_prompt: int = world.store.reconcile_calls
+        finally:
+            await world.gateway.close()
+
+        assert passes_after_mount >= 1
+        assert passes_after_prompt == passes_after_mount
+
+
+def _lines(*, app: SloTUI) -> list[tuple[str, str]]:
+    """Return the mounted transcript's recorded (content, classes) lines.
+
+    Args:
+        app (SloTUI): Mounted app.
+
+    Returns:
+        list[tuple[str, str]]: Transcript lines.
+    """
+    from tests.tui.test_channel_adapter import _transcript_lines
+
+    return _transcript_lines(app=app)
+
+
 @pytest.mark.parametrize("with_evidence", [True, False])
-async def test_run_aborted_marks_handle_aborted_through_inbox(tmp_path: Path, with_evidence: bool) -> None:
-    """Real abort inbox delivery converges even when terminal evidence is withheld."""
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-    from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+async def test_run_aborted_advance_marks_handle_aborted(tmp_path: Path, with_evidence: bool) -> None:
+    """An abort lifecycle advance converges even when terminal evidence is withheld."""
     from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 
     root = tmp_path / "history"
@@ -929,27 +626,16 @@ async def test_run_aborted_marks_handle_aborted_through_inbox(tmp_path: Path, wi
         OrchestratorStatusStore(
             history_root=root, orchestrator_session_id="orch-1", workflow_id="wf-1"
         ).write_terminal(state="aborted", exit_code=2, phase="done")
-    inbox = SessionInboxStore(history_root=root)
-    notifier = WorkflowNotifier(
-        target_session_id="session-1234",
-        orchestrator_session_id="orch-1",
-        workflow_id="wf-1",
-        inbox_store=inbox,
-    )
-    await notifier.aborted(reason="run_aborted: <aborted>")
-    message = await inbox.claim_next(session_id="session-1234")
-    assert message is not None
-    assert message.kind == "workflow_aborted" and message.delivery_mode == "chat_turn"
     service = DetachedWorkflowAppService(
         workflow_handle_store=store,
         owner_session_id="session-1234",
         attached_snapshot=AttachedDispatchSnapshotDAO.empty,
     )
-    outcome = await service.advance_from_inbox_message(kind=message.kind, payload=message.payload)
+    outcome = await service.advance_from_inbox_message(
+        kind="workflow_aborted", payload={"workflow_id": "wf-1", "orchestrator_session_id": "orch-1"}
+    )
     assert outcome.advanced_state == "aborted"
     assert [effect.effect for effect in outcome.effects] == ["reset_launch_guard"]
-    assert await inbox.ack(session_id="session-1234", message_id=message.message_id) is True
-    assert list(root.rglob("done/*.json"))
     path = root / "session-1234" / "workflows" / "wf-1.json"
     before = path.read_bytes()
     assert (await store.reconcile(owner_session_id="session-1234"))[0].state == "aborted"
@@ -989,3 +675,66 @@ async def test_aborted_note_then_reconcile_converges_each_handle_state(
     assert result[0].state == ("completed" if state == "completed" else "aborted")
     if state in {"completed", "aborted"}:
         assert path.read_bytes() == before
+
+
+class _UnreadableHandleStore(WorkflowHandleStore):
+    """Handle store stub whose reconcile always fails (a vanished or unreadable history root)."""
+
+    async def reconcile(self, *, owner_session_id: str) -> list[WorkflowHandleDAO]:
+        """Fail the way a broken filesystem would.
+
+        Args:
+            owner_session_id (str): Ignored owning session id.
+
+        Raises:
+            OSError: Always.
+        """
+        raise OSError("history root unreadable")
+
+
+async def test_reconciliation_advance_emits_each_lifecycle_step_once(tmp_path: Path) -> None:
+    """Started then terminal evidence each produce one effect; an unchanged reconcile produces none."""
+    from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+
+    root: Path = tmp_path / "history"
+    store: WorkflowHandleStore = _build_store(history_root=root)
+    await _write_handle(store=store, state="launching")
+    service: DetachedWorkflowAppService = DetachedWorkflowAppService(
+        workflow_handle_store=store,
+        owner_session_id="session-1234",
+        attached_snapshot=AttachedDispatchSnapshotDAO.empty,
+    )
+    await service.reconcile_snapshot()
+    status = OrchestratorStatusStore(history_root=root, orchestrator_session_id="orch-1", workflow_id="wf-1")
+
+    status.write_running(phase="model")
+    started = await service.advance_from_reconciliation()
+    unchanged = await service.advance_from_reconciliation()
+    status.write_terminal(state="failed", exit_code=1, phase="done")
+    terminal = await service.advance_from_reconciliation()
+
+    assert [(effect.effect, effect.state, effect.orchestrator_session_id) for effect in started] == [
+        ("launch_visualizer", "running", "orch-1")
+    ]
+    assert unchanged == []
+    assert [(effect.effect, effect.state) for effect in terminal] == [("reset_launch_guard", "failed")]
+    assert service.live_workflow_labels() == []
+
+
+async def test_reconciliation_advance_survives_a_failing_store_and_keeps_the_cache(tmp_path: Path) -> None:
+    """A broken handle store is logged, never raised; delivery continues and cached labels stay."""
+    service: DetachedWorkflowAppService = DetachedWorkflowAppService(
+        workflow_handle_store=_UnreadableHandleStore(history_root=tmp_path / "history"),
+        owner_session_id="session-1234",
+        attached_snapshot=AttachedDispatchSnapshotDAO.empty,
+    )
+    service.advance_from_launch_result(
+        result_text='{"workflow_id": "wf-1", "orchestrator_session_id": "orch-1", "state": "launching"}'
+    )
+
+    effects = await service.advance_from_reconciliation()
+
+    assert effects == []
+    assert [(label.workflow_id, label.state) for label in service.live_workflow_labels()] == [
+        ("wf-1", "launching")
+    ]

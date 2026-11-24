@@ -81,9 +81,13 @@ class SlashCommandResultDAO(BaseModel):
         abort_run (bool): True iff the TUI should escalate the cooperative
             abort to a hard cancel of the in-flight task when it does not
             wind down on its own (e.g. a tool call is hung).
-        steer_pending_message (Optional[str]): When set, the verbatim
-            steering text the TUI should render as a pending (not-yet-
-            consumed) message while the queued steer awaits the next turn.
+        forced_prompt_text (Optional[str]): When set, the verbatim message
+            the TUI should enqueue as a forced channel row (108.2): it joins
+            the current run at its next safe boundary, or runs at once when
+            the agent is idle.
+        queue_cancel_position (Optional[int]): One-based pending queue position to cancel.
+        queue_cancel_all (bool): Whether to cancel all currently pending prompt rows.
+        queue_edit_position (Optional[int]): One-based pending queue position to restore in the editor.
         render_tree (Optional[object]): When set, the TUI should
             render the session tree using the format in ``tree_format``.
         tree_format (Optional[str]): Format for tree rendering
@@ -111,7 +115,12 @@ class SlashCommandResultDAO(BaseModel):
     rename_current_session_to: Optional[str] = None
     toggle_theme: bool = False
     abort_run: bool = False
-    steer_pending_message: Optional[str] = None
+    forced_prompt_text: Optional[str] = None
+    queue_cancel_position: Optional[int] = Field(default=None, description="1-based pending row to cancel.")
+    queue_cancel_all: bool = Field(default=False, description="Cancel every currently pending prompt row.")
+    queue_edit_position: Optional[int] = Field(
+        default=None, description="1-based pending row to restore for editing."
+    )
     render_tree: Optional[object] = None
     tree_format: Optional[str] = None
     refresh_context_window: bool = False
@@ -172,7 +181,17 @@ class SlashRouter:
         if refresh:
             return SlashCommandAdmissionDAO(action="prepare")
         tokens: list[str] = stripped.split(maxsplit=1)
-        if tokens and tokens[0] in {"/auth", "/help", "/quit", "/exit", "/q", "/clear", "/model", "/code"}:
+        if tokens and tokens[0] in {
+            "/auth",
+            "/help",
+            "/quit",
+            "/exit",
+            "/q",
+            "/clear",
+            "/model",
+            "/code",
+            "/queue",
+        }:
             return SlashCommandAdmissionDAO(action="dispatch")
         return SlashCommandAdmissionDAO(action="reject")
 
@@ -331,6 +350,7 @@ class SlashRouter:
             "exit": cls._handle_exit,
             "cwd": cls._handle_cwd,
             "abort": cls._handle_abort,
+            "queue": cls._handle_queue,
             "steer": cls._handle_steer,
             "auth": cls._handle_auth,
             "model": cls._handle_model,
@@ -407,6 +427,9 @@ class SlashRouter:
     async def _handle_abort(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
         """Request a graceful abort of the in-flight run.
 
+        Also pauses the channel poller (108.1 §6): after ``/abort`` no new
+        channel runs start until ``/queue resume``; queued rows stay.
+
         Args:
             rest (str): Trailing argument text (unused).
             session (SloAgentSession): Session whose run is aborted.
@@ -415,27 +438,157 @@ class SlashRouter:
             SlashCommandResultDAO: Result with ``(aborting…)`` marker.
         """
         session.abort()
+        poller = session.channel_poller
+        if poller is not None and poller.busy:
+            poller.pause(reason="aborted")
         return SlashCommandResultDAO(rendered="(aborting…)", abort_run=True)
 
     @classmethod
-    async def _handle_steer(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
-        """Queue a steering message for the next turn.
+    async def _handle_queue(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Control the channel queue: list, resume, cancel, edit, or force pending rows.
 
-        Empty steer arguments are rejected (no point queuing an empty
-        message — the model has nothing to act on).
+        ``/queue resume`` clears the channel poller's pause so queued rows run
+        again after ``/abort`` or a restart recovery pause. ``/queue force <n>``
+        stamps ``forced_at`` on the n-th pending prompt row (1-based, in
+        ``/queue`` display order — forced rows first, then FIFO) so it joins
+        the current run at its next safe boundary (108.2 F7). Forcing a row
+        that is no longer pending reports ``already running``.
 
         Args:
-            rest (str): The steering message body.
-            session (SloAgentSession): Session to enqueue against.
+            rest (str): Trailing argument text: ``resume``, ``cancel <n|all>``,
+                ``edit <n>``, ``force <n>``, or empty for the pending list.
+            session (SloAgentSession): Session whose channel queue is controlled.
 
         Returns:
-            SlashCommandResultDAO: Either the usage line (when ``rest``
-                is empty) or the queue-confirmed marker.
+            SlashCommandResultDAO: The typed outcome line for the subcommand.
         """
+        arguments: str = rest.strip()
+        if not arguments:
+            return await cls._render_queue_listing(session=session)
+        if arguments == "resume":
+            return cls._resume_channel_queue(session=session)
+        if arguments.startswith("force"):
+            return await cls._force_pending_row(session=session, arguments=arguments)
+        return cls._parse_queue_mutation(arguments=arguments)
+
+    @staticmethod
+    def _parse_queue_mutation(*, arguments: str) -> SlashCommandResultDAO:
+        """Build the typed slash outcome for one queue cancel or edit command.
+
+        WHAT: Converts ``cancel <n|all>`` and ``edit <n>`` into a typed
+            ``SlashCommandResultDAO``; invalid forms return the command usage.
+        WHO: ``_handle_queue`` calls this after handling list, resume and force.
+        WHEN: During slash interpretation, before ``SloTUI`` applies queue effects.
+
+        Args:
+            arguments (str): The trimmed command arguments after ``/queue``.
+
+        Returns:
+            SlashCommandResultDAO: Cancellation/edit intent or a usage line.
+        """
+        parts: list[str] = arguments.split()
+        usage: str = "usage: /queue [resume | cancel <n|all> | edit <n> | force <n>]"
+        if len(parts) != 2:
+            return SlashCommandResultDAO(rendered=usage)
+        action, row_position = parts
+        if action == "cancel" and row_position == "all":
+            return SlashCommandResultDAO(queue_cancel_all=True)
+        position: Optional[int] = SlashRouter._positive_ascii_index(value=row_position)
+        if action not in {"cancel", "edit"} or position is None:
+            return SlashCommandResultDAO(rendered=usage)
+        if action == "cancel":
+            return SlashCommandResultDAO(queue_cancel_position=position)
+        return SlashCommandResultDAO(queue_edit_position=position)
+
+    @staticmethod
+    def _positive_ascii_index(*, value: str) -> Optional[int]:
+        """Parse a positive one-based queue index containing ASCII decimal digits only."""
+        if not value.isascii() or not value.isdecimal():
+            return None
+        try:
+            position: int = int(value)
+        except ValueError:
+            return None
+        return position if position > 0 else None
+
+    @classmethod
+    def _resume_channel_queue(cls, *, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Continue after a pause (108.1 §2)."""
+        poller = session.channel_poller
+        if poller is None:
+            return SlashCommandResultDAO(rendered="channel queue is not running")
+        poller.resume()
+        return SlashCommandResultDAO(rendered="(queue resumed — pending prompts will run)")
+
+    @classmethod
+    async def _render_queue_listing(cls, *, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Render the pending prompt rows in ``/queue`` display order (108.2 F7)."""
+        poller = session.channel_poller
+        if poller is None:
+            return SlashCommandResultDAO(rendered="channel queue is not running")
+        prompts = await poller.pending_prompts()
+        if not prompts:
+            return SlashCommandResultDAO(rendered="(queue empty — no pending prompts)")
+        lines: list[str] = ["pending queue:"]
+        for position, row in enumerate(prompts, start=1):
+            marker: str = "⚡" if row.forced_at is not None else " "
+            preview: str = (
+                row.message_contents if len(row.message_contents) <= 60 else (row.message_contents[:57] + "…")
+            )
+            lines.append(f"  {marker} {position}. {preview}")
+        return SlashCommandResultDAO(rendered="\n".join(lines))
+
+    @classmethod
+    async def _force_pending_row(cls, *, session: SloAgentSession, arguments: str) -> SlashCommandResultDAO:
+        """Force the n-th pending prompt row (108.2 F7)."""
+        poller = session.channel_poller
+        if poller is None:
+            return SlashCommandResultDAO(rendered="channel queue is not running")
+        parts: list[str] = arguments.split()
+        if len(parts) != 2:
+            return SlashCommandResultDAO(rendered="usage: /queue force <n>")
+        position: Optional[int] = SlashRouter._positive_ascii_index(value=parts[1])
+        if position is None:
+            return SlashCommandResultDAO(rendered="usage: /queue force <n>")
+        prompts = await poller.pending_prompts()
+        if position < 1 or position > len(prompts):
+            return SlashCommandResultDAO(
+                rendered=f"(row {position} is already running or no longer pending)",
+            )
+        forced: bool = await poller.force(message_id=prompts[position - 1].id)
+        if not forced:
+            return SlashCommandResultDAO(
+                rendered=f"(row {position} is already running or no longer pending)",
+            )
+        return SlashCommandResultDAO(
+            rendered=f"(row {position} forced — applies at the next boundary)",
+        )
+
+    @classmethod
+    async def _handle_steer(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
+        """Send a forced message (108.2): it joins the current run at the next boundary.
+
+        ``/steer`` (alias ``/force``) no longer touches an in-memory queue —
+        the message becomes a forced channel row through the TUI channel
+        adapter. Empty arguments are rejected (an empty message gives the
+        model nothing to act on).
+
+        Args:
+            rest (str): The forced message body.
+            session (SloAgentSession): Session the message is sent to (unused;
+                the TUI's channel adapter owns the send).
+
+        Returns:
+            SlashCommandResultDAO: Either the usage line (when ``rest`` is
+                empty) or the forced-send intent with a confirmation line.
+        """
+        del session
         if not rest:
             return SlashCommandResultDAO(rendered="usage: /steer <message>")
-        session.steer(message=rest)
-        return SlashCommandResultDAO(steer_pending_message=rest)
+        return SlashCommandResultDAO(
+            rendered="(forced message queued — joins the current run at the next boundary)",
+            forced_prompt_text=rest,
+        )
 
     @classmethod
     async def _handle_code(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:

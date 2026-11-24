@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
-from typing import Any
+from typing import Any, Optional
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 import os
 from src.bridges.claude.bridge import SloClaudeBridge
@@ -13,6 +13,7 @@ import pytest
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
+from src.channels.gateway import ChannelGateway
 from tests.cli.test_claude_bridge import ScriptedClaudeTransport, scripted_adapter_class
 
 
@@ -304,7 +305,13 @@ def scripted_bootstrap(*, tmp_path: Path, fail_child: bool = False) -> type[Orch
         """Keep normal attachment and pool dispatch; replace only child execution."""
 
         @classmethod
-        def _build_pool(cls, *, session: SloAgentSession, owner_session_id: str) -> SubAgentPool:
+        def _build_pool(
+            cls,
+            *,
+            session: SloAgentSession,
+            owner_session_id: str,
+            channel_gateway: Optional[ChannelGateway] = None,
+        ) -> SubAgentPool:
             """Construct the real retained pool with an injected process factory."""
             return SubAgentPool(
                 orchestrator_session_id=session.session_id,
@@ -314,6 +321,7 @@ def scripted_bootstrap(*, tmp_path: Path, fail_child: bool = False) -> type[Orch
                 run_id="7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f",
                 history_root=tmp_path / "history",
                 process_factory=ScriptedChild,
+                channel_gateway=channel_gateway,
             )
 
     return ScriptedBootstrap

@@ -9,8 +9,11 @@ chunks or LangGraph update dicts.
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.agents.slo_agent.boundary_inbox import BoundaryDeliveryKind
 
 __all__ = [
     "AgentStreamEventDAO",
@@ -81,6 +84,15 @@ class AgentStreamEventDAO(BaseModel):
             marker and no visible reasoning text.
         metadata (dict[str, Any]): Small debug-only metadata bag. Raw
             provider payloads must not be stuffed here wholesale.
+        channel_message_id (Optional[UUID]): Channel queue message this event
+            came from (108.2); set on ``steering_applied`` when a forced row
+            enters the model context, ``None`` otherwise.
+        sender_name (Optional[str]): Sender label for a forced steering
+            delivery (108.2); the transcript shows it when it is not you.
+        delivery_kind (Optional[BoundaryDeliveryKind]): Which boundary
+            delivery a ``steering_applied`` event applied — ``note`` or
+            ``forced_prompt`` (108.3); ``None`` on every other event and on
+            events recorded before the field existed.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -97,6 +109,21 @@ class AgentStreamEventDAO(BaseModel):
     tool_arguments_delta: Optional[str] = None
     redacted: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    channel_message_id: Optional[UUID] = Field(
+        default=None,
+        description="Channel queue message this event came from; set on steering_applied (108.2).",
+    )
+    sender_name: Optional[str] = Field(
+        default=None,
+        description="Sender label for a forced steering delivery; shown in the transcript when it is not you.",
+    )
+    delivery_kind: Optional[BoundaryDeliveryKind] = Field(
+        default=None,
+        description=(
+            "Boundary delivery kind on steering_applied: 'note' adds context only, "
+            "'forced_prompt' asks for work (108.3); None on every other event."
+        ),
+    )
     # Sub-agent routing fields (sub-spec 01-sub-agents 01.f):
     sub_agent_id: Optional[str] = None
     """Child session UUID when this event was relayed from a sub-agent process.

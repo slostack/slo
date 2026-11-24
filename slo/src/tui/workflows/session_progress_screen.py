@@ -15,7 +15,7 @@ tell that the reader moved since the paint that scheduled it.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
 
 from textual import events, on
 from textual.app import ComposeResult
@@ -34,6 +34,9 @@ from src.tui.workflows.dao import (
     WorkflowSessionKeyDAO,
 )
 from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
+
+if TYPE_CHECKING:
+    from src.tui.components.agent_composer.component import AgentComposerComponent
 
 __all__ = ["PROGRESS_RESET_VIEW_NOTICE", "ProgressLog", "SessionProgressScreen"]
 
@@ -196,6 +199,14 @@ class SessionProgressScreen(ModalScreen[None]):
         (0, "-progress-narrow"),
         (80, "-progress-wide"),
     ]
+    # Height tiers budget the agent composer so it fits beside the log rows,
+    # replacing the app's list-oriented tiers on this screen: a full composer
+    # (14 rows) fits from 35 rows; below that the adjacent TCSS compacts it.
+    VERTICAL_BREAKPOINTS = [
+        (0, "-progress-short"),
+        (24, "-progress-medium"),
+        (35, "-progress-tall"),
+    ]
 
     class Minimized(Message):
         """Tell the app to close this screen's observation without stopping execution."""
@@ -219,17 +230,26 @@ class SessionProgressScreen(ModalScreen[None]):
             self.target: ChildAbortTargetDAO = target
             self.screen = screen
 
-    def __init__(self, *, key: WorkflowSessionKeyDAO, viewport: ProgressViewportDAO) -> None:
-        """Bind observation identity and saved position; the sink owns lifetime.
+    def __init__(
+        self,
+        *,
+        key: WorkflowSessionKeyDAO,
+        viewport: ProgressViewportDAO,
+        composer: Optional["AgentComposerComponent"] = None,
+    ) -> None:
+        """Bind observation identity, saved position and an optional agent composer.
 
         Args:
             key (WorkflowSessionKeyDAO): Session selected from the owner list.
             viewport (ProgressViewportDAO): Saved position or initial tail intent.
+            composer (Optional[AgentComposerComponent]): Composer for the
+                orchestrator's own row (108.3 §5); child rows get none (108.4).
         """
         super().__init__()
         self.key: WorkflowSessionKeyDAO = key
         # Used for the first paint that has content; later paints capture live.
         self._initial_viewport: Optional[ProgressViewportDAO] = viewport
+        self._composer: Optional["AgentComposerComponent"] = composer
         self._log: ProgressLog = ProgressLog()
         self._state: Static = Static(markup=False, id="session-state")
         self._task_text: Static = Static(markup=False, id="task-description")
@@ -248,7 +268,7 @@ class SessionProgressScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         """Build the native modal once when the sink pushes it."""
-        with Vertical(id="progress-box"):
+        with Vertical(id="progress-box", classes="-with-composer" if self._composer is not None else ""):
             yield Static(
                 content=f"Session progress · {self.key.session_id}",
                 markup=False,
@@ -259,10 +279,14 @@ class SessionProgressScreen(ModalScreen[None]):
                 yield self._task_text
             yield self._state
             yield self._log
-            yield Static(content=NAVIGATION_HINT, markup=False, classes="hint")
-            with Horizontal(classes="actions"):
-                yield Button(label="Minimize", id="minimize")
-                yield self._abort
+            if self._composer is not None:
+                yield self._composer
+            # Docked so overflowing content clips above the controls, never them.
+            with Vertical(id="progress-footer"):
+                yield Static(content=NAVIGATION_HINT, markup=False, classes="hint")
+                with Horizontal(classes="actions"):
+                    yield Button(label="Minimize", id="minimize")
+                    yield self._abort
 
     def on_mount(self) -> None:
         """Focus the log for keyboard reading and watch for user navigation."""

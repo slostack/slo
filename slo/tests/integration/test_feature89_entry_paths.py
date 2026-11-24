@@ -13,7 +13,7 @@ from src.agents.slo_agent.orchestrator.process import SubAgentProcess
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.cli.typer_dispatch import TyperDispatch
 from src.auth.credential_store import CredentialStore
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 
 ROUTES = ("gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol", "openrouter:typesafe/jev-router")
 

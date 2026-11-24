@@ -9,7 +9,7 @@ import pytest
 import httpx
 
 from tests.agents.model_catalog.test_feature89_jev_lifecycle import NOW, ROUTE, jev_transport
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 from src.agents.model_catalog.service import ModelCatalogService
 from src.auth.credential_store import CredentialStore
 from src.auth.credential_resolver import CredentialResolver
@@ -27,6 +27,7 @@ from src.agents.model_catalog.seed import SeedModelCatalog
 from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO, ReasoningLevel
 from src.agents.reasoning_capabilities import ResolvedReasoningConfigDAO
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
+from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.model_catalog import ModelSuggestionProjection
 from src.tui.slash_router import SlashRouter
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -199,7 +200,14 @@ async def test_startup_uses_admitted_snapshot_across_global_publication(
                 assert publisher.done() and not publisher.cancelled()
                 assert ModelCatalogService._snapshot is not pinned_snapshot
                 assert "".join(f"Provider detail: {effort}.".split()) in painted
-                assert f"Initializedmodel:{name}." in painted
+                # 108.2 added the one-line Ctrl+Enter hint after the tip, so at
+                # the small viewport the wrapped tip's middle scrolls off the
+                # painted window; the model-name fact lives on the recorded
+                # startup lines instead of the paint snapshot.
+                startup_lines: list[str] = [
+                    content for content, _classes in app.query_one(ChatTranscriptComponent)._adapter.lines
+                ]
+                assert any(f"Initialized model: {name}." in content for content in startup_lines)
                 await app._maybe_render_startup_notice()
                 assert painted.count("Tip:use/help") == 1
                 assert resolver.call_count == mark.await_count == 1

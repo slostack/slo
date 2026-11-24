@@ -576,7 +576,16 @@ async def test_typed_orchestrator_inventory_is_exact(tmp_path: Path, headless: b
 
 
 @pytest.mark.parametrize(
-    "name", ["spawn_sub_agents", "launch_workflow", "workflow_status", "connector", "plugin", "unknown"]
+    "name",
+    [
+        "spawn_sub_agents",
+        "launch_workflow",
+        "workflow_status",
+        "send_message",
+        "connector",
+        "plugin",
+        "unknown",
+    ],
 )
 @pytest.mark.parametrize("typed", [False, True])
 def test_orchestration_binding_requires_typed_named_base_tool(name: str, typed: bool) -> None:
@@ -600,7 +609,7 @@ def test_orchestration_binding_requires_typed_named_base_tool(name: str, typed: 
         model_name="claude-bridge:claude-haiku-5-5",
         bridge_adapter=SloClaudeBridgeAdapter(configuration=ClaudeBridgeConfigurationDAO()),
     )
-    if typed and name in {"spawn_sub_agents", "launch_workflow", "workflow_status"}:
+    if typed and name in {"spawn_sub_agents", "launch_workflow", "workflow_status", "send_message"}:
         assert model.bind_tools(tools=[tool]) is model
     else:
         with pytest.raises(ValueError):

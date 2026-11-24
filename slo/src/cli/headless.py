@@ -22,9 +22,9 @@ import signal
 import sys
 import time
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 from types import FrameType
-from typing import TYPE_CHECKING, Awaitable, Callable, Optional, TextIO, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Coroutine, Optional, TextIO, cast
 
 from src.auth.credential_dao import CredentialDAO
 from src.auth.credential_resolver import CredentialResolver
@@ -51,16 +51,25 @@ from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
 from src.agents.slo_agent.orchestrator.process_probe import ProcessProbe
+from src.agents.slo_agent.orchestrator.spawn_env import CHANNEL_PARENT_ID_ENV, CHANNEL_PARTICIPANT_NAME_ENV
 from src.agents.slo_agent.orchestrator.reaper import (
     FleetReaper,
     IdentityVerificationOutcome,
     ReapOutcome,
 )
+from src.cli.headless_channel import HeadlessTurnRunner, emit_channel_turn_marker, followup_turn_cap
 from src.cli.headless_events import emit_lifecycle_event
 from src.cli.headless_watchdog import HeadlessWatchdog
 
 if TYPE_CHECKING:
     from src.bridges.claude.sdk.protocol import SloBridgeAdapterProtocol
+    from langchain_core.tools import BaseTool
+
+    from src.channels.dao import ChannelMessageDAO
+    from src.channels.gateway import ChannelGateway
+    from src.agents.slo_agent.channel_delivery.poller import ChannelPoller
+    from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
+    from src.agents.slo_agent.channel_delivery.turn_runner import TurnOutcomeDAO
     from src.agents.slo_agent.orchestrator.pool import SubAgentPool
 
 __all__ = ["HeadlessRunner"]
@@ -118,6 +127,9 @@ class HeadlessRunner:
         session_preparer: Optional[Callable[[SessionConfigDAO], Awaitable[SloAgentSession]]] = None,
         bridge_adapter_class: Optional[type["SloBridgeAdapterProtocol"]] = None,
         output_stream: Optional[TextIO] = None,
+        channel_gateway: Optional["ChannelGateway"] = None,
+        history_root: Optional[Path] = None,
+        cooperative_abort_grace_seconds: Optional[float] = None,
     ) -> None:
         """Bind the runner to its session config.
 
@@ -134,6 +146,16 @@ class HeadlessRunner:
                 at emission time, preserving dynamic output capture.
             notifier (Optional[WorkflowNotifier]): Injectable notifier for
                 tests. Ignored when ``notify_session_id`` is ``None``.
+            channel_gateway (Optional[ChannelGateway]): Injectable shared
+                channel gateway for tests (108.3). Production builds
+                ``ChannelGateway.default()`` in channel mode only (a workflow
+                run or a pool child).
+            history_root (Optional[Path]): History root for workflow status and
+                abort-request files; ``None`` uses ``default_history_root()``.
+            cooperative_abort_grace_seconds (Optional[float]): How long a stop
+                order waits for the session to abort itself before the blocked
+                stream is cancelled; ``None`` uses
+                ``SLO_HEADLESS_COOPERATIVE_ABORT_GRACE_SECONDS``.
         """
         self._output_stream: Optional[TextIO] = output_stream
         self._session_preparer = session_preparer
@@ -144,6 +166,8 @@ class HeadlessRunner:
         self._notify_session_id: Optional[str] = notify_session_id
         self._injected_notifier: Optional[WorkflowNotifier] = notifier
         self._notifier: Optional[WorkflowNotifier] = None
+        self._channel_gateway: Optional["ChannelGateway"] = None
+        self._channel_poller: Optional["ChannelPoller"] = None
         self._fleet_snapshot_supplier: Optional[Callable[[], tuple[list[dict[str, object]], int]]] = None
         self._fleet_entries_supplier: Optional[Callable[[], list[SubAgentStatusDAO]]] = None
         self._started_sent: bool = False
@@ -160,6 +184,15 @@ class HeadlessRunner:
         self._abort_reason: Optional[str] = None
         self._abort_requested: Optional[asyncio.Event] = None
         self._child_control: Optional[ChildAbortController] = None
+        self._injected_channel_gateway: Optional["ChannelGateway"] = channel_gateway
+        self._terminal_generation: int = 0
+        self._channel_parent_id: Optional[UUID] = self._channel_parent_id_from_env()
+        self._history_root: Optional[Path] = history_root
+        self._cooperative_abort_grace_seconds: float = (
+            cooperative_abort_grace_seconds
+            if cooperative_abort_grace_seconds is not None
+            else COOPERATIVE_ABORT_GRACE_SECONDS
+        )
 
     async def invoke(self, *, prompt: str) -> int:
         """Run one prompt, releasing its private capture after terminal cleanup.
@@ -179,6 +212,7 @@ class HeadlessRunner:
                 await self._close_external_reporting()
             finally:
                 self._operation_credential = None
+                await self._close_owned_channel_gateway()
             raise
         try:
             await self._finalize_agent_resources()
@@ -191,6 +225,7 @@ class HeadlessRunner:
                 await self._close_external_reporting()
             finally:
                 self._operation_credential = None
+                await self._close_owned_channel_gateway()
         return result
 
     async def _finalize_agent_resources(self) -> None:
@@ -274,6 +309,9 @@ class HeadlessRunner:
             message="session id resolved",
         )
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        # Channel tools bind at session construction, so the gateway opens first.
+        self._channel_gateway = await self._open_channel_gateway()
+        self._config = self._config_with_child_messaging()
         preparation_task: asyncio.Task[Optional[SloAgentSession]] = asyncio.create_task(
             self._prepare_session()
         )
@@ -318,20 +356,27 @@ class HeadlessRunner:
         watchdog.start()
         try:
             await self._start_child_control()
+            await self._start_workflow_channel(session=session)
             await self._drain_session_stream_until_abort(session=session, prompt=prompt)
+            # Follow-up turns stay under the same supervision as the main run
+            # (watchdog abort file, parent-death probe, SIGTERM, child control).
+            await self._run_follow_up_turns()
         except Exception as exc:
             if not self._terminal_received:
                 await self._emit(AgentStreamEventDAO(kind="run_failed", content=str(exc)))
         finally:
             try:
-                await self._close_child_control()
-            except Exception:
-                self._report_cleanup_failure()
+                await self._stop_workflow_channel()
             finally:
                 try:
-                    watchdog.stop()
+                    await self._close_child_control()
                 except Exception:
                     self._report_cleanup_failure()
+                finally:
+                    try:
+                        watchdog.stop()
+                    except Exception:
+                        self._report_cleanup_failure()
         self._write_orphan_status_if_needed(session_id=session.session_id)
         await self._write_terminal_status()
         await self._notify_terminal()
@@ -466,6 +511,7 @@ class HeadlessRunner:
         """
         session_id: str = self._session_id
         self._status_store = self._build_status_store(session_id=session_id)
+        self._channel_gateway = await self._open_channel_gateway()
         self._notifier = self._resolve_notifier(orchestrator_session_id=session_id)
         await self._emit(
             AgentStreamEventDAO(
@@ -534,6 +580,7 @@ class HeadlessRunner:
             if not event.is_sub_agent_event:
                 self._terminal_received = True
                 self._terminal_content = event.content or ""
+                self._terminal_generation += 1
         _HeadlessJSONLWriter.write(
             event=event, stream=self._output_stream if self._output_stream is not None else sys.stdout
         )
@@ -557,7 +604,7 @@ class HeadlessRunner:
         if workflow_id is None:
             return None
         return OrchestratorStatusStore(
-            history_root=default_history_root(),
+            history_root=self._resolved_history_root(),
             orchestrator_session_id=session_id,
             workflow_id=workflow_id,
         )
@@ -578,9 +625,17 @@ class HeadlessRunner:
         if self._status_store is None:
             return None
         return OrchestrationLayout.abort_request_path(
-            history_root=default_history_root(),
+            history_root=self._resolved_history_root(),
             orchestrator_session_id=session_id,
         )
+
+    def _resolved_history_root(self) -> Path:
+        """Return the injected history root, else the process default.
+
+        Returns:
+            Path: Root holding workflow status and abort-request files.
+        """
+        return self._history_root if self._history_root is not None else default_history_root()
 
     @staticmethod
     def _parent_pid_from_env() -> Optional[int]:
@@ -614,23 +669,45 @@ class HeadlessRunner:
         if self._session is not None:
             self._session.abort()
 
-    async def _drain_session_stream_until_abort(self, *, session: SloAgentSession, prompt: str) -> None:
+    async def _drain_session_stream_until_abort(
+        self,
+        *,
+        session: SloAgentSession,
+        prompt: str,
+        channel_message_id: Optional[UUID] = None,
+        on_first_event: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> None:
         """Drain the session stream or force a bounded cooperative abort.
 
         WHAT: Runs the provider stream in a cancellable task so watchdog stop orders
             cannot wait forever for the next graph update.
-        WHO: Called by invoke after it starts HeadlessWatchdog.
-        WHEN: Once per headless run, until normal completion or shutdown.
+        WHO: Called by invoke after it starts HeadlessWatchdog, and by
+            ``run_channel_turn`` for each follow-up turn.
+        WHEN: Once per headless run or follow-up turn, until normal completion
+            or shutdown.
 
         Args:
             session (SloAgentSession): Session whose stream produces the run events.
             prompt (str): Prompt passed unchanged to the session stream.
+            channel_message_id (Optional[UUID]): Channel row this run answers;
+                recorded on the persisted ``user_message`` (108.1 §6 recovery key).
+            on_first_event (Optional[Callable[[], Awaitable[None]]]): Awaited once,
+                after the session yields its first event — by then the
+                ``user_message`` history record is written.
         """
         if self._abort_requested is None:
             raise RuntimeError("abort controller was not initialized")
-        stream_task: asyncio.Task[None] = asyncio.create_task(
+        stream_work: Coroutine[object, object, None] = (
             self._drain_session_stream(session=session, prompt=prompt)
+            if channel_message_id is None
+            else self._drain_channel_turn_stream(
+                session=session,
+                prompt=prompt,
+                channel_message_id=channel_message_id,
+                on_first_event=on_first_event,
+            )
         )
+        stream_task: asyncio.Task[None] = asyncio.create_task(stream_work)
         abort_task: asyncio.Task[bool] = asyncio.create_task(self._abort_requested.wait())
         try:
             completed, _pending = await asyncio.wait(
@@ -658,6 +735,36 @@ class HeadlessRunner:
         async for _event in session.invoke(text=prompt):
             pass
 
+    async def _drain_channel_turn_stream(
+        self,
+        *,
+        session: SloAgentSession,
+        prompt: str,
+        channel_message_id: UUID,
+        on_first_event: Optional[Callable[[], Awaitable[None]]],
+    ) -> None:
+        """Drain one channel turn's events, calling back once on the first event.
+
+        WHAT: Like ``_drain_session_stream`` but records the channel row id on
+            the persisted ``user_message`` and awaits ``on_first_event`` after
+            the first event, i.e. after that history record exists.
+        WHO: Called by _drain_session_stream_until_abort for a channel turn.
+        WHEN: Once per follow-up turn, inside the abort-controlled task.
+
+        Args:
+            session (SloAgentSession): Active session to consume.
+            prompt (str): The row's text.
+            channel_message_id (UUID): The channel row this turn answers.
+            on_first_event (Optional[Callable[[], Awaitable[None]]]): First-event callback.
+        """
+        pending_first_event: Optional[Callable[[], Awaitable[None]]] = on_first_event
+        async for _event in session.invoke(text=prompt, channel_message_id=channel_message_id):
+            if pending_first_event is None:
+                continue
+            callback: Callable[[], Awaitable[None]] = pending_first_event
+            pending_first_event = None
+            await callback()
+
     async def _allow_cooperative_abort(self, *, stream_task: asyncio.Task[None]) -> None:
         """Give session.abort a bounded chance before forcing terminal abort.
 
@@ -669,7 +776,7 @@ class HeadlessRunner:
             stream_task (asyncio.Task[None]): Cancellable task draining the session stream.
         """
         try:
-            await asyncio.wait_for(asyncio.shield(stream_task), timeout=COOPERATIVE_ABORT_GRACE_SECONDS)
+            await asyncio.wait_for(asyncio.shield(stream_task), timeout=self._cooperative_abort_grace_seconds)
         except asyncio.TimeoutError:
             stream_task.cancel()
             await asyncio.gather(stream_task, return_exceptions=True)
@@ -965,6 +1072,7 @@ class HeadlessRunner:
             session=session,
             headless=True,
             owner_session_id=self._notify_session_id,
+            channel_gateway=self._channel_gateway,
         )
 
     def _resolve_notifier(self, *, orchestrator_session_id: str) -> Optional[WorkflowNotifier]:
@@ -984,12 +1092,272 @@ class HeadlessRunner:
             return None
         if self._injected_notifier is not None:
             return self._injected_notifier
+        gateway: Optional["ChannelGateway"] = self._effective_channel_gateway()
+        if gateway is None:
+            return None
         return WorkflowNotifier(
+            gateway=gateway,
             target_session_id=self._notify_session_id,
             orchestrator_session_id=orchestrator_session_id,
             workflow_id=os.environ.get("SLO_WORKFLOW_ID", _FALLBACK_WORKFLOW_ID),
             status_store=self._status_store,
         )
+
+    def _effective_channel_gateway(self) -> Optional["ChannelGateway"]:
+        """Return the injected or already-opened shared channel gateway, or ``None``.
+
+        Returns:
+            Optional[ChannelGateway]: The gateway for workflow mode.
+        """
+        return self._channel_gateway or self._injected_channel_gateway
+
+    async def _open_channel_gateway(self) -> Optional["ChannelGateway"]:
+        """Return the shared channel gateway in channel mode, or ``None``.
+
+        Channel mode is a workflow run (``--notify-session``) or a pool child
+        (``SLO_CHANNEL_PARENT_ID``). Other headless runs never touch the queue
+        (108.3 O7). An unreachable shared database leaves the gateway ``None``;
+        the notifier then swallows its sends and the channel lifecycle is
+        skipped. Idempotent: a gateway already opened by this runner is reused.
+
+        Returns:
+            Optional[ChannelGateway]: The opened gateway, or ``None``.
+        """
+        if not self._is_channel_mode:
+            return None
+        if self._channel_gateway is not None:
+            return self._channel_gateway
+        if self._injected_channel_gateway is not None:
+            return self._injected_channel_gateway
+        try:
+            from src.channels.gateway import ChannelGateway  # noqa: PLC0415
+
+            return await ChannelGateway.default()
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not kill the workflow
+            log_warning(msg=f"channel gateway unreachable: {exc}")
+            return None
+
+    async def _close_owned_channel_gateway(self) -> None:
+        """Close the gateway this runner opened itself; an injected one stays open.
+
+        Called once by ``invoke`` after every queue user (poller, follow-ups,
+        terminal notification) is done.
+        """
+        gateway: Optional["ChannelGateway"] = self._channel_gateway
+        self._channel_gateway = None
+        if gateway is None or gateway is self._injected_channel_gateway:
+            return
+        try:
+            await gateway.close()
+        except Exception as exc:  # noqa: BLE001 — close is best-effort on the shutdown path
+            log_warning(msg=f"channel gateway close failed: {exc}")
+
+    @property
+    def _is_channel_mode(self) -> bool:
+        """Return whether this run is a workflow orchestrator or a pool child."""
+        return self._notify_session_id is not None or self._channel_parent_id is not None
+
+    def _config_with_child_messaging(self) -> SessionConfigDAO:
+        """Return the config with ``send_message`` bound for a pool child (108.4 §5).
+
+        A child may message only its parent (``to="parent"``); its notes are
+        rate limited. Without a parent id or an open gateway the config is
+        returned unchanged.
+
+        Returns:
+            SessionConfigDAO: The config the session is prepared from.
+        """
+        gateway: Optional["ChannelGateway"] = self._channel_gateway
+        if self._channel_parent_id is None or gateway is None:
+            return self._config
+        from src.agents.slo_agent.channel_delivery.policy import MessagingPolicy  # noqa: PLC0415
+        from src.agents.slo_agent.channel_delivery.poller import (  # noqa: PLC0415
+            channel_participant_id_for_session,
+        )
+        from src.agents.slo_agent.channel_delivery.send_tool import SendMessageTool  # noqa: PLC0415
+
+        self_id: UUID = channel_participant_id_for_session(session_id=self._session_id)
+        policy: MessagingPolicy = MessagingPolicy(
+            self_id=self_id,
+            parent_id=self._channel_parent_id,
+            children=lambda: [],
+            launched_workflows=lambda: [],
+        )
+        send_tool: BaseTool = SendMessageTool.build(gateway=gateway, policy=policy, self_id=self_id)
+        return self._config.model_copy(update={"extra_tools": [*(self._config.extra_tools or []), send_tool]})
+
+    @staticmethod
+    def _channel_parent_id_from_env() -> Optional[UUID]:
+        """Return the parent's channel participant id a pool child was given, if valid."""
+        raw: Optional[str] = os.environ.get(CHANNEL_PARENT_ID_ENV)
+        if not raw:
+            return None
+        try:
+            return UUID(raw)
+        except ValueError:
+            log_warning(msg="channel_parent_id_invalid")
+            return None
+
+    # ── workflow channel lifecycle (108.3 §5) ────────────────────────────
+
+    @property
+    def wired_session(self) -> Optional[SloAgentSession]:
+        """Return the prepared session, or ``None`` before preparation ends.
+
+        Returns:
+            Optional[SloAgentSession]: The session this runner owns.
+        """
+        return self._session
+
+    @property
+    def terminal_generation(self) -> int:
+        """Return how many non-child terminal events this runner has seen.
+
+        Returns:
+            int: Monotonic count; a follow-up turn compares generations to
+                detect that its own run produced a terminal event.
+        """
+        return self._terminal_generation
+
+    @property
+    def terminal_kind(self) -> str:
+        """Return the last non-child terminal event kind seen on stdout.
+
+        Returns:
+            str: e.g. ``run_completed`` or ``run_failed``.
+        """
+        return self._terminal_kind
+
+    @property
+    def terminal_content(self) -> str:
+        """Return the last non-child terminal event content seen on stdout.
+
+        Returns:
+            str: The run's final text.
+        """
+        return self._terminal_content
+
+    async def run_channel_turn(
+        self,
+        *,
+        message: "ChannelMessageDAO",
+        on_started: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Run one channel prompt row as one supervised headless turn (108.3 §5).
+
+        WHAT: Writes the ``channel_turn`` stdout marker, then drains the session
+            under the same abort funnel as the main run, with the row id
+            recorded on the persisted ``user_message``. ``on_started`` is awaited
+            after the first session event, i.e. after that history record.
+        WHO: ``HeadlessTurnRunner.run`` for each follow-up turn.
+        WHEN: After the main run completed, while the watchdog still runs.
+
+        Args:
+            message (ChannelMessageDAO): The pending prompt row to run.
+            on_started (Callable[[], Awaitable[None]]): Acceptance callback.
+
+        Raises:
+            RuntimeError: No session is prepared.
+        """
+        session: Optional[SloAgentSession] = self._session
+        if session is None:
+            raise RuntimeError("headless session is not prepared")
+        emit_channel_turn_marker(output_stream=self._output_stream, message_id=message.id)
+        await self._drain_session_stream_until_abort(
+            session=session,
+            prompt=message.message_contents,
+            channel_message_id=message.id,
+            on_first_event=on_started,
+        )
+
+    async def _start_workflow_channel(self, *, session: SloAgentSession) -> None:
+        """Start the channel lifecycle in channel mode: register, keep the boundary live.
+
+        Channel mode is a workflow run (``--notify-session``, 108.3) or a pool
+        child (``SLO_CHANNEL_PARENT_ID``, 108.4); plain headless runs never
+        touch the queue (108.3 O7). The poller runs with ``auto_run=False`` so
+        it never starts turns itself — it keeps the boundary inbox snapshot
+        fresh, settles notices and notes, and this runner owns every run. A
+        child registers under ``SLO_CHANNEL_PARTICIPANT_NAME``.
+
+        Args:
+            session (SloAgentSession): The prepared session to serve.
+        """
+        gateway: Optional["ChannelGateway"] = self._channel_gateway
+        if not self._is_channel_mode or gateway is None:
+            return
+        try:
+            self._channel_poller = await session.start_channel_delivery(
+                gateway=gateway,
+                runner=HeadlessTurnRunner(runner=self),
+                display=None,
+                auto_run=False,
+                participant_name=os.environ.get(CHANNEL_PARTICIPANT_NAME_ENV) or None,
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not kill the workflow
+            log_warning(msg=f"workflow channel lifecycle startup failed: {exc}")
+
+    async def _run_follow_up_turns(self) -> None:
+        """Run every normal pending prompt for W as its own turn, up to the cap.
+
+        Runs only after a completed, un-aborted main run. Forced rows are
+        taken by the agent's boundary inbox inside a run and are never
+        follow-ups. Each turn's reply row goes back to the original sender. A
+        turn that never started is cancelled as ``start_failed``.
+        """
+        gateway: Optional["ChannelGateway"] = self._channel_gateway
+        poller: Optional["ChannelPoller"] = self._channel_poller
+        if gateway is None or poller is None or self._session is None:
+            return
+        if self._terminal_kind != "run_completed" or self._abort_reason is not None:
+            return
+        from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter  # noqa: PLC0415
+
+        replies: ReplyWriter = ReplyWriter(gateway=gateway)
+        turn_runner: HeadlessTurnRunner = HeadlessTurnRunner(runner=self)
+        participant_id: UUID = poller.participant_id
+        for _turn in range(followup_turn_cap()):
+            if self._abort_reason is not None:
+                return
+            try:
+                rows: list["ChannelMessageDAO"] = await gateway.pending_inbound(recipient_id=participant_id)
+                prompts: list["ChannelMessageDAO"] = [
+                    row for row in rows if row.message_type == "prompt" and row.forced_at is None
+                ]
+                if not prompts:
+                    return
+                row: "ChannelMessageDAO" = prompts[0]
+
+                async def _accept() -> None:
+                    """Stamp the row accepted once its turn's history record exists."""
+                    await gateway.accept(message_id=row.id)
+
+                outcome: TurnOutcomeDAO = await turn_runner.run(message=row, on_started=_accept)
+                if outcome.status == "not_started":
+                    await gateway.cancel(message_id=row.id, reason="start_failed")
+                    continue
+                await replies.write(request=row, outcome=outcome)
+            except Exception as exc:  # noqa: BLE001 — a broken queue must not kill the workflow
+                log_warning(msg=f"workflow follow-up turn failed: {exc}")
+                return
+
+    async def _stop_workflow_channel(self) -> None:
+        """Stop the poller and close W, cancelling whatever is still pending.
+
+        ``close_agent`` flips the participant closed and cancels its pending
+        inbound rows in one transaction with reason ``recipient_closed`` (or
+        ``aborted`` when a stop order won), so no message can arrive after W
+        stops listening (108.3 §2).
+        """
+        poller = self._channel_poller
+        if poller is None:
+            return
+        self._channel_poller = None
+        reason: str = "aborted" if self._abort_reason is not None else "recipient_closed"
+        try:
+            await poller.stop(reason=reason)
+        except Exception as exc:  # noqa: BLE001 — close is best-effort on the shutdown path
+            log_warning(msg=f"workflow channel close failed: {exc}")
 
     async def _notify_started(self, *, prompt: str) -> None:
         """Send the workflow_started note exactly once, before the first LLM call.

@@ -31,6 +31,7 @@ from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
 from src.tui.app import SloTUI
+from src.tui.channel.adapter import TuiChannelAdapter
 from src.tui.components.chat_transcript.component import HistoryReader
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.model_catalog import ModelSuggestionProjection, model_suggestion_entries
@@ -40,6 +41,7 @@ from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggesti
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from tests.tui._scroll_settle import pump_until
+from tests.conftest import GatedFauxChatModel
 from tests.tui.test_prompt_input_rules import _recording_invoke, _submit_prompt
 
 
@@ -48,6 +50,7 @@ def _build_session(
     workdir: Path,
     responses: list[AIMessage] | None = None,
     enable_history: bool = False,
+    model: Optional[FauxChatModel] = None,
 ) -> SloAgentSession:
     """Build a real session driven by a Faux model; no provider is contacted.
 
@@ -55,13 +58,21 @@ def _build_session(
         workdir (Path): Test-owned working directory.
         responses (list[AIMessage] | None): Scripted assistant responses.
         enable_history (bool): Persist real session history under ``workdir``.
+        model (Optional[FauxChatModel]): Provider override, e.g. a gated
+            provider-boundary double; defaults to a plain ``FauxChatModel``.
 
     Returns:
         SloAgentSession: Session ready to drive a mounted ``SloTUI``.
     """
     history_store = FilesystemSessionHistoryStore(root=workdir / "history") if enable_history else None
     return SloAgentSession(
-        agent=SloAgent(llm=FauxChatModel(responses=responses or [AIMessage(content="ok")])),
+        agent=SloAgent(
+            llm=model or FauxChatModel(responses=responses or [AIMessage(content="ok")]),
+            # tools=[] keeps the injected provider unbound: bind_tools would clone
+            # it and a gated double would lose its release event.
+            cwd=str(workdir),
+            tools=[],
+        ),
         workdir=workdir,
         session_id=str(uuid4()),
         history_store=history_store,
@@ -82,8 +93,21 @@ def _require_prompt_input(*, app: SloTUI) -> PromptInputComponent:
     return app._input
 
 
+def _app_is_running(*, app: SloTUI) -> bool:
+    """Return whether any run owner (app task or channel poller) is running.
+
+    Args:
+        app (SloTUI): Mounted application.
+
+    Returns:
+        bool: True while a run is in flight on either owner.
+    """
+    poller = app._session.channel_poller
+    return app._in_flight_task is not None or (poller is not None and poller.busy)
+
+
 async def _wait_for_app_idle(*, app: SloTUI, pilot: Pilot) -> None:
-    """Pump until the app owns no in-flight or queued prompt.
+    """Pump until no run owner has a run in flight.
 
     Args:
         app (SloTUI): Mounted application.
@@ -91,7 +115,7 @@ async def _wait_for_app_idle(*, app: SloTUI, pilot: Pilot) -> None:
     """
     await pump_until(
         pilot=pilot,
-        predicate=lambda: app._in_flight_task is None and app._queued_prompt_text is None,
+        predicate=lambda: not _app_is_running(app=app),
     )
 
 
@@ -107,36 +131,6 @@ async def _history_user_texts(*, session: SloAgentSession) -> list[str]:
     assert session.history_store is not None
     events = await session.history_store.load_events(session_id=session.session_id)
     return [event.payload.content or "" for event in events if event.kind == "user_message"]
-
-
-def _gated_real_invoke(
-    *,
-    invoke_log: list[str],
-    gate: asyncio.Event,
-    original_invoke: Callable[..., AsyncIterator[AgentStreamEventDAO]],
-) -> Callable[..., AsyncIterator[AgentStreamEventDAO]]:
-    """Hold each real run busy after its first event, preserving real history writes.
-
-    Args:
-        invoke_log (list[str]): Receives each admitted prompt text.
-        gate (asyncio.Event): Releases the held continuation.
-        original_invoke: Real ``session.invoke`` bound before patching.
-
-    Returns:
-        Callable[..., AsyncIterator[AgentStreamEventDAO]]: Gated async generator.
-    """
-
-    held_texts: set[str] = set()
-
-    async def _invoke(*, text: str) -> AsyncIterator[AgentStreamEventDAO]:
-        invoke_log.append(text)
-        async for event in original_invoke(text=text):
-            yield event
-            if text not in held_texts and not gate.is_set():
-                held_texts.add(text)
-                await gate.wait()
-
-    return _invoke
 
 
 class _PromptInputComponentHost(App):
@@ -245,10 +239,9 @@ async def test_key_precedence_and_single_submit(tmp_path: Path) -> None:
             editor.focus()
             await pilot.press("a")
             await pilot.press("shift+enter")
-            await pilot.press("ctrl+enter")
             await pilot.press("meta+enter")
             await pilot.pause()
-            assert editor.text == "a\n\n\n"
+            assert editor.text == "a\n\n"
             assert invoke_log == []
 
             editor.load_text("/mo")
@@ -371,91 +364,107 @@ async def test_recall_restores_draft(tmp_path: Path) -> None:
 
 async def test_submit_queue_and_history(tmp_path: Path) -> None:
     """Idle/busy submission records only accepted turns once in real history and recall."""
+    release_first_run: asyncio.Event = asyncio.Event()
+    model: GatedFauxChatModel = GatedFauxChatModel(
+        responses=[AIMessage(content="one"), AIMessage(content="two"), AIMessage(content="three")],
+        first_call_release=release_first_run,
+    )
     session: SloAgentSession = _build_session(
         workdir=tmp_path,
-        responses=[AIMessage(content="one"), AIMessage(content="two")],
+        responses=[],
         enable_history=True,
+        model=model,
     )
     app: SloTUI = SloTUI(session=session)
-    invoke_log: list[str] = []
-    gate: asyncio.Event = asyncio.Event()
-    original_invoke = session.invoke
 
-    with patch.object(
-        target=session,
-        attribute="invoke",
-        new=_gated_real_invoke(invoke_log=invoke_log, gate=gate, original_invoke=original_invoke),
-    ):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            editor: PromptInputComponent = _require_prompt_input(app=app)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        editor: PromptInputComponent = _require_prompt_input(app=app)
+        poller = session.channel_poller
+        assert poller is not None
+        await _submit_prompt(app=app, pilot=pilot, text="first")
+        # Admission sets is_running before the asynchronous history write.
+        async with asyncio.timeout(5):
+            while await _history_user_texts(session=session) != ["first"]:
+                await pilot.pause()
+        assert session.is_running
+        assert await _history_user_texts(session=session) == ["first"]
 
-            await _submit_prompt(app=app, pilot=pilot, text="first")
-            # Admission sets is_running before the asynchronous history write.
-            async with asyncio.timeout(5):
-                while await _history_user_texts(session=session) != ["first"]:
-                    await pilot.pause()
-            assert session.is_running
-            assert await _history_user_texts(session=session) == ["first"]
+        await _submit_prompt(app=app, pilot=pilot, text="held one")
+        await _submit_prompt(app=app, pilot=pilot, text="held two")
+        assert await _history_user_texts(session=session) == ["first"]
 
-            await _submit_prompt(app=app, pilot=pilot, text="held one")
-            await _submit_prompt(app=app, pilot=pilot, text="held two")
-            assert app._queued_prompt_text == "held two"
-            assert await _history_user_texts(session=session) == ["first"]
+        release_first_run.set()
+        async with asyncio.timeout(30):
+            while await _history_user_texts(session=session) != [
+                "first",
+                "held one",
+                "held two",
+            ] or _app_is_running(app=app):
+                await pilot.pause()
+                await asyncio.sleep(0.02)
+        assert await _history_user_texts(session=session) == ["first", "held one", "held two"]
 
-            gate.set()
-            await _wait_for_app_idle(app=app, pilot=pilot)
-            assert invoke_log == ["first", "held two"]
-            assert await _history_user_texts(session=session) == ["first", "held two"]
-
-            editor.load_text("")
-            await pilot.press("up")
-            await pilot.pause()
-            assert editor.text == "held two"
-            await pilot.press("up")
-            await pilot.pause()
-            assert editor.text == "first"
-            assert editor._prompt_history._entries == ["first", "held two"]
+        editor.load_text("")
+        await pilot.press("up")
+        await pilot.pause()
+        assert editor.text == "held two"
+        await pilot.press("up")
+        await pilot.pause()
+        assert editor.text == "held one"
+        assert editor._prompt_history._entries == ["first", "held one", "held two"]
 
 
 async def test_commands_keep_queue_policy(tmp_path: Path) -> None:
-    """Abort/clear/new keep the existing held-prompt and recall ownership rules."""
-    session: SloAgentSession = _build_session(workdir=tmp_path)
+    """Abort pauses the poller and keeps channel-queued rows; recall keeps its rules."""
+    release_first_run: asyncio.Event = asyncio.Event()
+    model: GatedFauxChatModel = GatedFauxChatModel(
+        responses=[AIMessage(content="one"), AIMessage(content="two")],
+        first_call_release=release_first_run,
+    )
+    session: SloAgentSession = _build_session(
+        workdir=tmp_path, responses=[], enable_history=True, model=model
+    )
     app: SloTUI = SloTUI(session=session)
-    invoke_log: list[str] = []
-    release: asyncio.Event = asyncio.Event()
 
-    with patch.object(
-        target=session, attribute="invoke", new=_recording_invoke(invoke_log=invoke_log, release=release)
-    ):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            editor: PromptInputComponent = _require_prompt_input(app=app)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        editor: PromptInputComponent = _require_prompt_input(app=app)
+        poller = session.channel_poller
+        assert poller is not None
+        channel_adapter: Optional[TuiChannelAdapter] = app.channel_adapter
+        assert channel_adapter is not None
 
-            await _submit_prompt(app=app, pilot=pilot, text="first")
-            await _submit_prompt(app=app, pilot=pilot, text="held")
-            assert app._queued_prompt_text == "held"
-            recall_before = list(editor._prompt_history._entries)
+        await _submit_prompt(app=app, pilot=pilot, text="first")
+        await pump_until(pilot=pilot, predicate=lambda: poller.busy)
+        await _submit_prompt(app=app, pilot=pilot, text="held")
+        recall_before = list(editor._prompt_history._entries)
 
-            await app._dispatch_slash_command(line="/abort")
-            await pilot.pause()
-            assert app._queued_prompt_text == "held"
+        await pilot.press("ctrl+c")
+        await pump_until(pilot=pilot, predicate=lambda: poller.paused == "aborted")
+        queued = await channel_adapter.queued()
+        # While run 1 is held before its first event its row is not accepted yet,
+        # so both rows may still be pending; the queued row must survive the abort.
+        assert "held" in [row.message_contents for row in queued if row.message_type == "prompt"]
 
-            await app._dispatch_slash_command(line="/new")
-            await pilot.pause()
-            assert app._session is session
-            assert app._queued_prompt_text == "held"
-            assert list(editor._prompt_history._entries) == recall_before
+        await app._dispatch_slash_command(line="/clear")
+        await pilot.pause()
+        queued_after_clear = await channel_adapter.queued()
+        assert "held" in [row.message_contents for row in queued_after_clear if row.message_type == "prompt"]
+        assert list(editor._prompt_history._entries) == recall_before
 
-            await app._dispatch_slash_command(line="/clear")
-            await pilot.pause()
-            assert app._queued_prompt_text is None
-            assert app._queued_prompt_block is None
-            assert list(editor._prompt_history._entries) == recall_before
-
-            release.set()
-            await _wait_for_app_idle(app=app, pilot=pilot)
-            assert invoke_log == ["first"]
+        release_first_run.set()
+        await _wait_for_app_idle(app=app, pilot=pilot)
+        assert await _history_user_texts(session=session) == ["first"]
+        held_row = next(row for row in queued_after_clear if row.message_contents == "held")
+        still_queued = await channel_adapter.queued()
+        still_pending = next(
+            (row for row in still_queued if row.id == held_row.id),
+            None,
+        )
+        assert still_pending is not None
+        assert still_pending.accepted_at is None
+        assert still_pending.cancelled_at is None
 
 
 async def test_session_adoption_resets_editor_only(tmp_path: Path) -> None:
@@ -674,11 +683,6 @@ async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
             await _submit_prompt(app=app, pilot=pilot, text="held")
             editor.load_text("/mo")
             await pilot.pause()
-            queue = app._queued_prompt_block
-            assert queue is not None
-            assert queue.parent is app._chat_shell
-            assert app._chat_transcript not in queue.ancestors
-            assert queue.region.bottom <= editor.region.y
             assert editor._slash_suggestion_state.visible is True
             release.set()
             await _wait_for_app_idle(app=app, pilot=pilot)
@@ -687,57 +691,60 @@ async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
 @asynccontextmanager
 async def closing_submission(
     tmp_path: Path,
-) -> AsyncIterator[tuple[SloTUI, PromptInputComponent, list[str], SloAgentSession]]:
+) -> AsyncIterator[tuple[SloTUI, PromptInputComponent, SloAgentSession]]:
     """Reject a late prompt while a real accepted invocation is held busy.
 
     Running state is not a durable-history barrier. Always release and join the
     accepted invocation before tests inspect its persisted user-message record.
+    The hold lives at the provider boundary (gated FauxChatModel); the session,
+    poller and history stay real.
     """
+    release_first_run: asyncio.Event = asyncio.Event()
+    model: GatedFauxChatModel = GatedFauxChatModel(
+        responses=[AIMessage(content="one")],
+        first_call_release=release_first_run,
+    )
     session: SloAgentSession = _build_session(
-        workdir=tmp_path, responses=[AIMessage(content="one")], enable_history=True
+        workdir=tmp_path, responses=[], enable_history=True, model=model
     )
     app: SloTUI = SloTUI(session=session)
-    invoke_log: list[str] = []
-    gate: asyncio.Event = asyncio.Event()
-    original_invoke = session.invoke
 
-    with patch.object(
-        target=session,
-        attribute="invoke",
-        new=_gated_real_invoke(invoke_log=invoke_log, gate=gate, original_invoke=original_invoke),
-    ):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            editor: PromptInputComponent = _require_prompt_input(app=app)
-            await _submit_prompt(app=app, pilot=pilot, text="first")
-            await pump_until(pilot=pilot, predicate=lambda: session.is_running and invoke_log == ["first"])
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        editor: PromptInputComponent = _require_prompt_input(app=app)
+        await _submit_prompt(app=app, pilot=pilot, text="first")
+        await pump_until(pilot=pilot, predicate=lambda: session.is_running)
+        async with asyncio.timeout(10):
+            while await _history_user_texts(session=session) != ["first"]:
+                await pilot.pause()
 
-            try:
-                app._app_closing = True
-                await app.on_prompt_input_component_submitted(
-                    event=PromptInputComponent.Submitted(text="late")
-                )
-                yield app, editor, invoke_log, session
-            finally:
-                gate.set()
-                await pump_until(pilot=pilot, predicate=lambda: app._in_flight_task is None)
+        try:
+            app._app_closing = True
+            await app.on_prompt_input_component_submitted(event=PromptInputComponent.Submitted(text="late"))
+            yield app, editor, session
+        finally:
+            release_first_run.set()
+            await pump_until(
+                pilot=pilot,
+                predicate=lambda: not _app_is_running(app=app),
+                max_cycles=600,
+            )
 
 
 async def test_shutdown_refuses_late_invocation_and_queue(tmp_path: Path) -> None:
-    async with closing_submission(tmp_path) as (app, _, invoke_log, _):
-        assert invoke_log == ["first"]
-        assert app._queued_prompt_text is None
-    assert invoke_log == ["first"]
+    async with closing_submission(tmp_path) as (app, _, session):
+        assert await _history_user_texts(session=session) == ["first"]
+    assert await _history_user_texts(session=session) == ["first"]
 
 
 async def test_shutdown_refuses_late_editor_history(tmp_path: Path) -> None:
-    async with closing_submission(tmp_path) as (_, editor, _, _):
+    async with closing_submission(tmp_path) as (_, editor, _):
         assert list(editor._prompt_history._entries) == ["first"]
     assert list(editor._prompt_history._entries) == ["first"]
 
 
 async def test_shutdown_persists_only_accepted_prompt(tmp_path: Path) -> None:
-    async with closing_submission(tmp_path) as (_, _, _, session):
+    async with closing_submission(tmp_path) as (_, _, session):
         pass
     assert await _history_user_texts(session=session) == ["first"]
 

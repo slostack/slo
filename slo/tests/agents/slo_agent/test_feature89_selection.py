@@ -19,7 +19,7 @@ from src.auth.credential_store import CredentialStore
 from src.agents.providers.model_pool import ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
 from tests.agents.model_catalog.test_feature89_jev_lifecycle import jev_transport, ROUTE
-from tests.integration.test_openrouter_full_flow import isolated_catalog
+from tests.conftest import isolated_catalog
 
 
 @pytest.fixture(autouse=True)

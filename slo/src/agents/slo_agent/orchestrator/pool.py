@@ -20,11 +20,13 @@ from pydantic import ValidationError
 
 from config.cfg import SUBAGENT_MAX_CONCURRENCY, SUBAGENT_MAX_TASKS
 from config.logger import log_warning
+from src.agents.slo_agent.orchestrator.child_directory import ChildDirectory
 from src.agents.slo_agent.orchestrator.dao import (
     AttachedDispatchSnapshotDAO,
     ChildAbortOutcomeDAO,
     ChildAbortRequestDAO,
     ChildControlCapabilityDAO,
+    ChildDirectoryEntryDAO,
     DispatchIdentityDAO,
     OrchestratorResultDAO,
     PoolAdmissionState,
@@ -36,7 +38,7 @@ from src.agents.slo_agent.orchestrator.dao import (
 )
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.process import SubAgentProcess
-from src.agents.slo_agent.orchestrator.reaper import ReapOutcome
+from src.agents.slo_agent.orchestrator.reaper import ChildChannelGateway, ChildChannelReaper, ReapOutcome
 from src.agents.slo_agent.orchestrator.registry import ProcessRegistry
 from src.agents.slo_agent.orchestrator.task_preview import TaskPreview
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber
@@ -198,6 +200,7 @@ class SubAgentPool:
         history_root: Path,
         child_system_prompt: str = "",
         process_factory: Optional[SubAgentProcessFactory] = None,
+        channel_gateway: Optional[ChildChannelGateway] = None,
     ) -> None:
         """Initialise the pool with its identity, model, relay, and fresh registry.
 
@@ -218,6 +221,11 @@ class SubAgentPool:
             child_system_prompt (str): Assembled system prompt shared by all child
                 processes. Written to ``spawn_context.json`` via each
                 ``SubAgentProcess``. Defaults to empty string for backwards compat.
+            process_factory (Optional[SubAgentProcessFactory]): Wrapper factory;
+                defaults to ``SubAgentProcess``.
+            channel_gateway (Optional[ChildChannelGateway]): Shared channel queue
+                (108.4). When set, the participant of every child that ended
+                without closing it is closed. ``None`` leaves the queue untouched.
         """
         self._process_factory: SubAgentProcessFactory = process_factory or SubAgentProcess
         self._orchestrator_session_id: str = orchestrator_session_id
@@ -235,6 +243,10 @@ class SubAgentPool:
             run_id=run_id,
         )
         self._registry: ProcessRegistry = ProcessRegistry(fleet_store=fleet_store)
+        self._child_directory: ChildDirectory = ChildDirectory(registry=self._registry)
+        self._child_channel_reaper: Optional[ChildChannelReaper] = (
+            ChildChannelReaper(gateway=channel_gateway) if channel_gateway is not None else None
+        )
         self._active_by_session_id: dict[str, SubAgentProcess] = {}
         self._child_completion: dict[tuple[str, str], asyncio.Future[SubAgentResultDAO]] = {}
         self._child_abort_events: dict[tuple[str, str], asyncio.Event] = {}
@@ -291,6 +303,19 @@ class SubAgentPool:
             AttachedDispatchSnapshotDAO: Latest batch, or the explicit empty value.
         """
         return self._registry.attached_snapshot()
+
+    def child_directory(self) -> list[ChildDirectoryEntryDAO]:
+        """Return this pool's children addressable by task id (108.4).
+
+        WHAT: One entry per task id with the child's channel participant id and
+            whether it still runs; see ``ChildDirectory`` for tie-breaking.
+        WHO: The messaging policy behind ``send_message`` (task-id aliases).
+        WHEN: On demand, including while a dispatch is in flight; no side effects.
+
+        Returns:
+            list[ChildDirectoryEntryDAO]: Children in registration order.
+        """
+        return self._child_directory.entries()
 
     def child_control_capability(self) -> ChildControlCapabilityDAO:
         """Return this pool's typed child-control identity for attached callers.
@@ -649,11 +674,14 @@ class SubAgentPool:
         WHAT: register into the captured dispatch (fresh execution_id) → install
             the wrapper, abort event and completion future → emit spawned → race
             the slot against a targeted abort → run, or publish a sealed/targeted
-            pending abort without spawning → emit exactly one terminal lifecycle
-            from the returned registry winner → return that winner. The
-            incarnation's completion future settles exactly once in finally. No
-            terminal state is reconciled or written here; the process gateway owns
-            publication.
+            pending abort without spawning → close the child's channel participant
+            → emit exactly one terminal lifecycle from the returned registry winner
+            → return that winner. Participant closure is a joined obligation on
+            every path, winner or not (C5, R8): a cancellation that arrives while
+            it runs is deferred until it settles, then re-raised, and the
+            incarnation's completion future settles exactly once, only after the
+            closure. No terminal state is reconciled or written here; the process
+            gateway owns publication.
         WHO: Called only by ``_run_one`` while it holds the session reservation.
         WHEN: Once per admitted task; a pool sealed after admission returns the
             sealed result without registering.
@@ -685,6 +713,7 @@ class SubAgentPool:
         )
         completion: asyncio.Future[SubAgentResultDAO] = self._install_incarnation(process=process)
         winner: Optional[SubAgentResultDAO] = None
+        participant_close_started: bool = False
         try:
             await self._emit_lifecycle(
                 kind="sub_agent_spawned",
@@ -694,6 +723,8 @@ class SubAgentPool:
                 prompt_preview=TaskPreview.encode_summary(task_summary=task.task_summary),
             )
             winner = await self._run_with_slot(process=process, task=task, dispatch=dispatch)
+            participant_close_started = True
+            await self._join_abandoned_child_participant_close(session_id=session_id)
             await self._emit_lifecycle(
                 kind=lifecycle_kind_for_status(status=winner.status),
                 task_id=task.task_id,
@@ -702,8 +733,64 @@ class SubAgentPool:
             )
             return winner
         finally:
-            del self._active_by_session_id[session_id]
-            self._settle_completion(completion=completion, process=process, winner=winner)
+            try:
+                if not participant_close_started:
+                    # Cancelled or failed before the closure began: the child may
+                    # have died without closing its participant (C5).
+                    await self._join_abandoned_child_participant_close(session_id=session_id)
+            finally:
+                del self._active_by_session_id[session_id]
+                self._settle_completion(completion=completion, process=process, winner=winner)
+
+    async def _close_abandoned_child_participant(self, *, session_id: str) -> None:
+        """Close a finished child's channel participant if the child left it open (108.4 C5).
+
+        WHAT: Delegates to ``ChildChannelReaper``; no-op without a channel gateway.
+        WHO: Called only by ``_join_abandoned_child_participant_close``.
+        WHEN: Once per incarnation, after its winner is known (before its
+            terminal lifecycle event, so observers of that event see the child
+            closed) or after it ended without one.
+
+        Args:
+            session_id (str): Child session whose incarnation just ended.
+        """
+        if self._child_channel_reaper is None:
+            return
+        await self._child_channel_reaper.close_abandoned_participant(session_id=session_id)
+
+    async def _join_abandoned_child_participant_close(self, *, session_id: str) -> None:
+        """Close an abandoned child participant to completion, even while being cancelled.
+
+        A cancelled executor await does not prove the SQLite write finished, so
+        the close runs in its own task and is always joined.
+
+        WHAT: Runs ``_close_abandoned_child_participant`` in its own task and
+            joins it; a cancellation that arrives while joining is deferred
+            until the close finished, then re-raised.
+        WHO: Called only by ``_run_reserved``, exactly once per incarnation:
+            after the winner, or from ``finally`` when the run ended before one.
+        WHEN: Before the incarnation's completion future settles.
+
+        Args:
+            session_id (str): Child session whose incarnation ended without a winner.
+
+        Raises:
+            asyncio.CancelledError: The caller was cancelled while the close was joined.
+        """
+        if self._child_channel_reaper is None:
+            return
+        closing: asyncio.Future[None] = asyncio.ensure_future(
+            self._close_abandoned_child_participant(session_id=session_id)
+        )
+        interrupted: bool = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                interrupted = True
+        closing.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
     def _install_incarnation(self, *, process: SubAgentProcess) -> asyncio.Future[SubAgentResultDAO]:
         """Install one incarnation's wrapper, abort event and completion future.
@@ -757,7 +844,8 @@ class SubAgentPool:
         WHAT: Uses the runner's returned winner, else the registry's committed
             winner, else an explicit interruption error; never a fabricated result.
         WHO: Called only from ``_run_reserved``'s finally.
-        WHEN: After the wrapper left ``_active_by_session_id``.
+        WHEN: After the participant closure settled and the wrapper left
+            ``_active_by_session_id``.
 
         Args:
             completion (asyncio.Future[SubAgentResultDAO]): Incarnation future.

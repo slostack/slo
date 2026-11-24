@@ -25,12 +25,14 @@ from __future__ import annotations
 
 import json
 from typing import Any, Optional, Protocol
+from uuid import UUID
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from config.logger import log_warning
 from src.agents.model_catalog.service import ModelCatalogService
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.agents.slo_agent.orchestrator.dao import (
     OrchestratorResultDAO,
     SubAgentMode,
@@ -42,6 +44,7 @@ from src.agents.slo_agent.orchestrator.task_payload import (
     TasksJsonParseDAO,
     parse_tasks_json,
 )
+from src.channels.dao import ChannelMessageDAO
 
 
 class SubAgentDispatcher(Protocol):
@@ -60,7 +63,57 @@ class SubAgentDispatcher(Protocol):
         ...
 
 
+class PendingInboundReader(Protocol):
+    """Consumer-owned slice of ``ChannelGateway`` that note counting needs."""
+
+    async def pending_inbound(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
+        """Return rows still pending for one recipient, FIFO."""
+        ...
+
+
+class PendingChannelNotes:
+    """Counts channel notes waiting for one orchestrator (108.4 §2).
+
+    While an orchestrator waits inside ``spawn_sub_agents`` it has no safe
+    boundary, so a child's note waits in the queue. The dispatch result reports
+    how many notes wait, so the model knows to expect them at its next step.
+    """
+
+    def __init__(self, *, gateway: PendingInboundReader, recipient_session_id: str) -> None:
+        """Bind the counter to the queue and the orchestrator session it reads for.
+
+        Args:
+            gateway (PendingInboundReader): Shared channel queue gateway.
+            recipient_session_id (str): Orchestrator session whose notes are counted.
+        """
+        self._gateway: PendingInboundReader = gateway
+        self._recipient_id: UUID = channel_participant_id_for_session(session_id=recipient_session_id)
+
+    async def count(self) -> int:
+        """Return how many notes are pending for the orchestrator.
+
+        WHAT: Counts unaccepted, uncancelled ``note`` rows addressed to the
+            orchestrator; prompts and notices are not notes. A queue failure is
+            logged and counts as zero, so it never hides the dispatch result.
+        WHO: The ``spawn_sub_agents`` tool.
+        WHEN: Once, right after each successful dispatch returns.
+
+        Returns:
+            int: Number of pending notes.
+        """
+        try:
+            pending: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+                recipient_id=self._recipient_id
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not hide the dispatch result
+            log_warning(msg="channel_notes_count_failed", error=str(exc))
+            return 0
+        return sum(1 for message in pending if message.message_type == "note")
+
+
 __all__ = [
+    "PendingChannelNotes",
+    "PendingInboundReader",
     "SpawnSubAgentsTool",
     "SpawnSubAgentsSchemaDAO",
     "ORCHESTRATOR_SYSTEM_PROMPT_ADDENDUM",
@@ -172,6 +225,7 @@ The spawn_sub_agents tool returns a JSON object with this structure:
   "mode": "parallel" | "chain" | "single",
   "all_completed": true | false,
   "failed_task_ids": ["task_id", ...],
+  "channel_notes_pending": 0,
   "results": [
     {
       "task_id": "...",
@@ -188,6 +242,9 @@ exit_code 0 mean the agent finished normally. Execution success is not workflow 
 its answer may still say REVISE or INCOMPLETE. Inspect phase verdicts and required
 artifacts before advancing. all_completed is an execution summary, not approval.
 A failed child has exit_code 1; an aborted child has exit_code 2.
+channel_notes_pending counts messages sent to you while you waited, for example a
+child's question; they enter your context at your next step. Read them before you
+synthesize or dispatch again.
 
 ## Retry and recovery policy
 
@@ -661,7 +718,9 @@ class SpawnSubAgentsTool:
     """
 
     @classmethod
-    def build(cls, *, pool: SubAgentDispatcher) -> BaseTool:
+    def build(
+        cls, *, pool: SubAgentDispatcher, channel_notes: Optional[PendingChannelNotes] = None
+    ) -> BaseTool:
         """Build a ``spawn_sub_agents`` tool closed over ``pool``.
 
         Called once per orchestrator session during session construction.
@@ -670,6 +729,8 @@ class SpawnSubAgentsTool:
 
         Args:
             pool (SubAgentPool): The pool that will execute sub-agent batches.
+            channel_notes (Optional[PendingChannelNotes]): Counter of notes waiting
+                for this orchestrator (108.4); ``None`` reports zero.
 
         Returns:
             BaseTool: A bound LangChain tool the LLM can call.
@@ -727,6 +788,8 @@ class SpawnSubAgentsTool:
                 mode=mode,
                 tasks=batch,
             )
+            if channel_notes is not None:
+                result = result.model_copy(update={"channel_notes_pending": await channel_notes.count()})
             return result.model_dump_json(exclude_none=True)
 
         return spawn_sub_agents

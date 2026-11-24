@@ -106,7 +106,7 @@ async def test_open_runtime_notice_failure_preserves_preparation(tmp_path: Path,
                 await asyncio.wait_for(app.on_unmount(), timeout=5)
                 assert cancelled.is_set() and task.done()
                 assert app._app_shutdown_task is not None and app._app_shutdown_task.done()
-                assert app._lease_timer is None and app._inbox_timer is None
+                assert app._lease_timer is None
                 assert app._app_closing and app._delivery_quiescing
                 assert app._lease_store is not None
                 assert await app._lease_store.read(session_id=session.session_id) is None

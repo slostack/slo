@@ -1,252 +1,330 @@
-"""Tests for ``WorkflowNotifier`` (spec 57.a.3)."""
+"""Tests for the channel-transport ``WorkflowNotifier`` (108.3 §4; was spec 57.a.3).
+
+Every lifecycle message goes through a real ``ChannelGateway`` to the owning
+TUI session's agent participant: ``started``/``phase_update`` ship as ``note``
+rows, ``fleet_update`` ships as a coalescible ``notice`` row, and the terminal
+messages ship as normal ``prompt`` rows. Message ids are deterministic
+``uuid5(NS_WORKFLOW, "<workflow>:<event>:<phase>")`` so a crashed notifier's
+retry hits the duplicate-id rule instead of creating a second row. Real SQLite;
+no mocks.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID, uuid5
 
 import pytest
 
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+from src.agents.slo_agent.orchestrator.notifier import NS_WORKFLOW, WorkflowNotifier
 from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
+from src.channels.dao import ChannelMessageDAO, NewMessageDAO
+from src.channels.errors import RecipientClosedError, UnknownParticipantError
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
 
-_TARGET_SESSION_ID: str = "tui-session-1"
-_ORCH_SESSION_ID: str = "orch-session-1"
+_TARGET_SESSION_ID: str = "11111111-1111-1111-1111-111111111111"
+_ORCH_SESSION_ID: str = "22222222-2222-2222-2222-222222222222"
 _WORKFLOW_ID: str = "wf-3f2a"
 
 
-class _ExplodingInboxStore:
-    """Inbox store stand-in whose every enqueue raises."""
+async def _open_gateway(*, tmp_path: Path) -> ChannelGateway:
+    """Open one real gateway on a fresh temp database."""
+    repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+    await repository.open()
+    return ChannelGateway(repository=repository)
 
-    def __init__(self) -> None:
-        """Track how often the enqueue was attempted."""
-        self.enqueue_attempts: int = 0
 
-    async def enqueue(self, *, message: SessionInboxMessageDAO) -> None:
-        """Raise unconditionally.
-
-        Args:
-            message (SessionInboxMessageDAO): Ignored.
-
-        Raises:
-            OSError: Always.
-        """
-        self.enqueue_attempts += 1
-        raise OSError("inbox unavailable")
+async def _register_target(*, gateway: ChannelGateway) -> UUID:
+    """Register the TUI-side agent participant the notifier writes to."""
+    participant: object = await gateway.register_agent(
+        session_id=UUID(_TARGET_SESSION_ID),
+        name="slo 11111111",
+    )
+    return participant.id  # type: ignore[attr-defined]
 
 
 def _build_notifier(
     *,
-    tmp_path: Path,
-    store: SessionInboxStore | _ExplodingInboxStore | None = None,
-) -> tuple[WorkflowNotifier, SessionInboxStore]:
-    """Build a notifier wired to a tmp-path inbox store.
-
-    Args:
-        tmp_path (Path): Pytest tmp path.
-        store: Optional store override.
-
-    Returns:
-        tuple[WorkflowNotifier, SessionInboxStore]: Notifier and its store.
-    """
-    inbox_store: SessionInboxStore | _ExplodingInboxStore = (
-        store if store is not None else SessionInboxStore(history_root=tmp_path / "history")
-    )
-    notifier: WorkflowNotifier = WorkflowNotifier(
+    gateway: ChannelGateway,
+    status_store: OrchestratorStatusStore | None = None,
+) -> WorkflowNotifier:
+    """Build a notifier wired to the real gateway."""
+    return WorkflowNotifier(
+        gateway=gateway,
         target_session_id=_TARGET_SESSION_ID,
         orchestrator_session_id=_ORCH_SESSION_ID,
         workflow_id=_WORKFLOW_ID,
-        inbox_store=inbox_store,  # type: ignore[arg-type]
+        status_store=status_store,
     )
-    return notifier, inbox_store  # type: ignore[return-value]
 
 
-async def _pending(*, store: SessionInboxStore) -> list[SessionInboxMessageDAO]:
-    """Return the pending inbox items for the target session.
+def _expected_id(*, event: str, phase_index: int) -> UUID:
+    """Return the deterministic message id the notifier must use."""
+    return uuid5(NS_WORKFLOW, f"{_WORKFLOW_ID}:{event}:{phase_index}")
 
-    Args:
-        store (SessionInboxStore): Store under inspection.
 
-    Returns:
-        list[SessionInboxMessageDAO]: Pending messages oldest-first.
-    """
-    return await store.list_pending(session_id=_TARGET_SESSION_ID)
+async def _pending_for_target(*, gateway: ChannelGateway) -> list[ChannelMessageDAO]:
+    """Return the pending rows addressed to the target session."""
+    return await gateway.pending_inbound(recipient_id=UUID(_TARGET_SESSION_ID))
 
 
 class TestStarted:
-    """``started()`` — the workflow_started context note."""
+    """``started()`` — the workflow_started note row."""
 
-    async def test_started_enqueues_context_note_with_identity_payload(self, tmp_path: Path) -> None:
-        """The started note is a context_note carrying the identity pair."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
+    async def test_started_sends_a_note_with_the_deterministic_id(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
 
-        await notifier.started(brief_preview="run the code-test-review workflow")
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+            await notifier.started(brief_preview="run the code-test-review workflow")
 
-        assert len(pending) == 1
-        message: SessionInboxMessageDAO = pending[0]
-        assert message.kind == "workflow_started"
-        assert message.delivery_mode == "context_note"
-        assert message.session_id == _TARGET_SESSION_ID
-        assert message.payload == {
-            "workflow_id": _WORKFLOW_ID,
-            "orchestrator_session_id": _ORCH_SESSION_ID,
-        }
-        assert "run the code-test-review workflow" in message.text
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            note: ChannelMessageDAO = pending[0]
+            assert note.message_type == "note"
+            assert note.id == _expected_id(event="started", phase_index=0)
+            assert note.sender_id == channel_participant_id_for_session(session_id=_ORCH_SESSION_ID)
+            assert note.agent_session_id == UUID(_TARGET_SESSION_ID)
+            assert "[workflow wf-3f2a] started" in note.message_contents
+            assert "run the code-test-review workflow" in note.message_contents
+        finally:
+            await gateway.close()
+
+    async def test_started_retry_hits_the_duplicate_id_rule(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+
+            await notifier.started(brief_preview="brief")
+            await notifier.started(brief_preview="brief")
+
+            assert len(await _pending_for_target(gateway=gateway)) == 1
+        finally:
+            await gateway.close()
 
     async def test_started_truncates_long_brief_preview(self, tmp_path: Path) -> None:
-        """Brief previews are clipped to 200 characters in the note text."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
 
-        await notifier.started(brief_preview="x" * 500)
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+            await notifier.started(brief_preview="x" * 500)
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
 
-        assert "x" * 200 in pending[0].text
-        assert "x" * 201 not in pending[0].text
+            assert "x" * 200 in pending[0].message_contents
+            assert "x" * 201 not in pending[0].message_contents
+        finally:
+            await gateway.close()
 
 
 class TestPhaseUpdate:
-    """``phase_update()`` — per-phase context notes."""
+    """``phase_update()`` — per-phase note rows."""
 
-    async def test_phase_update_increments_phase_index(self, tmp_path: Path) -> None:
-        """Two updates number themselves phase 1 and phase 2."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
+    async def test_phase_updates_send_numbered_note_rows(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
 
-        await notifier.phase_update(phase_summary="phase one done")
-        await notifier.phase_update(phase_summary="phase two done")
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+            await notifier.phase_update(phase_summary="phase one done")
+            await notifier.phase_update(phase_summary="phase two done")
 
-        assert len(pending) == 2
-        assert "phase 1: phase one done" in pending[0].text
-        assert "phase 2: phase two done" in pending[1].text
-        assert all(message.kind == "workflow_phase_update" for message in pending)
-        assert all(message.delivery_mode == "context_note" for message in pending)
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 2
+            assert all(row.message_type == "note" for row in pending)
+            assert "phase 1: phase one done" in pending[0].message_contents
+            assert "phase 2: phase two done" in pending[1].message_contents
+            assert pending[0].id == _expected_id(event="phase", phase_index=1)
+            assert pending[1].id == _expected_id(event="phase", phase_index=2)
+        finally:
+            await gateway.close()
 
 
 class TestFleetUpdate:
-    """``fleet_update()`` — lifecycle fleet context notes."""
+    """``fleet_update()`` — coalescible notice rows."""
 
-    async def test_fleet_update_does_not_enqueue_after_terminal_status(self, tmp_path: Path) -> None:
-        """A terminal orchestrator status suppresses delayed child fleet traffic."""
-        store: SessionInboxStore = SessionInboxStore(history_root=tmp_path / "history")
-        status_store: OrchestratorStatusStore = OrchestratorStatusStore(
-            history_root=tmp_path / "history",
-            orchestrator_session_id=_ORCH_SESSION_ID,
-            workflow_id=_WORKFLOW_ID,
-        )
-        status_store.write_terminal(state="completed", exit_code=0, phase="complete")
-        notifier: WorkflowNotifier = WorkflowNotifier(
-            target_session_id=_TARGET_SESSION_ID,
-            orchestrator_session_id=_ORCH_SESSION_ID,
-            workflow_id=_WORKFLOW_ID,
-            inbox_store=store,
-            status_store=status_store,
-        )
+    async def test_fleet_update_sends_a_notice_with_the_fleet_coalesce_key(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+            entries: list[dict[str, object]] = [
+                {"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}
+            ]
 
-        await notifier.fleet_update(entries=[], live_count=0)
+            await notifier.fleet_update(entries=entries, live_count=1)
 
-        assert await _pending(store=store) == []
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            notice: ChannelMessageDAO = pending[0]
+            assert notice.message_type == "notice"
+            assert notice.coalesce_key == f"wf:{_WORKFLOW_ID}:fleet"
+            assert notice.message_contents == "fleet: 1 live (t1 streaming)"
+            assert notice.id == _expected_id(event="fleet", phase_index=1)
+        finally:
+            await gateway.close()
 
-    async def test_fleet_update_enqueues_compact_context_note(self, tmp_path: Path) -> None:
-        """A fleet transition ships its complete compact snapshot to the inbox."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
-        entries: list[dict[str, object]] = [
-            {"task_id": "t1", "status": "running", "heartbeat_phase": "streaming"}
-        ]
+    async def test_a_burst_of_fleet_notices_leaves_only_the_newest_pending(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
 
-        await notifier.fleet_update(entries=entries, live_count=1)
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
+            await notifier.fleet_update(entries=[], live_count=2)
+            await notifier.fleet_update(entries=[], live_count=1)
 
-        assert pending[0].kind == "workflow_fleet_update"
-        assert pending[0].payload == {
-            "workflow_id": _WORKFLOW_ID,
-            "orchestrator_session_id": _ORCH_SESSION_ID,
-            "entries": entries,
-            "live_count": 1,
-        }
-        assert pending[0].text == "fleet: 1 live (t1 streaming)"
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            assert pending[0].message_contents == "fleet: 1 live ()"
+        finally:
+            await gateway.close()
+
+    async def test_fleet_update_is_suppressed_after_terminal_status(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            status_store: OrchestratorStatusStore = OrchestratorStatusStore(
+                history_root=tmp_path / "history",
+                orchestrator_session_id=_ORCH_SESSION_ID,
+                workflow_id=_WORKFLOW_ID,
+            )
+            status_store.write_terminal(state="completed", exit_code=0, phase="complete")
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway, status_store=status_store)
+
+            await notifier.fleet_update(entries=[], live_count=0)
+
+            assert await _pending_for_target(gateway=gateway) == []
+        finally:
+            await gateway.close()
 
 
 class TestTerminal:
-    """``completed()`` / ``failed()`` / ``aborted()`` terminal chat_turn messages."""
+    """``completed()`` / ``failed()`` / ``aborted()`` — terminal normal prompts."""
 
-    @pytest.mark.parametrize("cleanup_summary", ["", "fleet: 1 completed · 0 live"])
-    async def test_aborted_enqueues_final_chat_turn_with_no_retry_instruction(
-        self,
-        tmp_path: Path,
-        cleanup_summary: str,
+    async def test_completed_sends_a_normal_prompt_with_the_synthesis(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+
+            await notifier.completed(
+                synthesis="all phases green",
+                result_json='{"all_completed": true}',
+                cleanup_summary="fleet: 1 completed · 0 live",
+            )
+
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            prompt: ChannelMessageDAO = pending[0]
+            assert prompt.message_type == "prompt"
+            assert prompt.forced_at is None
+            assert prompt.id == _expected_id(event="completed", phase_index=0)
+            assert "all phases green" in prompt.message_contents
+            assert '{"all_completed": true}' in prompt.message_contents
+            assert "fleet: 1 completed · 0 live" in prompt.message_contents
+        finally:
+            await gateway.close()
+
+    async def test_failed_sends_a_normal_prompt_with_the_error(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+
+            await notifier.failed(error="run_failed: model exhausted")
+
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            assert pending[0].message_type == "prompt"
+            assert "run_failed: model exhausted" in pending[0].message_contents
+            assert pending[0].id == _expected_id(event="failed", phase_index=0)
+        finally:
+            await gateway.close()
+
+    async def test_aborted_sends_a_normal_prompt_with_the_finality_instruction(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+
+            await notifier.aborted(reason="run_aborted: stopped", cleanup_summary="fleet: done")
+
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            prompt: ChannelMessageDAO = pending[0]
+            assert prompt.message_type == "prompt"
+            assert prompt.id == _expected_id(event="aborted", phase_index=0)
+            assert prompt.message_contents == (
+                "Workflow wf-3f2a was aborted. Reason: run_aborted: stopped. "
+                "An aborted workflow is final: do not retry, resume or relaunch it. "
+                "Tell the user it was aborted and suggest /workflows for its final state."
+                "\n\nfleet: done"
+            )
+        finally:
+            await gateway.close()
+
+
+class TestReceivePaths:
+    """Rows wait in the DB when the target is gone or closed."""
+
+    async def test_unknown_target_is_swallowed_and_logged(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+            # The TUI participant has never registered: the row cannot be
+            # inserted, and the workflow must keep running anyway.
+            await notifier.started(brief_preview="brief")
+            assert await gateway.pending_outbound(recipient_ids=[]) == []
+        finally:
+            await gateway.close()
+
+    async def test_closed_target_is_swallowed(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await gateway.register_agent(session_id=UUID(_TARGET_SESSION_ID), name="slo 11111111")
+            await gateway.register_agent(session_id=UUID(_ORCH_SESSION_ID), name="orchestrator wf-3f2a")
+            await gateway.close_agent(session_id=UUID(_TARGET_SESSION_ID), reason="session_closed")
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+            with pytest.raises(RecipientClosedError):
+                await gateway.send(
+                    new=NewMessageDAO(
+                        sender_id=UUID(_ORCH_SESSION_ID),
+                        recipient_id=UUID(_TARGET_SESSION_ID),
+                        message_contents="x",
+                    )
+                )
+            await notifier.started(brief_preview="brief")
+        finally:
+            await gateway.close()
+
+
+class TestFailureSwallowing:
+    """A notify failure must never propagate into the workflow."""
+
+    async def test_gateway_failure_is_swallowed(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
+        await gateway.close()  # every send now raises: the repository is not open
+        await notifier.started(brief_preview="b")
+        await notifier.phase_update(phase_summary="p")
+        await notifier.fleet_update(entries=[], live_count=1)
+        await notifier.completed(synthesis="s", result_json="{}")
+        await notifier.failed(error="e")
+        await notifier.aborted(reason="stopped")
+
+
+class TestCredentialRedaction:
+    """Terminal notifier artifacts must not expose the effective credential."""
+
+    async def test_failed_redacts_the_effective_openrouter_credential(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The abort note carries the exact finality instruction and identity."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
-        await notifier.aborted(reason="run_aborted: stopped", cleanup_summary=cleanup_summary)
-        pending = await _pending(store=store)
-        assert len(pending) == 1
-        message = pending[0]
-        assert message.kind == "workflow_aborted"
-        assert message.delivery_mode == "chat_turn"
-        assert message.title == "wf-3f2a aborted"
-        assert message.payload == {"workflow_id": _WORKFLOW_ID, "orchestrator_session_id": _ORCH_SESSION_ID}
-        suffix = "\n\n" + cleanup_summary if cleanup_summary else ""
-        assert message.text == (
-            "Workflow wf-3f2a was aborted. Reason: run_aborted: stopped. An aborted workflow is final: "
-            "do not retry, resume or relaunch it. Tell the user it was aborted and suggest /workflows "
-            "for its final state." + suffix
-        )
-        assert message.priority == "normal"
-        assert message.schedule_id == "workflow:wf-3f2a"
-        assert message.coalesce_key is None
-
-    async def test_completed_enqueues_chat_turn_with_synthesis_and_json(self, tmp_path: Path) -> None:
-        """The completion message carries the synthesis and result JSON."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
-
-        await notifier.completed(synthesis="all phases green", result_json='{"all_completed": true}')
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
-
-        message: SessionInboxMessageDAO = pending[0]
-        assert message.kind == "workflow_completed"
-        assert message.delivery_mode == "chat_turn"
-        assert "all phases green" in message.text
-        assert '{"all_completed": true}' in message.text
-
-    async def test_completed_note_includes_cleanup_summary(self, tmp_path: Path) -> None:
-        """The terminal completion note puts cleanup accounting on its own line."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
-
-        await notifier.completed(
-            synthesis="all phases green",
-            result_json='{"all_completed": true}',
-            cleanup_summary="fleet: 1 completed · 0 live",
-        )
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
-
-        assert "fleet: 1 completed · 0 live" in pending[0].text
-
-    async def test_failed_enqueues_chat_turn_with_error(self, tmp_path: Path) -> None:
-        """The failure message carries the terminal error description."""
-        notifier, store = _build_notifier(tmp_path=tmp_path)
-
-        await notifier.failed(error="run_failed: model exhausted")
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
-
-        message: SessionInboxMessageDAO = pending[0]
-        assert message.kind == "workflow_failed"
-        assert message.delivery_mode == "chat_turn"
-        assert "run_failed: model exhausted" in message.text
-
-
-class TestTerminalCredentialRedaction:
-    """Terminal notifier artifacts must not expose the effective OpenRouter credential."""
-
-    async def test_failed_redacts_effective_openrouter_credential_from_pending_file(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """A failure sentinel is redacted before the real inbox store persists it."""
         sentinel: str = "openrouter-notifier-sentinel"
         credential: CredentialDAO = CredentialDAO(
             provider=ProviderName.OPENROUTER,
@@ -254,104 +332,33 @@ class TestTerminalCredentialRedaction:
             access_token=sentinel,
         )
         monkeypatch.setattr(CredentialResolver, "resolve", lambda *, provider: credential)
-        notifier, store = _build_notifier(tmp_path=tmp_path)
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            await _register_target(gateway=gateway)
+            notifier: WorkflowNotifier = _build_notifier(gateway=gateway)
 
-        await notifier.failed(error=f"upstream failed: {sentinel}")
+            await notifier.failed(error=f"upstream failed: {sentinel}")
 
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
-        persisted_paths: list[Path] = list((tmp_path / "history").rglob("*.json"))
-        persisted_text: str = "\n".join(path.read_text(encoding="utf-8") for path in persisted_paths)
-        assert all(path.resolve().is_relative_to(tmp_path.resolve()) for path in persisted_paths)
-        assert len(pending) == 1
-        assert "[REDACTED]" in pending[0].text
-        assert sentinel not in pending[0].text
-        assert sentinel not in persisted_text
+            pending: list[ChannelMessageDAO] = await _pending_for_target(gateway=gateway)
+            assert len(pending) == 1
+            assert "[REDACTED]" in pending[0].message_contents
+            assert sentinel not in pending[0].message_contents
+        finally:
+            await gateway.close()
 
 
-class TestTerminalCredentialRotation:
-    """Notifier output protection during an admitted-key rotation."""
+class TestNoInboxImports:
+    """O6 (static): ``WorkflowNotifier`` no longer uses the file inbox."""
 
-    @pytest.mark.parametrize("terminal", ["completed", "failed", "aborted"])
-    async def test_terminal_redacts_admitted_key_after_effective_key_rotates(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        terminal: str,
-    ) -> None:
-        """Completed, failed and aborted notifications retain no old or newly effective credential."""
-        admitted_key: str = "openrouter-notifier-admitted-key-a"
-        rotated_key: str = "openrouter-notifier-effective-key-b"
-        credential_a: CredentialDAO = CredentialDAO(
-            provider=ProviderName.OPENROUTER,
-            auth_type=AuthType.API_KEY,
-            access_token=admitted_key,
+    async def test_notifier_module_has_no_history_inbox_import(self) -> None:
+        import inspect
+
+        source: str = inspect.getsource(
+            __import__("src.agents.slo_agent.orchestrator.notifier", fromlist=["WorkflowNotifier"])
         )
-        credential_b: CredentialDAO = credential_a.model_copy(update={"access_token": rotated_key})
-        notifier, store = _build_notifier(tmp_path=tmp_path)
+        assert "history.inbox" not in source
+        assert "SessionInboxStore" not in source
+        assert "SessionInboxMessageDAO" not in source
 
-        with CredentialResolver.bind_build_credential(credential=credential_a):
-            monkeypatch.setattr(CredentialResolver, "resolve", lambda *, provider: credential_b)
-            if terminal == "completed":
-                await notifier.completed(
-                    synthesis=f"completed after {admitted_key}",
-                    result_json=f'{{"next":"{admitted_key}"}}',
-                )
-            elif terminal == "aborted":
-                await notifier.aborted(reason=f"aborted after {admitted_key}")
-            else:
-                await notifier.failed(error=f"failed after {admitted_key}")
-
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
-        artifact_text: str = "\n".join(
-            path.read_text(encoding="utf-8") for path in (tmp_path / "history").rglob("*") if path.is_file()
-        )
-        assert len(pending) == 1
-        assert "[REDACTED]" in pending[0].text
-        assert admitted_key not in artifact_text
-        assert rotated_key not in artifact_text
-
-    async def test_failed_notifier_fails_closed_when_resolution_raises(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """An unavailable live resolver still redacts the operation-bound credential."""
-        admitted_key: str = "openrouter-notifier-resolver-failure-key"
-        credential: CredentialDAO = CredentialDAO(
-            provider=ProviderName.OPENROUTER,
-            auth_type=AuthType.API_KEY,
-            access_token=admitted_key,
-        )
-        notifier, store = _build_notifier(tmp_path=tmp_path)
-
-        def fail_resolution(*, provider: ProviderName) -> CredentialDAO:
-            """Raise the controlled resolver failure during notifier persistence."""
-            del provider
-            raise OSError("controlled resolver failure")
-
-        with CredentialResolver.bind_build_credential(credential=credential):
-            monkeypatch.setattr(CredentialResolver, "resolve", fail_resolution)
-            await notifier.failed(error=f"upstream failed: {admitted_key}")
-
-        pending: list[SessionInboxMessageDAO] = await _pending(store=store)
-        assert len(pending) == 1
-        assert pending[0].text.count("[REDACTED]") == 1
-        assert admitted_key not in pending[0].text
-
-
-class TestFailureSwallowing:
-    """A notify failure must never propagate into the workflow."""
-
-    async def test_enqueue_failure_is_swallowed(self, tmp_path: Path) -> None:
-        """Every lifecycle method survives a store that always raises."""
-        exploding: _ExplodingInboxStore = _ExplodingInboxStore()
-        notifier, _ = _build_notifier(tmp_path=tmp_path, store=exploding)
-
-        await notifier.started(brief_preview="b")
-        await notifier.phase_update(phase_summary="p")
-        await notifier.completed(synthesis="s", result_json="{}")
-        await notifier.failed(error="e")
-
-        await notifier.aborted(reason="stopped")
-
-        assert exploding.enqueue_attempts == 5
+    async def test_unknown_participant_error_is_the_expected_failure_kind(self) -> None:
+        assert UnknownParticipantError(participant_id=UUID(_TARGET_SESSION_ID)) is not None

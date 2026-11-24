@@ -178,9 +178,11 @@ class TestStartupNotice:
             )
 
     async def test_should_show_startup_notice_when_resumed_with_fallback_renders_existing_block(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Each fallback launch renders the full block despite a persisted startup marker."""
+        monkeypatch.setenv("TERM", "dumb")
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
         history_root: Path = tmp_path / "history"
         assert history_root.resolve().is_relative_to(tmp_path.resolve())
         session_id: str = str(uuid4())
@@ -209,7 +211,7 @@ class TestStartupNotice:
                 assert lines[0] == notice
                 assert "Copyright (C)" in lines[1]
                 assert f"Initialized model: {session.active_model_name}" in lines[2]
-                assert len(lines) == 3
+                assert len(lines) == 4
 
     @pytest.mark.parametrize(argnames="fallback_notice", argvalues=[None, "Resume fallback"])
     async def test_should_show_startup_notice_when_history_disabled_honors_fallback(

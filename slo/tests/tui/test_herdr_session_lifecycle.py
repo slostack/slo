@@ -4,6 +4,7 @@ import asyncio
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 
 from pathlib import Path
+from typing import Optional
 from src.tui.components.chat_transcript.commands import TranscriptCommand
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.channels.gateway import ChannelGateway
 from src.tui.app import SloTUI
 
 
@@ -56,9 +58,9 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             built.append(candidate)
             return candidate
 
-        def attach(*, session: SloAgentSession) -> None:
+        def attach(*, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None) -> None:
             """Fail after actual attachment to prove candidate pool cleanup."""
-            original_attach(session=session)
+            original_attach(session=session, channel_gateway=channel_gateway)
             if failure == "cancel_before_name":
                 raise asyncio.CancelledError
             if failure in ("attach", "notice"):
@@ -73,11 +75,9 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._chat_transcript.echo_user(text="old transcript")
-            await app._queue_prompt(text="held prompt")
             await pilot.pause()
             assert app._chat_transcript._transcript_content is not None
             children = tuple(app._chat_transcript._transcript_content.children)
-            queue = app._queued_prompt_block
             assert app._input is not None
             history = app._input._prompt_history
             pool = old.sub_agent_pool
@@ -121,8 +121,6 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             assert app._session is old
             assert tuple(old._subscribers) == subscribers
             assert not preparation.done()
-            assert app._queued_prompt_block is queue
-            assert app._queued_prompt_text == "held prompt"
             assert app._input._prompt_history is history
             assert tuple(app._chat_transcript._transcript_content.children)[: len(children)] == children
             assert await app._lease_store.read(session_id=old.session_id) == lease
@@ -181,7 +179,7 @@ async def test_new_prepared_policy_is_independent(
         original_attach = app._attach_pool_to_session
         candidates: list[SloAgentSession] = []
 
-        def attach(*, session: SloAgentSession) -> None:
+        def attach(*, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None) -> None:
             """Inspect the actual new candidate before normal attachment/adoption."""
             candidates.append(session)
             assert session._config is not None
@@ -200,18 +198,16 @@ async def test_new_prepared_policy_is_independent(
                 session.model_pool_dao.entries.reverse()
                 assert configured_pool.entries[0].cooldown_seconds == 300
                 assert configured_pool.entries[0].priority == 2
-            original_attach(session=session)
+            original_attach(session=session, channel_gateway=channel_gateway)
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            await app._queue_prompt(text="discard on success")
             with patch.object(app, "_attach_pool_to_session", side_effect=attach):
                 await app._start_new_session(requested_name=requested_name)
             assert len(candidates) == 1
             assert app._session is candidates[0]
             assert app._session.session_id != old.session_id
             assert app._session.session_name == requested_name
-            assert app._queued_prompt_text is None and app._queued_prompt_block is None
             assert app._render_event not in old._subscribers
             assert app._render_event in app._session._subscribers
             assert old.sub_agent_pool is not None and old.sub_agent_pool.admission_state().name == "OPEN"
@@ -239,11 +235,11 @@ async def test_candidate_cleanup_joins_repeated_cancellation(
         if cleanup_error:
             raise RuntimeError("private cleanup sentinel")
 
-    def attach(*, session: SloAgentSession) -> None:
+    def attach(*, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None) -> None:
         """Capture a partially prepared candidate and fail its attachment boundary."""
         candidates.append(session)
         if pool_present:
-            original_attach(session=session)
+            original_attach(session=session, channel_gateway=channel_gateway)
         raise RuntimeError("private attachment sentinel")
 
     async with app.run_test() as pilot:

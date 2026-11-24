@@ -33,6 +33,8 @@ __all__ = [
     "OrchestratorRunState",
     "OrchestratorStatusDAO",
     "OrchestratorResultDAO",
+    "ChildDirectoryState",
+    "ChildDirectoryEntryDAO",
     "ExecutionPhase",
     "StdoutCaptureIdentityDAO",
     "ChildExecutionEvidenceDAO",
@@ -685,6 +687,8 @@ class OrchestratorResultDAO(BaseModel):
         all_completed (bool): ``True`` when every task reached ``completed``.
         failed_task_ids (list[str]): ``task_id`` values whose children did not
             reach ``completed``. Empty when ``all_completed`` is ``True``.
+        channel_notes_pending (int): Channel notes (108.4) waiting for the
+            orchestrator when the dispatch returned.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -694,6 +698,37 @@ class OrchestratorResultDAO(BaseModel):
     all_completed: bool = True
     failed_task_ids: list[str] = Field(default_factory=list)
     error: Optional[str] = None
+    channel_notes_pending: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Channel notes, e.g. from children, still pending for the orchestrator when the "
+            "dispatch returned; they enter its context at its next step."
+        ),
+    )
+
+
+ChildDirectoryState = Literal["running", "finished"]
+"""Messaging liveness of one child: ``running`` until its incarnation is terminal (108.4)."""
+
+
+class ChildDirectoryEntryDAO(BaseModel):
+    """One child an orchestrator may address by task id (108.4 §4).
+
+    Produced by ``ChildDirectory`` for ``SubAgentPool.child_directory``; consumed
+    by the messaging policy to resolve a ``task_id`` alias to a recipient.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task_id: str = Field(description="Task id given to spawn_sub_agents; usable as an alias.")
+    session_id: UUID = Field(
+        description=(
+            "Channel participant id of the child: its pre-assigned session id, or the "
+            "deterministic participant id of a non-UUID session id."
+        )
+    )
+    state: ChildDirectoryState = Field(description="Whether the child is still running.")
 
 
 ExecutionPhase = Literal["pending", "running", "terminal"]

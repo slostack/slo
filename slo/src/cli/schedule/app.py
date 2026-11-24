@@ -11,8 +11,8 @@ from uuid import uuid4
 import typer
 
 from config.cfg import cfg as _cfg
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
+from src.channels.gateway import ChannelGateway
 from src.scheduling.dao import (
     CalendarTriggerDAO,
     CronTriggerDAO,
@@ -374,16 +374,41 @@ def _history_root() -> Path:
     return (base_dir / "sessions" / "history").resolve()
 
 
-def _build_executor() -> ScheduleExecutor:
-    """Build the production schedule executor with canonical session stores."""
-    history_root: Path = _history_root()
+def _build_executor(*, channel_gateway: ChannelGateway) -> ScheduleExecutor:
+    """Build the production schedule executor with canonical session stores.
+
+    Args:
+        channel_gateway (ChannelGateway): Caller-owned shared channel queue
+            through which fires reach a session whose TUI holds the lease.
+
+    Returns:
+        ScheduleExecutor: Executor wired to the lease store and channel queue.
+    """
     return ScheduleExecutor(
-        session_lease_store=SessionOwnershipLeaseStore(history_root=history_root),
-        session_inbox_store=SessionInboxStore(history_root=history_root),
+        session_lease_store=SessionOwnershipLeaseStore(history_root=_history_root()),
+        channel_gateway=channel_gateway,
     )
+
+
+async def _execute_schedule_fire(*, reference: str) -> int:
+    """Run one fire with a gateway this command owns, closing it afterwards.
+
+    The gateway opens lazily, only when the fire targets an active session.
+
+    Args:
+        reference (str): Schedule id or normalized name.
+
+    Returns:
+        int: Scheduler-facing exit code.
+    """
+    channel_gateway: ChannelGateway = ChannelGateway.at_default_path()
+    try:
+        return await _build_executor(channel_gateway=channel_gateway).execute(reference=reference)
+    finally:
+        await channel_gateway.close()
 
 
 def _run_schedule_execution(*, reference: str) -> None:
     """Run one schedule fire through the production executor and exit accordingly."""
-    exit_code: int = asyncio.run(_build_executor().execute(reference=reference))
+    exit_code: int = asyncio.run(_execute_schedule_fire(reference=reference))
     raise typer.Exit(code=exit_code)

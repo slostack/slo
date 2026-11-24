@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import os
 import json
+from uuid import UUID
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -75,7 +76,6 @@ async def test_managed_fixture_uses_canonical_roots(managed_launch_root: Path) -
         "src.agents.slo_agent.history.filesystem_store",
         "src.agents.slo_agent.sessions.dao",
         "src.agents.slo_agent.orchestrator.launch_tool",
-        "src.agents.slo_agent.orchestrator.notifier",
         "src.cli.headless",
     ):
         module = importlib.import_module(module_name)
@@ -205,6 +205,37 @@ class ManagedJourney:
         self.factories.append((session_id, model_name, reasoning_level))
         messages = self.owner_messages if session_id == "managed-owner" else self.child_messages
         return LLMBuildResult(llm=FauxChatModel(responses=messages), supports_explicit_caching=False)
+
+
+async def _register_owner_participant(*, session_id: str) -> None:
+    """Register the owner session's channel participant before a child runs (108.3)."""
+    from src.channels.gateway import ChannelGateway
+
+    from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+
+    gateway: ChannelGateway = await ChannelGateway.default()
+    try:
+        await gateway.register_agent(
+            session_id=channel_participant_id_for_session(session_id=session_id),
+            name=f"slo {session_id}",
+        )
+    finally:
+        await gateway.close()
+
+
+async def _owner_channel_rows(*, session_id: str) -> list:
+    """Return the pending channel rows addressed to the owner session (108.3)."""
+    from src.channels.gateway import ChannelGateway
+
+    from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+
+    gateway: ChannelGateway = await ChannelGateway.default()
+    try:
+        return await gateway.pending_inbound(
+            recipient_id=channel_participant_id_for_session(session_id=session_id)
+        )
+    finally:
+        await gateway.close()
 
 
 async def test_managed_typed_factory_preserves_lazy_owner(
@@ -352,6 +383,7 @@ async def run_recorded_child(
             patch.object(HeadlessRunner, "__init__", initialize),
             patch.object(HeadlessRunner, "_shutdown_model_catalog", shutdown),
         ):
+
             result = CliRunner().invoke(app=app, args=journey.argv[3:])
             assert len(runners) == 1
             if expected_active_reasoning is not None:
@@ -362,13 +394,14 @@ async def run_recorded_child(
                 assert runners[0]._session._sub_agent_pool.admission_state() is PoolAdmissionState.CLOSED
             return result
 
+    notify_target: str = journey.argv[journey.argv.index("--notify-session") + 1]
+    await _register_owner_participant(session_id=notify_target)
     return await asyncio.to_thread(invoke)
 
 
 async def test_managed_child_cli_completes_registered_lifecycle(managed_journey: ManagedJourney) -> None:
     """Captured high reaches real child lazy factory and registered terminal/inbox state."""
     from src.agents.slo_agent.preferences.service import UserPreferencesStore
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
     from src.agents.slo_agent.orchestrator.status_store import OrchestratorStatusStore
 
     journey = managed_journey
@@ -393,15 +426,12 @@ async def test_managed_child_cli_completes_registered_lifecycle(managed_journey:
         status.state,
         status.exit_code,
     ) == (handle.workflow_id, handle.orchestrator_session_id, journey.pid, "completed", 0)
-    messages = await SessionInboxStore(history_root=history).list_pending(session_id=owner.session_id)
-    assert [(message.kind, message.delivery_mode) for message in messages] == [
-        ("workflow_started", "context_note"),
-        ("workflow_completed", "chat_turn"),
-    ]
-    assert all(message.payload["workflow_id"] == handle.workflow_id for message in messages)
-    assert all(
-        message.payload["orchestrator_session_id"] == handle.orchestrator_session_id for message in messages
-    )
+    rows = await _owner_channel_rows(session_id=owner.session_id)
+    assert [row.message_type for row in rows] == ["note", "prompt"]
+    assert f"[workflow {handle.workflow_id}] started" in rows[0].message_contents
+    assert handle.orchestrator_session_id in rows[0].message_contents
+    assert f"Workflow {handle.workflow_id} completed" in rows[-1].message_contents
+    assert handle.orchestrator_session_id in json.dumps([row.message_contents for row in rows])
     status_tool = next(tool for tool in owner.orchestration_tools if tool.name == "workflow_status")
     status_result = json.loads(await status_tool.ainvoke({"workflow_id": handle.workflow_id}))
     assert status_result["state"] == "completed"
@@ -416,7 +446,6 @@ async def test_managed_phase_medium_is_independent_of_high_parent(
     # replaces its class without replacing the class already imported by the pool.
     from src.agents.slo_agent.orchestrator.pool import SubAgentProcess
     from src.agents.slo_agent.orchestrator.dao import SubAgentResultDAO
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 
     journey = managed_journey
     phases: list[SubAgentResultDAO] = []
@@ -476,19 +505,13 @@ async def test_managed_phase_medium_is_independent_of_high_parent(
     assert result.exit_code == 0, (result.output, result.exception)
     assert len(phases) == 1 and phases[0].task_id == "phase-medium"
     assert journey.factories[-1][2] == "high"
-    history = journey.root / "sessions/history"
-    messages = await SessionInboxStore(history_root=history).list_pending(session_id=owner.session_id)
-    lifecycle = [
-        (message.kind, message.delivery_mode)
-        for message in messages
-        if message.kind != "workflow_fleet_update"
-    ]
-    assert lifecycle == [
-        ("workflow_started", "context_note"),
-        ("workflow_phase_update", "context_note"),
-        ("workflow_completed", "chat_turn"),
-    ]
+    rows = await _owner_channel_rows(session_id=owner.session_id)
+    lifecycle = [row for row in rows if row.message_type != "notice"]
+    assert [row.message_type for row in lifecycle] == ["note", "note", "prompt"]
+    assert "phase 1:" in lifecycle[1].message_contents
+    assert f"Workflow {journey.environment['SLO_WORKFLOW_ID']} completed" in lifecycle[-1].message_contents
     child_id = journey.factories[-1][0]
+    history = journey.root / "sessions/history"
     fleet = json.loads((history / child_id / "fleet.json").read_text())
     assert fleet["orchestrator_session_id"] == child_id
     assert fleet["workflow_id"] == journey.environment["SLO_WORKFLOW_ID"]
@@ -550,8 +573,6 @@ async def test_managed_direct_failures_keep_distinct_lifecycle(
     managed_journey: ManagedJourney, model: str
 ) -> None:
     """Unknown construction has no lifecycle; missing credential fails after started, before factory."""
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-
     journey = managed_journey
     CredentialStore().remove(provider=ProviderName.KIMI_FOR_CODING)
     owner = await launch_from_owner(
@@ -563,23 +584,21 @@ async def test_managed_direct_failures_keep_distinct_lifecycle(
     )
     assert result.exit_code == 1
     assert journey.factories == [(owner.session_id, "gpt-5.4", "low")]
+    rows = await _owner_channel_rows(session_id=owner.session_id)
     history = journey.root / "sessions/history"
-    messages = await SessionInboxStore(history_root=history).list_pending(session_id=owner.session_id)
     status_path = history / handle.orchestrator_session_id / "orchestrator.json"
     if model == "unknown-managed-model":
         assert isinstance(result.exception, ValueError)
         assert str(result.exception) == "Unsupported reasoning model 'unknown-managed-model'."
-        assert messages == [] and not status_path.exists()
+        assert rows == [] and not status_path.exists()
         output_events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         assert not any(event.get("kind") == "run_failed" for event in output_events)
         journey.alive = False
         reconciled = await journey.stores[0].reconcile(owner_session_id=owner.session_id)
         assert reconciled[0].state == "failed"
     else:
-        assert [(message.kind, message.delivery_mode) for message in messages] == [
-            ("workflow_started", "context_note"),
-            ("workflow_failed", "chat_turn"),
-        ]
+        assert [row.message_type for row in rows] == ["note", "prompt"]
+        assert f"Workflow {handle.workflow_id} did not complete" in rows[-1].message_contents
         output_events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         failed = [event for event in output_events if event.get("kind") == "run_failed"]
         assert len(failed) == 1
@@ -640,7 +659,6 @@ async def test_managed_openrouter_preparation_failure_is_child_owned(
     """Empty real metadata responses fail admission before started, phase or child factory."""
     import httpx
     from src.integrations.openrouter.client import OpenRouterAPIClient
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 
     journey = managed_journey
     requests: list[str] = []
@@ -677,19 +695,15 @@ async def test_managed_openrouter_preparation_failure_is_child_owned(
     output_events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     failed = [event for event in output_events if event.get("kind") == "run_failed"]
     assert len(failed) == 1 and failed[0]["metadata"]["failure_scope"] == "model_preparation"
-    messages = await SessionInboxStore(history_root=journey.root / "sessions/history").list_pending(
-        session_id=owner.session_id
-    )
-    assert [(message.kind, message.delivery_mode) for message in messages] == [
-        ("workflow_failed", "chat_turn")
-    ]
+    rows = await _owner_channel_rows(session_id=owner.session_id)
+    assert [row.message_type for row in rows] == ["prompt"]
     handle = (await journey.stores[0].list(owner_session_id=owner.session_id))[0]
     status = json.loads(
         (journey.root / "sessions/history" / handle.orchestrator_session_id / "orchestrator.json").read_text()
     )
     assert (status["state"], status["exit_code"], status["pid"]) == ("failed", 1, journey.pid)
     assert status["workflow_id"] == handle.workflow_id
-    assert messages[0].payload["orchestrator_session_id"] == handle.orchestrator_session_id
+    assert rows[0].sender_id == UUID(handle.orchestrator_session_id)
 
 
 @pytest.mark.parametrize(("requested", "effective"), [(None, "low"), ("off", "off"), ("high", "high")])

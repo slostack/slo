@@ -1,6 +1,7 @@
 """Offline contracts for explicit route precedence and headless preparation."""
 
 import asyncio
+import sqlite3
 import json
 import signal
 from pathlib import Path
@@ -66,11 +67,26 @@ def test_headless_preparation_failure_has_one_identity(
     root = tmp_path.resolve()
     monkeypatch.setenv("SLO_WORKFLOW_ID", "wf-preparation")
     monkeypatch.delenv("SLO_SESSION_ID", raising=False)
+
+    async def _register_owner() -> None:
+        """Register the TUI-side participant the failed prompt reports to (108.3)."""
+        from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+        from src.channels.gateway import ChannelGateway
+
+        gateway: ChannelGateway = await ChannelGateway.default()
+        try:
+            await gateway.register_agent(
+                session_id=channel_participant_id_for_session(session_id="owner"),
+                name="slo owner",
+            )
+        finally:
+            await gateway.close()
+
+    asyncio.run(_register_owner())
     with (
         patch("src.cli.typer_dispatch.UserPreferencesStore.load", return_value=UserPreferencesDAO()),
         patch("src.cli.typer_dispatch.headless_logging", return_value=nullcontext()),
         patch("src.cli.headless.default_history_root", return_value=root),
-        patch("src.agents.slo_agent.orchestrator.notifier.default_history_root", return_value=root),
         patch(
             "src.agents.model_catalog.service.ModelCatalogService.load",
             return_value=SeedModelCatalog.load(),
@@ -117,6 +133,23 @@ def test_headless_preparation_failure_has_one_identity(
         "headless_run_failed",
     ]
     assert {event["session_id"] for event in lifecycle} == {config.session_id}
+    # The terminal failed prompt reached the owner participant over the queue (108.3).
+    from uuid import UUID
+
+    from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+    from config.cfg import cfg
+
+    owner_id: str = str(channel_participant_id_for_session(session_id="owner"))
+    queue = sqlite3.connect(str(Path(str(cfg(key="SLO_HOME"))) / "channels" / "channels.db"))
+    try:
+        owner_rows = queue.execute(
+            "SELECT message_type, message_contents FROM messages WHERE recipient_id = ?",
+            (owner_id,),
+        ).fetchall()
+        assert [row[0] for row in owner_rows] == ["prompt"]
+        assert "Model preparation failed" in owner_rows[0][1]
+    finally:
+        queue.close()
     artifacts: list[str] = []
     for path in root.rglob("*"):
         assert path.resolve().is_relative_to(root)
@@ -124,7 +157,6 @@ def test_headless_preparation_failure_has_one_identity(
             artifacts.append(path.read_text())
     joined = "\n".join(artifacts)
     assert '"state": "failed"' in joined
-    assert "workflow_failed" in joined
     assert config.session_id in joined
     assert "RAW_PRIVATE_SENTINEL" not in captured.out + captured.err + joined
 
@@ -153,7 +185,6 @@ async def test_preparation_cancellation_emits_one_abort_and_restores_signal(
         patch.object(SloAgentSession, "prepare", side_effect=asyncio.CancelledError()),
         patch("src.cli.headless.signal.signal", return_value=signal.SIG_DFL) as install,
         patch("src.cli.headless.default_history_root", return_value=tmp_path),
-        patch("src.agents.slo_agent.orchestrator.notifier.default_history_root", return_value=tmp_path),
     ):
         exit_code: int = await runner.invoke(prompt="offline")
 
@@ -195,7 +226,6 @@ async def test_sigterm_during_preparation_cancels_work_and_emits_one_abort(
         patch.object(SloAgentSession, "prepare", side_effect=wait_for_preparation),
         patch("src.cli.headless.signal.signal", side_effect=record_handler) as install,
         patch("src.cli.headless.default_history_root", return_value=tmp_path),
-        patch("src.agents.slo_agent.orchestrator.notifier.default_history_root", return_value=tmp_path),
         patch.object(SloAgentSession, "invoke") as invoke,
     ):
         invoke_task = asyncio.create_task(runner.invoke(prompt="offline"))

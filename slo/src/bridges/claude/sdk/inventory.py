@@ -79,7 +79,9 @@ class ClaudeToolInventory:
         {"read", "write", "edit", "bash", "grep", "find", "ls", "read_pdf", "now", "show_git_diff"}
     )
     ORCHESTRATION_NAMES: ClassVar[frozenset[str]] = frozenset(
-        {"spawn_sub_agents", "launch_workflow", "workflow_status"}
+        # send_message (108.4): typed channel messaging between an orchestrator,
+        # its children and the workflows it launched; executed by the host.
+        {"spawn_sub_agents", "launch_workflow", "workflow_status", "send_message"}
     )
     _SCHEMA_MAPS: ClassVar[frozenset[str]] = frozenset(
         {"$defs", "definitions", "properties", "patternProperties", "dependentSchemas"}

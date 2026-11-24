@@ -5,10 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID, uuid4
 
 import pytest
+from langchain_core.messages import AIMessage
 
-from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
+from src.tui.slash_command_registry import SlashCommandSpecDAO
+from src.tui.slash_router import SlashCommandAdmissionDAO, SlashCommandResultDAO, SlashRouter
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.sessions.service import SloAgentSession
@@ -210,21 +213,36 @@ class TestSlashRouterDispatch:
         assert result.abort_run is True
 
     @pytest.mark.asyncio
-    async def test_steer_with_args_calls_session_steer(self) -> None:
-        """``/steer foo bar`` calls ``session.steer(message="foo bar")``."""
+    async def test_queue_resume_without_a_poller_reports_it(self) -> None:
+        """When channel delivery is not running, ``/queue resume`` says so and no-ops."""
         session: MagicMock = _build_session_stub()
+        session.channel_poller = None
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(
-            line="/steer foo bar",
+            line="/queue resume",
             session=session,
         )
 
-        session.steer.assert_called_once_with(message="foo bar")
-        assert result.steer_pending_message == "foo bar"
+        assert result.rendered == "channel queue is not running"
+
+    @pytest.mark.asyncio
+    async def test_queue_command_registry_entry_is_advertised(self) -> None:
+        """``/queue`` is a registered command whose usage names resume and force."""
+        command: Optional[SlashCommandSpecDAO] = SlashRouter._REGISTRY.resolve(token="queue")
+        assert command is not None
+        assert command.usage == "/queue [resume | cancel <n|all> | edit <n> | force <n>] (bare: list)"
+
+    @pytest.mark.asyncio
+    async def test_queue_resume_is_admitted_before_model_preparation(self) -> None:
+        """``/queue resume`` dispatches even while the model is unprepared (recovery pause)."""
+        admission: SlashCommandAdmissionDAO = SlashRouter.admit(
+            line="/queue resume", preparation_status="pending"
+        )
+        assert admission.action == "dispatch"
 
     @pytest.mark.asyncio
     async def test_steer_without_args_rejects(self) -> None:
-        """Bare ``/steer`` renders the usage line and does not call ``steer``."""
+        """Bare ``/steer`` renders the usage line and sends nothing."""
         session: MagicMock = _build_session_stub()
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(
@@ -233,7 +251,7 @@ class TestSlashRouterDispatch:
         )
 
         assert result.rendered == "usage: /steer <message>"
-        session.steer.assert_not_called()
+        assert result.forced_prompt_text is None
 
     @pytest.mark.asyncio
     async def test_diff_with_path_returns_git_diff_intent(self) -> None:
@@ -1354,3 +1372,157 @@ class TestSlashRouterActivity:
         assert SlashRouter.requires_activity(line="/model gpt-5.4") is False
         assert SlashRouter.requires_activity(line="/help") is False
         assert SlashRouter.requires_activity(line="/nope") is False
+
+
+class TestQueueAndSteerOverARealChannelQueue:
+    """``/queue`` and ``/steer`` against a real session with a real temp-DB poller.
+
+    No mocks: a real ``SloAgentSession``, a real ``ChannelGateway`` on a temp
+    SQLite database, and a recording turn runner injected through the poller's
+    constructor seam.
+    """
+
+    async def _open_world(self, *, tmp_path: Path) -> tuple:
+        """Build a real session with a started poller on a fresh queue."""
+        from src.channels.gateway import ChannelGateway
+        from tests.agents.slo_agent.channel_delivery.test_channel_poller import (
+            RecordingTurnRunner,
+            _build_session,
+            _open_gateway,
+            _register_tui_participants,
+        )
+
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path,
+            session_id=str(uuid4()),
+            responses=[AIMessage(content="unused")],
+        )
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        _channel, user, agent = await _register_tui_participants(
+            gateway=gateway, session_id=UUID(session.session_id)
+        )
+        runner: RecordingTurnRunner = RecordingTurnRunner()
+        await session.start_channel_delivery(
+            gateway=gateway,
+            runner=runner,
+            interval=0.02,
+        )
+        return gateway, session, user, agent, runner
+
+    async def _send_prompt(self, *, gateway, user, agent, text: str, force: bool = False):
+        """Insert one prompt row for the agent."""
+        from src.channels.dao import NewMessageDAO
+
+        return await gateway.send(
+            new=NewMessageDAO(
+                sender_id=user.id,
+                recipient_id=agent.id,
+                message_contents=text,
+                force=force,
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_queue_resume_resumes_a_paused_real_poller(self, tmp_path: Path) -> None:
+        """``/queue resume`` clears a real poller's pause (108.1 §2)."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            poller = session.channel_poller
+            assert poller is not None
+            poller.pause(reason="aborted")
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(line="/queue resume", session=session)
+            assert result.rendered == "(queue resumed — pending prompts will run)"
+            assert poller.paused is None
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_queue_lists_pending_rows_forced_first(self, tmp_path: Path) -> None:
+        """Bare ``/queue`` numbers the pending rows in display order with a ⚡ marker."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            poller = session.channel_poller
+            assert poller is not None
+            poller.pause(reason="held")  # keep the poller from running rows mid-listing
+            await self._send_prompt(gateway=gateway, user=user, agent=agent, text="normal row")
+            await self._send_prompt(gateway=gateway, user=user, agent=agent, text="forced row", force=True)
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(line="/queue", session=session)
+            listing: str = result.rendered or ""
+            assert "pending queue:" in listing
+            assert "⚡" in listing
+            forced_position: int = listing.index("forced row")
+            normal_position: int = listing.index("normal row")
+            assert forced_position < normal_position
+            assert "2. normal row" in listing
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()
+
+    @pytest.mark.asyncio
+    async def test_queue_force_n_stamps_forced_at_on_the_nth_pending_row(self, tmp_path: Path) -> None:
+        """F7: ``/queue force 2`` forces the second pending row (108.2 §2)."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            poller = session.channel_poller
+            assert poller is not None
+            poller.pause(reason="held")
+            first = await self._send_prompt(gateway=gateway, user=user, agent=agent, text="one")
+            second = await self._send_prompt(gateway=gateway, user=user, agent=agent, text="two")
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(line="/queue force 2", session=session)
+            assert result.rendered == "(row 2 forced — applies at the next boundary)"
+            stored = await gateway.get(message_id=second.id)
+            assert stored is not None and stored.forced_at is not None
+            stored_first = await gateway.get(message_id=first.id)
+            assert stored_first is not None and stored_first.forced_at is None
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()
+
+    @pytest.mark.asyncio
+    async def test_queue_mutations_reject_unicode_numeric_indices(self, tmp_path: Path) -> None:
+        """Queue action handlers reject digit glyphs that Python cannot parse as integers."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            poller = session.channel_poller
+            assert poller is not None
+            poller.pause(reason="held")
+            for command in ("/queue cancel ²", "/queue edit ²", "/queue force ²"):
+                result: SlashCommandResultDAO = await SlashRouter.dispatch(line=command, session=session)
+                assert result.rendered is not None
+                assert result.rendered.startswith("usage: /queue")
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()
+
+    @pytest.mark.asyncio
+    async def test_queue_force_out_of_range_reports_already_running(self, tmp_path: Path) -> None:
+        """Forcing past the pending list reports the refusal (108.2 §6)."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            poller = session.channel_poller
+            assert poller is not None
+            poller.pause(reason="held")
+            await self._send_prompt(gateway=gateway, user=user, agent=agent, text="one")
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(line="/queue force 5", session=session)
+            assert result.rendered == "(row 5 is already running or no longer pending)"
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()
+
+    @pytest.mark.asyncio
+    async def test_steer_returns_the_forced_send_intent(self, tmp_path: Path) -> None:
+        """``/steer`` and ``/force`` return the 108.2 forced-send intent."""
+        gateway, session, user, agent, runner = await self._open_world(tmp_path=tmp_path)
+        try:
+            result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/steer use pytest -x", session=session
+            )
+            assert result.forced_prompt_text == "use pytest -x"
+            alias_result: SlashCommandResultDAO = await SlashRouter.dispatch(
+                line="/force use pytest -x", session=session
+            )
+            assert alias_result.forced_prompt_text == "use pytest -x"
+        finally:
+            await session.stop_channel_delivery(reason="test_done")
+            await gateway.close()

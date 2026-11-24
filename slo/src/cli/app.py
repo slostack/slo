@@ -9,6 +9,7 @@ import typer
 import typer.core
 from typer._click.core import Context as ClickContext
 
+from src.cli.channel_commands import channel_app
 from src.cli.plugin import plugin_app
 from src.cli.schedule.app import schedule_app
 from src.cli.typer_dispatch import TyperDispatch
@@ -83,6 +84,7 @@ app: typer.Typer = typer.Typer(
 )
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(plugin_app, name="plugin")
+app.add_typer(channel_app, name="channel")
 
 
 @app.callback(invoke_without_command=True)
@@ -228,9 +230,10 @@ def _run(
         None,
         "--notify-session",
         help=(
-            "Session id whose inbox receives workflow lifecycle notifications "
-            "(workflow_started / phase updates / completion). Used by detached "
-            "orchestrators launched from a TUI session."
+            "Owning session id this detached orchestrator reports to over the "
+            "channel queue (started notes, phase notes, fleet notices, terminal "
+            "prompt) and whose prompts run as follow-up turns. Workflow mode: "
+            "enables the channel participant lifecycle."
         ),
     ),
     plugin: list[Path] = typer.Option(

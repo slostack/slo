@@ -38,6 +38,9 @@ from src.agents.slo_agent.orchestrator.workflow_registry import (
 
 __all__ = ["LaunchWorkflowSchemaDAO", "LaunchWorkflowTool", "SpawnCallable"]
 
+ReachabilityCheck = Callable[[], Awaitable[bool]]
+"""Whether the shared channel queue is reachable for a launch (108.3 §3)."""
+
 
 class _ProcessLike(Protocol):
     """Minimal spawned-process surface the tool depends on."""
@@ -46,6 +49,25 @@ class _ProcessLike(Protocol):
 
 
 SpawnCallable = Callable[..., Awaitable[_ProcessLike]]
+
+
+async def _default_channels_reachable() -> bool:
+    """Open and close the shared channel gateway to prove the queue is reachable.
+
+    The detached orchestrator registers its participant and reports over this
+    database (108.3 §3); a launch must refuse when it cannot be reached.
+
+    Returns:
+        bool: ``True`` when the shared ``channels.db`` opened successfully.
+    """
+    try:
+        from src.channels.gateway import ChannelGateway  # noqa: PLC0415
+
+        gateway = await ChannelGateway.default()
+        await gateway.close()
+        return True
+    except Exception:  # noqa: BLE001 — reachability is a boolean probe
+        return False
 
 
 class LaunchWorkflowSchemaDAO(BaseModel):
@@ -141,6 +163,7 @@ class LaunchWorkflowTool:
         handle_store: Optional[WorkflowHandleStore] = None,
         spawn: Optional[SpawnCallable] = None,
         history_root: Optional[Path] = None,
+        channels_reachable: Optional[ReachabilityCheck] = None,
     ) -> BaseTool:
         """Build a ``launch_workflow`` tool bound to one owning session.
 
@@ -154,6 +177,9 @@ class LaunchWorkflowTool:
                 ``None`` uses ``asyncio.create_subprocess_exec``.
             history_root (Optional[Path]): Root for handle files and orchestrator
                 capture files. ``None`` uses ``default_history_root()``.
+            channels_reachable (Optional[ReachabilityCheck]): Injectable probe
+                for the shared channel queue; ``None`` opens and closes
+                ``ChannelGateway.default()`` per launch (108.3 §3).
 
         Returns:
             BaseTool: A bound LangChain tool the LLM can call.
@@ -167,6 +193,7 @@ class LaunchWorkflowTool:
         _history_root: Path = history_root or default_history_root()
         _store: WorkflowHandleStore = handle_store or WorkflowHandleStore(history_root=_history_root)
         _spawn: SpawnCallable = spawn or asyncio.create_subprocess_exec  # type: ignore[assignment]
+        _channels_reachable: ReachabilityCheck = channels_reachable or _default_channels_reachable
         _default_model: Optional[str] = default_model
 
         @tool(args_schema=LaunchWorkflowSchemaDAO)
@@ -211,6 +238,7 @@ class LaunchWorkflowTool:
                 store=_store,
                 spawn=_spawn,
                 history_root=_history_root,
+                channels_reachable=_channels_reachable,
                 owner_session_id=owner_session_id,
                 brief=brief,
                 cwd=cwd,
@@ -231,6 +259,7 @@ class LaunchWorkflowTool:
         store: WorkflowHandleStore,
         spawn: SpawnCallable,
         history_root: Path,
+        channels_reachable: ReachabilityCheck,
         owner_session_id: str,
         brief: str,
         cwd: Optional[str],
@@ -269,6 +298,16 @@ class LaunchWorkflowTool:
             )
         if not brief.strip():
             return json.dumps({"error": "brief must not be blank"})
+        if not await channels_reachable():
+            return json.dumps(
+                {
+                    "error": (
+                        "channel queue unreachable; a detached workflow needs "
+                        "the shared channels database to report to its owner "
+                        "session"
+                    )
+                }
+            )
         cap_refusal: Optional[str] = await cls._cap_refusal(
             store=store,
             owner_session_id=owner_session_id,

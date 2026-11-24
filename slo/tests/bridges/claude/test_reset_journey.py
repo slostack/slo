@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Optional
 from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.orchestrator.reaper import ReapOutcome
@@ -12,6 +13,7 @@ import pytest
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.bridges.claude.bridge import SloClaudeBridge
+from src.channels.gateway import ChannelGateway
 from tests.cli.test_claude_bridge import scripted_adapter_class
 from tests.bridges.claude.test_steering import ReconnectingToolRoundTransport
 
@@ -113,7 +115,13 @@ async def test_abort_while_claude_children_run(tmp_path: Path, monkeypatch: pyte
         """Inject only the child process factory into the existing real pool."""
 
         @classmethod
-        def _build_pool(cls, *, session: SloAgentSession, owner_session_id: str) -> SubAgentPool:
+        def _build_pool(
+            cls,
+            *,
+            session: SloAgentSession,
+            owner_session_id: str,
+            channel_gateway: Optional[ChannelGateway] = None,
+        ) -> SubAgentPool:
             """Retain real pool registration, concurrency and drain behavior."""
             return SubAgentPool(
                 orchestrator_session_id=session.session_id,
@@ -123,6 +131,7 @@ async def test_abort_while_claude_children_run(tmp_path: Path, monkeypatch: pyte
                 run_id="7d1e2f3a-4b5c-4d6e-8f70-1a2b3c4d5e6f",
                 history_root=tmp_path / "history",
                 process_factory=RunningChild,
+                channel_gateway=channel_gateway,
             )
 
     transport = DelegatingTransport(path=tmp_path / "unused")

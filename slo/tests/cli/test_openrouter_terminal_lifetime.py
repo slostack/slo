@@ -1,6 +1,7 @@
-"""Real admitted session/history to delayed headless inbox regression."""
+"""Real admitted session/history to delayed headless queue regression (108.3)."""
 
 import asyncio
+from uuid import UUID
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -10,8 +11,9 @@ from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO, StreamEventKind
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.credential_dao import CredentialDAO
 from src.cli.headless import HeadlessRunner
@@ -35,14 +37,19 @@ async def test_terminal_after_stream_exit_retains_admitted_redaction(
     second = Fixture._credential(access_token="TERMINAL_EFFECTIVE_B")
     session = Fixture._build_session(tmp_path=tmp_path)
     assert session._config is not None
-    root = (tmp_path / "inbox").resolve()
+    root = (tmp_path / "channels").resolve()
     assert root.is_relative_to(tmp_path.resolve())
-    inbox = SessionInboxStore(history_root=root)
+    repository: ChannelRepository = ChannelRepository(db_path=root / "channels.db")
+    await repository.open()
+    gateway: ChannelGateway = ChannelGateway(repository=repository)
+    target = await gateway.register_agent(
+        session_id=UUID("44444444-4444-4444-4444-444444444444"), name="slo owner"
+    )
     notifier = WorkflowNotifier(
-        target_session_id="owner",
+        gateway=gateway,
+        target_session_id=str(target.id),
         orchestrator_session_id=session.session_id,
         workflow_id="wf-terminal",
-        inbox_store=inbox,
     )
     runner = HeadlessRunner(config=session._config, notify_session_id="owner", notifier=notifier)
     stream_exited = asyncio.Event()
@@ -103,16 +110,15 @@ async def test_terminal_after_stream_exit_retains_admitted_redaction(
                 await task
         else:
             assert await task == (0 if kind == "run_completed" else 1)
-    pending = await inbox.list_pending(session_id="owner")
-    terminals = [item for item in pending if item.kind in {"workflow_completed", "workflow_failed"}]
+    pending = await gateway.pending_inbound(recipient_id=target.id)
+    terminals = [row for row in pending if row.message_type == "prompt"]
     assert len(terminals) == 1
-    assert "ordinary terminal [REDACTED]" in terminals[0].text
-    artifacts = list(root.rglob("*.json"))
-    assert artifacts
-    persisted = "".join(path.read_text() for path in artifacts)
-    output = capsys.readouterr().out
-    assert "ordinary terminal" in persisted and "ordinary terminal" in output
-    assert first.access_token not in persisted + output
+    assert "ordinary terminal [REDACTED]" in terminals[0].message_contents
+    await gateway.close()
+    persisted = capsys.readouterr().out
+    artifacts = None
+    assert "ordinary terminal" in persisted
+    assert first.access_token not in persisted
     assert CredentialResolver._build_credential.get() is None
     assert getattr(runner, "_operation_credential", None) is None
 
@@ -134,13 +140,18 @@ async def test_concurrent_runners_keep_distinct_admitted_captures(tmp_path: Path
         current.set(credential)
         session = Fixture._build_session(tmp_path=root)
         assert session._config is not None
-        inbox = SessionInboxStore(history_root=root / "inbox")
+        repository: ChannelRepository = ChannelRepository(db_path=root / "channels.db")
+        await repository.open()
+        gateway: ChannelGateway = ChannelGateway(repository=repository)
+        target = await gateway.register_agent(
+            session_id=UUID("55555555-5555-5555-5555-555555555555"), name="slo owner"
+        )
         runner = HeadlessRunner(config=session._config)
         runner._notifier = WorkflowNotifier(
-            target_session_id="owner",
+            gateway=gateway,
+            target_session_id=str(target.id),
             orchestrator_session_id=name,
             workflow_id="wf-isolation",
-            inbox_store=inbox,
         )
         with patch.object(session, "_prepare_run_snapshot", wraps=session._prepare_run_snapshot):
             async with session._session_run_scope():
@@ -153,9 +164,10 @@ async def test_concurrent_runners_keep_distinct_admitted_captures(tmp_path: Path
         assert CredentialResolver.operation_credential() is None
         await runner._notify_terminal()
         assert CredentialResolver.operation_credential() is None
-        messages = await inbox.list_pending(session_id="owner")
-        assert len(messages) == 1 and "[REDACTED]" in messages[0].text
+        messages = await gateway.pending_inbound(recipient_id=target.id)
+        assert len(messages) == 1 and "[REDACTED]" in messages[0].message_contents
         assert credential.access_token not in messages[0].model_dump_json()
+        await gateway.close()
         runner._operation_credential = None
 
     with (

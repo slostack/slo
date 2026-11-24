@@ -1,0 +1,40 @@
+QueuedMessagesComponent {
+    height: auto;
+    max-height: 12;
+    margin: 0 1 0 1;
+    padding: 0 1 0 1;
+    border: round $primary 30%;
+    background: $surface;
+    display: none;
+}
+
+QueuedMessagesComponent.visible {
+    display: block;
+}
+
+QueuedMessagesComponent .queued-row {
+    height: 1;
+}
+
+QueuedMessagesComponent .queued-row-text {
+    width: 1fr;
+    color: $text-muted;
+}
+
+QueuedMessagesComponent .queued-row-cancel {
+    width: auto;
+    color: $error;
+    text-style: bold;
+}
+
+QueuedMessagesComponent .queued-overflow {
+    height: 1;
+    color: $text-disabled;
+    text-style: italic;
+}
+
+QueuedMessagesComponent .queued-paused {
+    height: 1;
+    color: $warning;
+    text-style: italic;
+}

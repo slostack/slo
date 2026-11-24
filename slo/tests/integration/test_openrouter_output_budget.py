@@ -40,9 +40,6 @@ from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import AuthType, CredentialDAO, ProviderName
 from src.auth.credential_store import CredentialStore
 from src.integrations.openrouter.dao import OpenRouterModelsResponseDAO, credential_fingerprint
-from tests.integration.test_openrouter_full_flow import isolated_catalog
-
-__all__ = ["isolated_catalog"]
 
 SYNTHETIC_OPENROUTER_KEY: str = "bug112-synthetic-key"
 GLM_ROUTE: str = "openrouter:z-ai/glm-5.3-flash"

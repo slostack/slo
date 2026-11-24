@@ -240,7 +240,8 @@ async def test_active_inference_tool_result_survives_presentation_change(
                 await asyncio.wait_for(result_delivered.wait(), timeout=5)
                 await asyncio.sleep(0)
                 assert not clear.done()
-                assert app._in_flight_task is not None and not app._in_flight_task.done()
+                poller = session.channel_poller
+                assert poller is not None and poller.busy
                 assert "persisted tool result" not in transcript.logical_copy_text()
                 assert not any(
                     e.kind == "run_completed" for e in await store.load_events(session_id="active")

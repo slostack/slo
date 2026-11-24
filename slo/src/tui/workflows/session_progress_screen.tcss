@@ -94,3 +94,57 @@ SessionProgressScreen.-progress-narrow .actions Button {
     margin-left: 0;
     border: none;
 }
+
+/* Agent composer height budget (108.3/108.4). The box keeps 88% of the screen;
+   its footer (hint + actions) is docked, so the flow above it must fit in what
+   is left. A full composer is 14 rows, which fits beside a 3-row log from 35
+   rows; shorter screens compact the task text and composer instead of letting
+   notes or delivery rows push content under the footer. */
+
+#progress-footer {
+    dock: bottom;
+    height: auto;
+}
+
+/* 24-34 rows: one task row and a 7-row composer (prompt, status, newest note,
+   two newest delivery rows); at 24 rows this exactly fills the space left. */
+
+SessionProgressScreen.-progress-medium #progress-box.-with-composer #task-scroll,
+SessionProgressScreen.-progress-short #progress-box.-with-composer #task-scroll {
+    height: 1;
+}
+
+SessionProgressScreen.-progress-medium #progress-box.-with-composer AgentComposerComponent {
+    max-height: 7;
+    border-top: none;
+}
+
+SessionProgressScreen.-progress-medium #progress-box.-with-composer .agent-composer-header {
+    display: none;
+}
+
+SessionProgressScreen.-progress-medium #progress-box.-with-composer .agent-composer-notes {
+    max-height: 1;
+}
+
+SessionProgressScreen.-progress-medium #progress-box.-with-composer .agent-composer-rows {
+    max-height: 2;
+}
+
+/* Below 24 rows: no hint, and the composer keeps only its prompt and status
+   line; notes and delivery rows return from 24 rows. */
+
+SessionProgressScreen.-progress-short #progress-box.-with-composer .hint {
+    display: none;
+}
+
+SessionProgressScreen.-progress-short #progress-box.-with-composer AgentComposerComponent {
+    max-height: 4;
+    border-top: none;
+}
+
+SessionProgressScreen.-progress-short #progress-box.-with-composer .agent-composer-header,
+SessionProgressScreen.-progress-short #progress-box.-with-composer .agent-composer-notes,
+SessionProgressScreen.-progress-short #progress-box.-with-composer .agent-composer-rows {
+    display: none;
+}

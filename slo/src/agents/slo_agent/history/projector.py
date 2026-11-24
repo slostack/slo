@@ -161,8 +161,9 @@ class SessionHistoryProjector:
             summary_event_id=summary_event.event_id,
         )
 
-    @staticmethod
+    @classmethod
     def _completed_turn_events(
+        cls,
         *,
         events: list[SessionHistoryEventDAO],
         completed_turn_ids: set[str],
@@ -176,10 +177,17 @@ class SessionHistoryProjector:
         Returns:
             list[SessionHistoryEventDAO]: Events selected before message filtering.
         """
-        return [event for event in events if event.turn_id is None or event.turn_id in completed_turn_ids]
+        return [
+            event
+            for event in events
+            if event.turn_id is None
+            or event.turn_id in completed_turn_ids
+            or cls._is_preserved_steering(event=event)
+        ]
 
-    @staticmethod
+    @classmethod
     def _retained_tail_events(
+        cls,
         *,
         events: list[SessionHistoryEventDAO],
         completed_turn_ids: set[str],
@@ -202,7 +210,11 @@ class SessionHistoryProjector:
             for event in events
             if event.event_id != summary_event_id
             and event.sequence >= keep_from_sequence
-            and (event.turn_id is None or event.turn_id in completed_turn_ids)
+            and (
+                event.turn_id is None
+                or event.turn_id in completed_turn_ids
+                or cls._is_preserved_steering(event=event)
+            )
         ]
 
     @classmethod
@@ -255,6 +267,24 @@ class SessionHistoryProjector:
         return summary_event.sequence
 
     # ---- Private helpers --------------------------------------------------
+
+    @staticmethod
+    def _is_preserved_steering(*, event: SessionHistoryEventDAO) -> bool:
+        """Return whether one event is a confirmed steering delivery kept on replay.
+
+        A confirmed steering delivery (a ``steering_message`` record carrying a
+        channel_message_id) is durable user intent that the queue has already
+        accepted (108.2 §5): excluding its turn on a session-level retry must
+        not drop the delivery from the retried context, and it is preserved
+        exactly once without being accepted again.
+
+        Args:
+            event (SessionHistoryEventDAO): One canonical history event.
+
+        Returns:
+            bool: ``True`` when the event is a confirmed steering delivery.
+        """
+        return event.kind == "steering_message" and "channel_message_id" in event.payload.metadata
 
     @classmethod
     def _completed_turn_ids(

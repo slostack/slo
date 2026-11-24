@@ -7,9 +7,13 @@ provider, signals a process or opens a terminal.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
+from uuid import UUID, uuid4
 
 from unittest.mock import patch
 
@@ -22,9 +26,15 @@ from textual.screen import ModalScreen
 from textual.scrollbar import ScrollTo
 from textual.theme import Theme
 from textual.widget import Widget
-from textual.widgets import Button, RichLog, Static
+from textual.widgets import Button, Input, RichLog, Static
 
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
+from src.channels.dao import NewMessageDAO, ParticipantDAO
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
+from src.tui.channel.adapter import TuiChannelAdapter
+from src.tui.components.agent_composer.component import AgentComposerComponent
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
 from src.tui.workflows.dao import (
     ChildAbortTargetDAO,
@@ -226,17 +236,26 @@ def _snapshot(
 class _ScreenHost(App[None]):
     """Push one progress screen and record the semantic messages it emits."""
 
-    def __init__(self, *, viewport: ProgressViewportDAO = ProgressViewportDAO()) -> None:
-        """Remember the saved viewport the screen opens with.
+    def __init__(
+        self,
+        *,
+        viewport: ProgressViewportDAO = ProgressViewportDAO(),
+        composer: Optional[AgentComposerComponent] = None,
+    ) -> None:
+        """Remember the saved viewport and optional agent composer the screen opens with.
 
         Args:
             viewport (ProgressViewportDAO, optional): Saved position. Defaults to following.
+            composer (Optional[AgentComposerComponent], optional): Composer the
+                screen mounts above its hint and actions. Defaults to None.
         """
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
         self.theme = SLO_DARK_THEME.name
-        self.screen_under_test: SessionProgressScreen = SessionProgressScreen(key=_KEY, viewport=viewport)
+        self.screen_under_test: SessionProgressScreen = SessionProgressScreen(
+            key=_KEY, viewport=viewport, composer=composer
+        )
         self.messages: list[object] = []
 
     def on_mount(self) -> None:
@@ -1001,6 +1020,147 @@ class TestLayout:
             await pilot.click("#minimize")
             await pilot.pause()
             assert len(app.messages) == 1
+
+
+_COMPOSER_TARGET_SESSION_ID: str = "22222222-2222-4222-8222-222222222222"
+"""Agent session the populated composer messages."""
+
+_POPULATED_NOTE: str = "question: should the parser audit also cover the legacy tokenizer paths?"
+"""A note long enough to wrap in every tested modal width."""
+
+_POPULATED_PROMPT: str = "please also re-check the tokenizer fallbacks before reporting back to me"
+"""A sent-row preview long enough to wrap in every tested modal width."""
+
+
+@pytest.fixture
+async def populated_gateway(tmp_path: Path) -> AsyncIterator[tuple[TuiChannelAdapter, UUID]]:
+    """Open a real SQLite queue holding the composer's maximum notes and sent rows.
+
+    Three notes and five operator prompts are what the composer reads at most,
+    so its rows paint at their fullest (108.3 §5, 108.4 C3).
+
+    Yields:
+        tuple[TuiChannelAdapter, UUID]: Started adapter and the target participant.
+    """
+    repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+    await repository.open()
+    gateway: ChannelGateway = ChannelGateway(repository=repository)
+    stub_app: SimpleNamespace = SimpleNamespace(_session=SimpleNamespace(session_id=str(uuid4())))
+    adapter: TuiChannelAdapter = TuiChannelAdapter(app=stub_app, gateway=gateway)  # type: ignore[arg-type]
+    await adapter.start()
+    target: UUID = channel_participant_id_for_session(session_id=_COMPOSER_TARGET_SESSION_ID)
+    await gateway.register_agent(session_id=target, name="review-1")
+    sibling: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="review-2")
+    for index in range(3):
+        await gateway.send(
+            new=NewMessageDAO(
+                sender_id=sibling.id,
+                recipient_id=target,
+                message_contents=f"{_POPULATED_NOTE} #{index}",
+                message_type="note",
+            )
+        )
+    for index in range(5):
+        await adapter.send_prompt_to_agent(
+            session_id=_COMPOSER_TARGET_SESSION_ID, text=f"{_POPULATED_PROMPT} #{index}", force=True
+        )
+    try:
+        yield adapter, target
+    finally:
+        await adapter.stop()
+        await gateway.close()
+
+
+def _is_hit(*, screen: SessionProgressScreen, widget: Widget, x: int, y: int) -> bool:
+    """Return whether a click at ``(x, y)`` lands on ``widget`` or one of its children.
+
+    Args:
+        screen (SessionProgressScreen): Screen whose compositor answers the hit test.
+        widget (Widget): Widget the click must reach.
+        x (int): Screen column.
+        y (int): Screen row.
+
+    Returns:
+        bool: True when the topmost widget at the point is ``widget`` or inside it.
+    """
+    hit: Widget = screen.get_widget_at(x, y)[0]
+    return widget in hit.ancestors_with_self
+
+
+class TestPopulatedComposerLayout:
+    """A full composer never clips the actions or the editable prompt line (108.3/108.4)."""
+
+    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize(
+        ("width", "height"),
+        [(60, 20), (120, 20), *((80, rows) for rows in range(24, 36)), (120, 40)],
+        ids=lambda value: str(value),
+    )
+    async def test_actions_and_prompt_stay_clickable(
+        self,
+        populated_gateway: tuple[TuiChannelAdapter, UUID],
+        theme: Theme,
+        width: int,
+        height: int,
+    ) -> None:
+        """Both buttons and the prompt's editing line are hit-testable and work at every height."""
+        adapter, target = populated_gateway
+        composer: AgentComposerComponent = AgentComposerComponent(
+            target_agent_id=target, target_label="review-1", adapter=adapter, default_force=True
+        )
+        app: _ScreenHost = _ScreenHost(composer=composer)
+        abort_target: ChildAbortTargetDAO = ChildAbortTargetDAO(
+            key=_KEY, run_id=_RUN_ID, execution_id=_EXECUTION_ID
+        )
+        async with app.run_test(size=(width, height)) as pilot:
+            app.theme = theme.name
+            await _paint(
+                app=app,
+                pilot=pilot,
+                snapshot=_snapshot(entries=_entries(count=40), abort_target=abort_target),
+            )
+            for _cycle in range(4):
+                await app.workers.wait_for_complete()
+                await asyncio.sleep(0.02)
+                await pilot.pause()
+
+            screen: SessionProgressScreen = app.screen_under_test
+            rows: str = str(composer.query_one(".agent-composer-rows", Static).render())
+            assert f"{_POPULATED_PROMPT} #4" in rows and f"{_POPULATED_PROMPT} #0" in rows
+            notes: str = str(composer.query_one(".agent-composer-notes", Static).render())
+            assert f"{_POPULATED_NOTE} #2" in notes
+
+            box: Widget = screen.query_one("#progress-box")
+            minimize: Button = screen.query_one("#minimize", Button)
+            abort: Button = screen.query_one("#abort-child", Button)
+            for button in (minimize, abort):
+                assert box.content_region.contains_region(button.region), button.id
+                assert _is_hit(
+                    screen=screen,
+                    widget=button,
+                    x=button.region.x + button.region.width // 2,
+                    y=button.region.y + button.region.height // 2,
+                ), button.id
+
+            prompt: Input = composer.query_one("#agent-composer-input", Input)
+            assert prompt.region.height == 3 and prompt.content_region.height == 1
+            assert box.content_region.contains_region(prompt.region)
+            assert composer.region.contains_region(prompt.region)
+            assert _is_hit(screen=screen, widget=prompt, x=prompt.content_region.x, y=prompt.content_region.y)
+            assert _log(app=app).region.height >= 3
+
+            await pilot.click(prompt, offset=(prompt.content_region.x - prompt.region.x, 1))
+            await pilot.press("o", "k")
+            assert prompt.value == "ok"
+
+            await pilot.click("#abort-child")
+            await pilot.pause()
+            await pilot.click("#minimize")
+            await pilot.pause()
+            assert [type(message) for message in app.messages] == [
+                SessionProgressScreen.AbortRequested,
+                SessionProgressScreen.Minimized,
+            ]
 
 
 class TestRestoreConvergence:

@@ -223,6 +223,7 @@ class TestOrchestratorSessionBootstrapAttach:
             run_id=ANY,
             history_root=Path("/history-root-for-test"),
             child_system_prompt=session._assembled_system_prompt(),
+            channel_gateway=None,
         )
         run_id: str = MockPool.call_args.kwargs["run_id"]
         assert str(UUID(run_id)) == run_id
@@ -299,7 +300,7 @@ class TestOrchestratorSessionBootstrapAttach:
 
             OrchestratorSessionBootstrap.attach(session=session)
 
-        MockTool.build.assert_called_once_with(pool=mock_pool)
+        MockTool.build.assert_called_once_with(pool=mock_pool, channel_notes=None)
 
 
 class TestOrchestratorSessionBootstrapWorkflowTools:

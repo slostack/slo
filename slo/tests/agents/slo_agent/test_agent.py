@@ -6,19 +6,143 @@ multi-turn ReAct loop that now lives inside ``SloAgent.invoke``.
 
 import asyncio
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
+from pydantic import Field
 
 from src.agents.base import LLMBuildResult, LLMFactory
 from src.agents.hooks import ShouldStopAfterTurnHookContextDAO
 from src.agents.providers.model_pool import ModelPool, ModelPoolDAO, ModelPoolEntryDAO
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.providers import FauxChatModel
+from src.agents.providers.faux import FauxChatModel as _FauxChatModelBase
+from src.agents.slo_agent.boundary_inbox import BoundaryDeliveryDAO, MemoryBoundaryInbox
+from src.agents.slo_agent.events.runtime import AgentRuntimeEventDAO
 from src.auth.credential_dao import ProviderName
+
+
+class RecordingFauxChatModel(_FauxChatModelBase):
+    """Provider-boundary substitute that records every model-call context.
+
+    ``FauxChatModel`` ignores its input; this subclass additionally captures
+    the message texts of each model call (shared across ``bind_tools``
+    clones) so tests can assert what the next model call actually saw.
+    """
+
+    recorded_contexts: list[list[str]] = Field(
+        default_factory=list,
+        description="Texts of the messages passed to each model call, in call order.",
+    )
+
+    def __init__(self, *, responses: Sequence[AIMessage], **data: object) -> None:
+        """Queue the scripted responses; the remaining fields pass through to pydantic."""
+        super().__init__(responses=responses, **data)  # type: ignore[arg-type]
+
+    def bind_tools(self, tools, **kwargs):
+        """Clone while sharing the recorder list with the bound clone."""
+        clone: "RecordingFauxChatModel" = RecordingFauxChatModel(
+            responses=list(self.queue),
+            chunk_scripts=list(self.chunk_queue),
+        )
+        clone.bound_tools = list(tools)
+        clone.recorded_contexts = self.recorded_contexts
+        return clone
+
+    async def _astream(self, messages, **kwargs):
+        """Record one model-call context, then stream the scripted chunks."""
+        self.recorded_contexts.append([str(message.content) for message in messages])
+        async for chunk in super()._astream(messages, **kwargs):
+            yield chunk
+
+
+class ScriptedBoundaryInbox:
+    """BoundaryInbox stub (injected seam, no patching) with scripted forced rows.
+
+    ``reveal()`` decides when the forced row becomes visible to
+    ``has_forced``/``take`` so a test can hold it back until mid-run.
+    """
+
+    def __init__(self) -> None:
+        """Start with no revealed deliveries and an empty confirm log."""
+        self._hidden: list[BoundaryDeliveryDAO] = []
+        self._visible: list[BoundaryDeliveryDAO] = []
+        self.confirmed: list[BoundaryDeliveryDAO] = []
+
+    def enqueue_forced(self, *, message_id, text: str) -> None:
+        """Script one forced delivery (hidden until ``reveal``)."""
+        self._hidden.append(
+            BoundaryDeliveryDAO(
+                message_id=message_id,
+                text=text,
+                sender_name="you",
+                iteration=0,
+            )
+        )
+
+    def reveal(self) -> None:
+        """Make all scripted deliveries visible to the agent."""
+        self._visible.extend(self._hidden)
+        self._hidden = []
+
+    def has_forced(self) -> bool:
+        """Return whether a revealed delivery is still untaken."""
+        return bool(self._visible)
+
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
+        """Drain revealed deliveries, stamped with the boundary's iteration."""
+        deliveries: list[BoundaryDeliveryDAO] = self._visible
+        self._visible = []
+        return [delivery.model_copy(update={"iteration": iteration}) for delivery in deliveries]
+
+    async def confirm(self, *, deliveries: list[BoundaryDeliveryDAO]) -> None:
+        """Record confirmed deliveries for assertions."""
+        self.confirmed.extend(deliveries)
+
+
+class StaleSnapshotBoundaryInbox:
+    """BoundaryInbox stub whose snapshot promises a row the queue no longer has.
+
+    Mirrors the ChannelBoundaryInbox failure mode behind the B3 stale-revive
+    guard: ``has_forced`` reports a pending row from the last refresh, but the
+    fresh read inside ``take`` reconciles the snapshot and delivers nothing.
+    """
+
+    def __init__(self) -> None:
+        """Start with no promised row and an empty take log."""
+        self._promised: bool = False
+        self.take_calls: int = 0
+
+    def promise(self) -> None:
+        """Make the snapshot report a pending row until the next take."""
+        self._promised = True
+
+    def has_forced(self) -> bool:
+        """Return whether a (possibly stale) row is still promised."""
+        return self._promised
+
+    async def take(self, *, iteration: int, require_forced_prompt: bool = False) -> list[BoundaryDeliveryDAO]:
+        """Reconcile the snapshot on the fresh read and deliver nothing."""
+        del iteration, require_forced_prompt
+        self.take_calls += 1
+        self._promised = False
+        return []
+
+    async def confirm(self, *, deliveries: list[BoundaryDeliveryDAO]) -> None:
+        """Settle taken deliveries (nothing was ever taken)."""
+        del deliveries
+
+
+def _memory_inbox(*, agent: SloAgent) -> MemoryBoundaryInbox:
+    """Return the agent's default in-memory boundary inbox (no channel poller)."""
+    inbox = agent.boundary_inbox
+    assert isinstance(inbox, MemoryBoundaryInbox)
+    return inbox
 
 
 @tool
@@ -285,30 +409,102 @@ async def test_abort_yields_aborted_final() -> None:
 
 @pytest.mark.asyncio
 async def test_steering_message_appears_in_next_turn() -> None:
-    """A steering message queued before the run is drained into the first turn."""
+    """A message queued in the boundary inbox before the run reaches the first turn."""
     agent = SloAgent(
         llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="received")]),
         tools=[],
     )
-    agent.steer(message="please be terse")
+    _memory_inbox(agent=agent).enqueue(text="please be terse")
     result: str = await _collect_final_response(agent=agent, query="hello")
     assert result == "received"
 
 
 @pytest.mark.asyncio
 async def test_steering_queued_before_run_emits_steering_applied_event() -> None:
-    """A pre-run steer surfaces a ``steering_applied`` stream event carrying its text."""
+    """A pre-run forced message surfaces a ``steering_applied`` event carrying its text."""
     agent = SloAgent(
         llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
         tools=[],
     )
-    agent.steer(message="please be terse")
+    _memory_inbox(agent=agent).enqueue(text="please be terse")
 
     events = [evt async for evt in agent.invoke(query="hello")]
 
     applied = [evt for evt in events if evt.kind == "steering_applied"]
     assert len(applied) == 1
     assert applied[0].content == "please be terse"
+
+
+@pytest.mark.asyncio
+async def test_external_sender_name_propagates_to_steering_events() -> None:
+    """108.2 F3: an external sender's label rides the steering events.
+
+    The ``steering_applied`` stream event and the persisted ``steering_message``
+    trace both carry the sender label so the transcript can show who sent the
+    forced row when it is not the operator.
+    """
+    recorded_traces: list[AgentRuntimeEventDAO] = []
+
+    async def _record_trace(event) -> None:
+        recorded_traces.append(event)
+
+    agent = SloAgent(
+        llm=FauxChatModel(responses=[FauxChatModel.assistant_message(content="ok")]),
+        tools=[],
+    )
+    _memory_inbox(agent=agent).enqueue(text="deploy to staging", sender_name="orchestrator wf-12")
+
+    events = [evt async for evt in agent.invoke(query="hello", runtime_handler=_record_trace)]
+
+    applied = [evt for evt in events if evt.kind == "steering_applied"]
+    assert len(applied) == 1
+    assert applied[0].sender_name == "orchestrator wf-12"
+    steering_traces = [evt for evt in recorded_traces if evt.kind == "steering_message"]
+    assert len(steering_traces) == 1
+    assert steering_traces[0].payload.metadata["sender_name"] == "orchestrator wf-12"
+
+
+@pytest.mark.asyncio
+async def test_forced_row_applied_at_boundary_enters_next_model_call_exactly_once() -> None:
+    """F1: a forced row taken at a boundary reaches the next model call exactly once.
+
+    The forced delivery is enqueued while a tool call is running; the safe
+    boundary after the tool takes it, the next model call sees it, and the
+    delivery is confirmed (no re-application) so no later call sees it again.
+    """
+    model = RecordingFauxChatModel(
+        responses=[
+            FauxChatModel.assistant_message(
+                tool_calls=[FauxChatModel.tool_call_dict(name="stub_now", args={})],
+            ),
+            FauxChatModel.assistant_message(content="done"),
+        ]
+    )
+    inbox = ScriptedBoundaryInbox()
+    forced_id = uuid4()
+    inbox.enqueue_forced(message_id=forced_id, text="use pytest -x")
+    agent = SloAgent(llm=model, tools=[stub_now], boundary_inbox=inbox)
+    enqueued: dict[str, bool] = {"done": False}
+
+    async def _force_during_tool_call(event) -> None:
+        """Make the forced row visible only once a tool result has streamed."""
+        if not enqueued["done"] and event.kind == "tool_result":
+            inbox.reveal()
+            enqueued["done"] = True
+
+    events = [
+        evt async for evt in agent.invoke(query="run the tool", runtime_handler=_force_during_tool_call)
+    ]
+
+    applied = [evt for evt in events if evt.kind == "steering_applied"]
+    assert [evt.content for evt in applied] == ["use pytest -x"]
+    assert applied[0].channel_message_id == forced_id
+    calls_with_forced: list[list[str]] = [
+        context for context in model.recorded_contexts if "use pytest -x" in context
+    ]
+    assert len(calls_with_forced) == 1
+    assert len(model.recorded_contexts) == 2
+    assert events[-1].kind == "run_completed"
 
 
 @pytest.mark.asyncio
@@ -334,7 +530,7 @@ async def test_steer_during_final_turn_revives_the_run() -> None:
 
     async def _queue_steer_mid_turn(event) -> None:
         if not queued["done"] and event.kind == "assistant_delta":
-            agent.steer(message="keep going")
+            _memory_inbox(agent=agent).enqueue(text="keep going")
             queued["done"] = True
 
     events = [
@@ -349,6 +545,37 @@ async def test_steer_during_final_turn_revives_the_run() -> None:
     assert [evt.content for evt in applied] == ["keep going"]
     assert events[-1].kind == "run_completed"
     assert events[-1].content == "second"
+
+
+@pytest.mark.asyncio
+async def test_stale_revive_promise_never_spends_an_extra_model_call() -> None:
+    """B3: a revive promised by a stale snapshot must not cost a model call.
+
+    The promise arrives mid-run (as a poller refresh would cache it), the turn
+    would otherwise stop, and the boundary's fresh read reconciles the snapshot
+    to empty. The loop must then stop without running another assistant-ending
+    iteration: a second model call would exhaust the single-response script and
+    fail the run.
+    """
+    model = RecordingFauxChatModel(responses=[FauxChatModel.assistant_message(content="first")])
+    inbox = StaleSnapshotBoundaryInbox()
+    agent = SloAgent(llm=model, tools=[], boundary_inbox=inbox)
+    promised: dict[str, bool] = {"done": False}
+
+    async def _promise_mid_turn(event) -> None:
+        """Make the stale snapshot promise land while the first turn streams."""
+        if not promised["done"] and event.kind == "assistant_delta":
+            inbox.promise()
+            promised["done"] = True
+
+    events = [evt async for evt in agent.invoke(query="hi", runtime_handler=_promise_mid_turn)]
+
+    applied = [evt for evt in events if evt.kind == "steering_applied"]
+    assert applied == []
+    assert len(model.recorded_contexts) == 1
+    assert events[-1].kind == "run_completed"
+    assert events[-1].content == "first"
+    assert inbox.take_calls == 2  # pre-run boundary plus the revived post-turn boundary
 
 
 @pytest.mark.asyncio
@@ -931,7 +1158,7 @@ class TestApplySteering:
         from langchain_core.messages import HumanMessage
 
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
-        agent.steer(message="please go on")
+        _memory_inbox(agent=agent).enqueue(text="please go on")
         accumulated: list[BaseMessage] = [HumanMessage(content="hi")]
 
         events = [
@@ -984,7 +1211,7 @@ class TestShouldLoopContinue:
         from langchain_core.messages import HumanMessage
 
         agent = SloAgent(llm=FauxChatModel(responses=[]), tools=[])
-        agent.steer(message="keep going")
+        _memory_inbox(agent=agent).enqueue(text="keep going")
         accumulated: list[BaseMessage] = [
             HumanMessage(content="hi"),
             AIMessage(content="done"),

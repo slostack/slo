@@ -43,7 +43,6 @@ from src.tui.components.chat_transcript.commands import (
     ClearTranscriptDAO,
     BeginTranscriptRunDAO,
     LoadOlderHistoryDAO,
-    ShowPendingSteeringDAO,
     MountTreeOutputDAO,
     SetTranscriptVisibilityDAO,
     ScrollTranscriptBottomDAO,
@@ -60,7 +59,6 @@ from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThink
 from src.tui.widgets.literal_text_static import LiteralTextStatic
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
-from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 
 HistoryReader = Callable[[], Awaitable[list[TranscriptEntryDAO]]]
 TRANSCRIPT_HYDRATION_ENTRY_LIMIT: int = 30
@@ -491,7 +489,6 @@ class ChatTranscriptComponent(Vertical):
         self._earlier_summary: Optional[LiteralTextStatic] = None
         self._window_task: Optional[asyncio.Task[None]] = None
         self._window_enforcement_rerun = False
-        self._pending_steer_blocks: list[SteeringPendingBlock] = []
         self._global_expand_all: Optional[bool] = None
         self._active_expandable_tool_block: Optional[ToolExecutionBlock] = None
 
@@ -529,8 +526,6 @@ class ChatTranscriptComponent(Vertical):
                         await self._present_control(command=command)
             case LoadOlderHistoryDAO():
                 await self.load_older()
-            case ShowPendingSteeringDAO():
-                await self.show_pending_steering(message=command.message)
             case MountTreeOutputDAO():
                 await self.mount_tree_output(widget=command.widget)
             case _:
@@ -1321,26 +1316,19 @@ class ChatTranscriptComponent(Vertical):
                 self._enforce_window_soon()
 
     async def _project_parent_event(self, *, event: AgentStreamEventDAO) -> None:
-        """Match pending steering messages in arrival order, otherwise use the normal event adapter."""
+        """Project a forced steering delivery as a user turn; everything else normally.
+
+        A note's steering event is not projected: the channel display sink
+        already showed the note's one line when it was first seen (108.3).
+        """
         if event.kind != "steering_applied":
             await self._projector.handle(event=event)
             return
-        if self._pending_steer_blocks:
-            await self._pending_steer_blocks.pop(0).remove()
-        await self._projector.handle(event=ProjectUserTurnDAO(text=event.content or ""))
-
-    async def show_pending_steering(self, *, message: str) -> None:
-        """Display an accepted steering message without managing its execution queue."""
-        transcript_version = self._get_transcript_version()
-        async with self._lifecycle_lock:
-            self._ensure_current_transcript_version(expected_version=transcript_version)
-            async with self._mutation_lock:
-                snapshot = self._update_reading_anchor_and_build_follow_snapshot()
-                block = SteeringPendingBlock(message=message)
-                await self._transcript_content.mount(block)
-                self._pending_steer_blocks.append(block)
-                self._finish_viewport_mutation(snapshot=snapshot)
-                self._enforce_window_soon()
+        if event.delivery_kind == "note":
+            return
+        await self._projector.handle(
+            event=ProjectUserTurnDAO(text=event.content or "", sender_name=event.sender_name)
+        )
 
     async def mount_tree_output(self, *, widget: Widget) -> None:
         """Add exported tree output separately from the normal chat-message count."""
@@ -1442,12 +1430,12 @@ class ChatTranscriptComponent(Vertical):
         await self._update_earlier_summary()
 
     def _is_block_live(self, *, child: Widget) -> bool:
-        """Check whether an answer, thinking block, tool call, or steering message is still active."""
+        """Check whether an answer, thinking block, or tool call is still active."""
         if isinstance(child, (AssistantStreamBlock, AssistantStreamThinkingBlock)):
             return not child.finalized
         if isinstance(child, ToolExecutionBlock):
             return child.result_output is None and not child.is_incomplete
-        return child in self._pending_steer_blocks
+        return False
 
     async def clear(self) -> None:
         """Wait for old display work and clear messages without cancelling agent execution."""
@@ -1511,7 +1499,6 @@ class ChatTranscriptComponent(Vertical):
                 self._earlier_summary = None
                 self._hidden_block_count = 0
                 self._back_scroll_mode = False
-                self._pending_steer_blocks.clear()
                 self._active_expandable_tool_block = None
                 self._global_expand_all = None
                 for child in old_children:

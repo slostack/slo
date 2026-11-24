@@ -196,7 +196,7 @@ async def test_unmount_joins_replacement_outside_gate(tmp_path: Path) -> None:
                 assert app._session._herdr_closing
                 assert app._session._herdr_suppressed
                 assert app._render_event not in app._session._subscribers
-                assert app._lease_timer is None and app._inbox_timer is None
+                assert app._lease_timer is None
                 assert app._delivery_quiescing
                 assert app._lease_store is not None
                 assert await app._lease_store.read(session_id=app._session.session_id) is None
@@ -253,7 +253,7 @@ async def test_shutdown_attempts_each_owner(tmp_path: Path, failure: str) -> Non
             await app.on_unmount()
             assert current_drain.await_count == 1
             assert retired_drain.await_count == 1
-        assert app._lease_timer is None and app._inbox_timer is None
+        assert app._lease_timer is None
         assert session._herdr_closing and retired._herdr_closing
         assert app._retired_herdr_session is None
 

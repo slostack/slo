@@ -15,6 +15,7 @@ from claude_agent_sdk import ClaudeSDKClient
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.boundary_inbox import BoundaryInbox, MemoryBoundaryInbox
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.history.projector import SessionHistoryProjector
@@ -27,6 +28,18 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 PROMPT = "Give an answer."
 STEER = "Now refine the answer."
+
+
+def _steer(*, session: SloAgentSession, text: str) -> None:
+    """Queue an in-process forced delivery for the next safe boundary (108.2).
+
+    ``SloAgentSession.steer`` was replaced by the boundary inbox; a session
+    without a channel poller uses the in-memory inbox, whose deliveries are
+    forced prompts exactly like the former steering queue.
+    """
+    inbox: BoundaryInbox = session.boundary_inbox
+    assert isinstance(inbox, MemoryBoundaryInbox)
+    inbox.enqueue(text=text)
 
 
 async def _steer_text_answer(
@@ -48,7 +61,7 @@ async def _steer_text_answer(
             async for event in stream:
                 events.append(event)
                 if event.kind == "text_delta" and not queued:
-                    session.steer(message=STEER)
+                    _steer(session=session, text=STEER)
                     queued = True
                     if transport is not None:
                         transport.release_terminal.set()
@@ -355,7 +368,7 @@ async def test_steer_after_tool_round_restarts_native_session(
     try:
         async with asyncio.timeout(12):
             assert await asyncio.to_thread(entered.wait, 5)
-            session.steer(message=STEER)
+            _steer(session=session, text=STEER)
             release.set()
             await run
             await writer
@@ -461,7 +474,7 @@ async def test_abandon_failure_and_abort_lifecycle(
         async for event in session.invoke(text="Read receipt.txt"):
             events.append(event)
             if event.kind == "tool_call_start":
-                session.steer(message=STEER)
+                _steer(session=session, text=STEER)
 
     run = asyncio.create_task(coro=consume())
     try:

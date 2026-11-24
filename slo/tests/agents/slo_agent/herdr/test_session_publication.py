@@ -1,6 +1,7 @@
 """Session-owned private bootstrap provenance contracts."""
 
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
+from src.channels.gateway import ChannelGateway
 
 
 @pytest.mark.parametrize("custom", [False, True])
@@ -340,7 +342,9 @@ def test_changed_identity_during_bootstrap_cannot_certify(tmp_path: Path) -> Non
         )
     )
 
-    def change_identity(*, session: SloAgentSession, owner_session_id: str) -> object:
+    def change_identity(
+        *, session: SloAgentSession, owner_session_id: str, channel_gateway: Optional[ChannelGateway] = None
+    ) -> object:
         session._session_id = "changed"
         from unittest.mock import MagicMock
 

@@ -11,7 +11,6 @@ from typing import ParamSpec, Protocol, TypeVar
 
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 from unittest.mock import PropertyMock, patch
 
 import pytest
@@ -19,8 +18,7 @@ from langchain_core.messages import AIMessage
 
 from src.agents.base import LLMBuildResult
 from src.agents.providers.faux import FauxChatModel
-from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseDAO, SessionOwnershipLeaseStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
@@ -88,7 +86,7 @@ async def test_direct_preparation_cancellation_preserves_delivery(tmp_path: Path
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        timers = (app._lease_timer, app._inbox_timer)
+        timers = (app._lease_timer,)
         assert app._lease_store is not None
         lease = await app._lease_store.read(session_id=session.session_id)
         with (
@@ -110,7 +108,7 @@ async def test_direct_preparation_cancellation_preserves_delivery(tmp_path: Path
                 )
                 title.assert_not_called()
                 usage.assert_not_called()
-                assert (app._lease_timer, app._inbox_timer) == timers
+                assert (app._lease_timer,) == timers
                 assert await app._lease_store.read(session_id=session.session_id) == lease
                 assert not app._delivery_quiescing
             finally:
@@ -130,6 +128,14 @@ async def test_rollback_preserves_successor_after_release(tmp_path: Path) -> Non
     assert store is not None
     entered, resume = asyncio.Event(), asyncio.Event()
     release = store.release
+    acquire = store.acquire
+
+    async def acquire_then_fail(
+        *, session_id: str, owner_id: str, ttl_seconds: float
+    ) -> SessionOwnershipLeaseDAO:
+        """Persist the real lease, then fail the setup step that follows acquisition."""
+        await acquire(session_id=session_id, owner_id=owner_id, ttl_seconds=ttl_seconds)
+        raise RuntimeError("setup failure")
 
     async def blocked_release(*, session_id: str, owner_id: str) -> bool:
         """Hold the completed real release before rollback clears collaborators."""
@@ -163,7 +169,7 @@ async def test_rollback_preserves_successor_after_release(tmp_path: Path) -> Non
 
     with (
         patch.object(store, "release", side_effect=blocked_release),
-        patch.object(SessionInboxStore, "ensure_session_inbox", side_effect=RuntimeError("setup failure")),
+        patch.object(store, "acquire", side_effect=acquire_then_fail),
     ):
         observer = asyncio.create_task(coro=displace())
         try:
@@ -308,16 +314,14 @@ async def test_repeated_unmount_cancel_joins_actual_acquire_thread(tmp_path: Pat
                 assert app._lease_store is not None
                 assert await app._lease_store.read(session_id=session.session_id) is None
                 assert app._delivery_quiescing
-                assert app._lease_timer is None and app._inbox_timer is None
+                assert app._lease_timer is None
         finally:
             release.set()
             await asyncio.gather(observer, return_exceptions=True)
 
 
-@pytest.mark.parametrize("phase", ["reconcile", "acquire", "inbox"])
-@pytest.mark.parametrize(
-    "mutation", ["owner", "session_id", "store", "inbox", "service", "renderer", "session"]
-)
+@pytest.mark.parametrize("phase", ["reconcile", "acquire"])
+@pytest.mark.parametrize("mutation", ["owner", "session_id", "store", "service", "renderer", "session"])
 async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase: str, mutation: str) -> None:
     """Every real awaited continuation refuses changed identity before further effects."""
     session = SloAgentSession.build(
@@ -328,7 +332,6 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
     app._ensure_workflow_renderer()
     store = app._lease_store
     assert store is not None
-    inbox_store = app._inbox_store
     service = app._build_workflow_service()
     session_id = session.session_id
     successor_store = SessionOwnershipLeaseStore(history_root=tmp_path / "successor")
@@ -336,7 +339,6 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
     target, name = {
         "reconcile": (service, "reconcile_snapshot"),
         "acquire": (store, "acquire"),
-        "inbox": (inbox_store, "ensure_session_inbox"),
     }[phase]
 
     def hold_boundary(
@@ -355,11 +357,10 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
 
         return boundary
 
-    assert service is not None and inbox_store is not None
+    assert service is not None
     boundary = {
         "reconcile": hold_boundary(service.reconcile_snapshot),
         "acquire": hold_boundary(store.acquire),
-        "inbox": hold_boundary(inbox_store.ensure_session_inbox),
     }[phase]
 
     async def displace() -> None:
@@ -378,8 +379,6 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
             session._session_id = "successor-session"
         elif mutation == "store":
             app._lease_store = successor_store
-        elif mutation == "inbox":
-            app._inbox_store = SessionInboxStore(history_root=tmp_path / "successor")
         elif mutation == "renderer":
             assert app._workflow_renderer is not None
             app._workflow_renderer = copy(app._workflow_renderer)
@@ -404,7 +403,7 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await observer
-                assert app._lease_timer is None and app._inbox_timer is None
+                assert app._lease_timer is None
                 assert app._delivery_quiescing
                 assert await store.read(session_id=session_id) is None
                 assert await successor_store.read(session_id=session_id) is None
@@ -429,7 +428,7 @@ async def test_mount_optional_fault_does_not_skip_runtime(tmp_path: Path, fault:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._mount_runtime_task is not None and app._mount_runtime_task.done()
-            assert app._lease_timer is not None and app._inbox_timer is not None
+            assert app._lease_timer is not None
             assert not app._delivery_quiescing
 
 
@@ -487,7 +486,7 @@ async def test_missing_lease_store_refuses_acquisition(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("failure", ["reconcile", "acquire", "build"])
 async def test_initialization_fault_is_contained(tmp_path: Path, failure: str) -> None:
-    """Construction and each pre-inbox failure leave local mount usable and no lease."""
+    """Construction and each pre-timer failure leave local mount usable and no lease."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
@@ -500,7 +499,7 @@ async def test_initialization_fault_is_contained(tmp_path: Path, failure: str) -
     with patch.object(target, method, side_effect=RuntimeError("private init defect")):
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._lease_timer is None and app._inbox_timer is None
+            assert app._lease_timer is None
             assert app._delivery_quiescing and not app._replacement_delivery_safe
             assert app._workflow_app_service is None
 
@@ -520,15 +519,15 @@ async def test_duplicate_initialization_preserves_timer_identity(tmp_path: Path)
     ):
         async with app.run_test() as pilot:
             await pilot.pause()
-            timers = (app._lease_timer, app._inbox_timer)
+            timers = (app._lease_timer,)
             async with app._prompt_submission_lock:
                 await app._initialize_session_delivery()
-            assert (app._lease_timer, app._inbox_timer) == timers
+            assert (app._lease_timer,) == timers
             assert not app._delivery_quiescing
 
 
 async def test_initialization_rollback_uses_acquired_store(tmp_path: Path) -> None:
-    """Changing the app store during inbox setup cannot redirect lease rollback."""
+    """Changing the app store right after acquisition cannot redirect lease rollback."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
@@ -538,16 +537,18 @@ async def test_initialization_rollback_uses_acquired_store(tmp_path: Path) -> No
     app._lease_store = original_store
     owner = app._session_owner_id
     await successor_store.acquire(session_id=session.session_id, owner_id=owner, ttl_seconds=60)
-    original = SessionInboxStore.ensure_session_inbox
+    original = SessionOwnershipLeaseStore.acquire
 
-    async def inbox(self: SessionInboxStore, *, session_id: str) -> None:
-        """Swap stores only after the real inbox and original lease exist."""
-        await original(self, session_id=session_id)
+    async def acquire(
+        self: SessionOwnershipLeaseStore, *, session_id: str, owner_id: str, ttl_seconds: float
+    ) -> SessionOwnershipLeaseDAO:
+        """Swap stores only after the original lease really exists, then fail setup."""
+        await original(self, session_id=session_id, owner_id=owner_id, ttl_seconds=ttl_seconds)
         app._lease_store = successor_store
         raise RuntimeError("injected setup failure")
 
     with (
-        patch.object(SessionInboxStore, "ensure_session_inbox", new=inbox),
+        patch.object(SessionOwnershipLeaseStore, "acquire", new=acquire),
         patch(
             "src.agents.slo_agent.graph.service.LLMFactory.create",
             return_value=LLMBuildResult(
@@ -564,25 +565,29 @@ async def test_initialization_rollback_uses_acquired_store(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("replace_record", [False, True])
 async def test_rollback_releases_captured_owner(tmp_path: Path, replace_record: bool) -> None:
-    """Mutation during inbox setup cannot leak our lease or delete another owner's."""
+    """Mutation right after acquisition cannot leak our lease or delete another owner's."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
     app = SloTUI(session=session)
     captured_owner = app._session_owner_id
-    original = SessionInboxStore.ensure_session_inbox
+    original = SessionOwnershipLeaseStore.acquire
 
-    async def inbox(self: SessionInboxStore, *, session_id: str) -> None:
-        """Fail after real inbox creation and a competing owner mutation."""
-        await original(self, session_id=session_id)
+    async def acquire(
+        self: SessionOwnershipLeaseStore, *, session_id: str, owner_id: str, ttl_seconds: float
+    ) -> SessionOwnershipLeaseDAO:
+        """Fail after the real acquisition and a competing owner mutation."""
+        await original(self, session_id=session_id, owner_id=owner_id, ttl_seconds=ttl_seconds)
         app._session_owner_id = "successor-owner"
-        assert app._lease_store is not None
         if replace_record:
-            await app._lease_store.acquire(session_id=session_id, owner_id="successor-owner", ttl_seconds=60)
+            # A live lease is exclusive (1081-R01): the successor can only take
+            # over once the captured lease is gone, as after its expiry.
+            await self.release(session_id=session_id, owner_id=owner_id)
+            await original(self, session_id=session_id, owner_id="successor-owner", ttl_seconds=60)
         raise RuntimeError("injected setup failure")
 
     with (
-        patch.object(SessionInboxStore, "ensure_session_inbox", new=inbox),
+        patch.object(SessionOwnershipLeaseStore, "acquire", new=acquire),
         patch(
             "src.agents.slo_agent.graph.service.LLMFactory.create",
             return_value=LLMBuildResult(
@@ -603,7 +608,7 @@ async def test_rollback_releases_captured_owner(tmp_path: Path, replace_record: 
 
 @pytest.mark.parametrize("mismatch", ["session_id", "owner_id"])
 async def test_mount_rejects_mismatched_acquisition(tmp_path: Path, mismatch: str) -> None:
-    """A foreign acquisition result must never authorize inbox timers or its deletion."""
+    """A foreign acquisition result must never authorize the lease timer or its deletion."""
     session = SloAgentSession.build(
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
@@ -637,7 +642,7 @@ async def test_mount_rejects_mismatched_acquisition(tmp_path: Path, mismatch: st
             await pilot.pause()
             assert app._delivery_quiescing
             assert not app._replacement_delivery_safe
-            assert app._lease_timer is None and app._inbox_timer is None
+            assert app._lease_timer is None
             assert app._lease_store is not None
             lease = await app._lease_store.read(
                 session_id=foreign_id if mismatch == "session_id" else session.session_id

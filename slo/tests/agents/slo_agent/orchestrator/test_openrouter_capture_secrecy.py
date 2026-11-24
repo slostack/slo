@@ -123,8 +123,11 @@ async def test_headless_preparation_failure_writes_terminal_status_and_notifies_
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Drive the pre-session failure path through its real stdout, status, and notifier owners."""
-    from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+    from uuid import UUID
+
     from src.agents.slo_agent.orchestrator.notifier import WorkflowNotifier
+    from src.channels.gateway import ChannelGateway
+    from src.channels.repository import ChannelRepository
     from src.cli.headless import HeadlessRunner
     from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 
@@ -135,12 +138,17 @@ async def test_headless_preparation_failure_writes_terminal_status_and_notifies_
     monkeypatch.setenv("SLO_WORKFLOW_ID", "wf-preparation")
     monkeypatch.setattr("src.auth.credential_store.cfg", lambda **kwargs: str(credential_path))
     monkeypatch.setattr("src.cli.headless.default_history_root", lambda: root / "history")
-    inbox = SessionInboxStore(history_root=root / "history")
+    repository: ChannelRepository = ChannelRepository(db_path=root / "channels" / "channels.db")
+    await repository.open()
+    gateway: ChannelGateway = ChannelGateway(repository=repository)
+    target_participant = await gateway.register_agent(
+        session_id=UUID("33333333-3333-3333-3333-333333333333"), name="slo owner"
+    )
     notifier = WorkflowNotifier(
-        target_session_id="owner",
+        gateway=gateway,
+        target_session_id=str(target_participant.id),
         orchestrator_session_id="preparation-session",
         workflow_id="wf-preparation",
-        inbox_store=inbox,
     )
     runner = HeadlessRunner(
         config=SessionConfigDAO(
@@ -165,17 +173,16 @@ async def test_headless_preparation_failure_writes_terminal_status_and_notifies_
     stdout = capsys.readouterr().out
     status_path = root / "history" / "preparation-session" / "orchestrator.json"
     status = json.loads(status_path.read_text(encoding="utf-8"))
-    pending = await inbox.list_pending(session_id="owner")
+    pending = await gateway.pending_inbound(recipient_id=target_participant.id)
     public = (
-        stdout
-        + status_path.read_text(encoding="utf-8")
-        + "".join(message.model_dump_json() for message in pending)
+        stdout + status_path.read_text(encoding="utf-8") + "".join(row.message_contents for row in pending)
     )
     assert exit_code == 1
     assert status["state"] == "failed"
-    assert [message.kind for message in pending] == ["workflow_failed"]
+    assert [row.message_type for row in pending] == ["prompt"]
     assert secret not in public
     assert "Model preparation failed" in public
+    await gateway.close()
 
 
 @pytest.mark.parametrize("terminal", [True, False])

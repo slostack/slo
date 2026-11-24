@@ -199,8 +199,17 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=50,
     ),
     SlashCommandSpecDAO(
+        name="queue",
+        description="list, resume, cancel, edit, or force pending prompts",
+        argument_mode="free_text",
+        usage="/queue [resume | cancel <n|all> | edit <n> | force <n>] (bare: list)",
+        argument_hint="resume | cancel <n|all> | edit <n> | force <n>",
+        display_order=55,
+    ),
+    SlashCommandSpecDAO(
         name="steer",
-        description="queue a steering message",
+        description="send a forced message (joins the current run at the next boundary)",
+        aliases=["force"],
         argument_mode="free_text",
         usage="/steer <message>",
         argument_hint="message",

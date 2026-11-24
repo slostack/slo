@@ -5,11 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
+from typing import Optional
+from uuid import UUID, uuid4
 
 import pytest
 
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
+from src.channels.dao import ChannelMessageDAO
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
 from src.scheduling.dao import (
     LoadedScheduleDAO,
     OneShotTriggerDAO,
@@ -140,33 +144,54 @@ class _FakeTargetResolver:
         return self.target
 
 
-class _FakeLeaseStore:
-    """Test double for active/inactive target classification."""
-
-    def __init__(self, *, active: bool) -> None:
-        self.active = active
-
-    async def is_active(self, *, session_id: str, now=None) -> bool:
-        del session_id, now
-        return self.active
+_TARGET_SESSION_ID: str = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+"""Canonical UUID session id of the TUI session the continuous schedules target."""
 
 
-class _FakeInboxStore:
-    """Test double for SessionInbox enqueue behavior."""
+async def _lease_store_with_active_owner(*, tmp_path: Path) -> SessionOwnershipLeaseStore:
+    """Return a real lease store whose target session is owned by a live TUI.
 
-    def __init__(self, *, result: str) -> None:
-        self.result = result
-        self.messages: list[SessionInboxMessageDAO] = []
+    Args:
+        tmp_path (Path): Test-local temp directory holding the history root.
 
-    async def enqueue(self, *, message: SessionInboxMessageDAO):
-        from src.agents.slo_agent.history.inbox.dao import InboxEnqueueResultDAO
+    Returns:
+        SessionOwnershipLeaseStore: Store with an unexpired ``owner.json`` lease.
+    """
+    store: SessionOwnershipLeaseStore = SessionOwnershipLeaseStore(history_root=tmp_path / "history")
+    await store.acquire(session_id=_TARGET_SESSION_ID, owner_id="tui-owner-test", ttl_seconds=300.0)
+    return store
 
-        self.messages.append(message)
-        return InboxEnqueueResultDAO(
-            result=self.result,  # type: ignore[arg-type]
-            message=message,
-            replaced_message_id="older-message" if self.result == "coalesced" else None,
-        )
+
+async def _gateway_with_open_target(*, tmp_path: Path) -> ChannelGateway:
+    """Open a real channel gateway and register the target TUI agent, as its poller does.
+
+    Args:
+        tmp_path (Path): Test-local temp directory holding ``channels.db``.
+
+    Returns:
+        ChannelGateway: Open gateway with the target agent participant open.
+    """
+    gateway: ChannelGateway = ChannelGateway(
+        repository=ChannelRepository(db_path=tmp_path / "channels" / "channels.db")
+    )
+    await gateway.open()
+    await gateway.register_agent(session_id=UUID(_TARGET_SESSION_ID), name="slo target", durable_inbox=True)
+    return gateway
+
+
+def _active_target_resolver() -> "_FakeTargetResolver":
+    """Return a resolver stub that always resolves to the target TUI session.
+
+    Returns:
+        _FakeTargetResolver: Resolver stub for ``_TARGET_SESSION_ID``.
+    """
+    return _FakeTargetResolver(
+        target=ResolvedSessionTargetDAO(
+            resolved_reference="release-prep",
+            target_session_id=_TARGET_SESSION_ID,
+            explicit_session_id=None,
+        ),
+    )
 
 
 def _load_run_records(*, schedule_id: str) -> list[ScheduleRunRecordDAO]:
@@ -272,10 +297,10 @@ class TestScheduleExecutor:
         assert records[0].delivery_state == "executed"
 
     @pytest.mark.asyncio
-    async def test_continuous_inactive_target_launches_resume(
+    async def test_continuous_inactive_target_launches_resume_and_queues_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Inactive continuous targets use the headless `--resume` path."""
+        """I2: with no live lease the headless ``--resume`` path runs and no channel row is written."""
         _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
         definition: ScheduleDefinitionDAO = _build_definition(
             schedule_id="schedule-resume", session_mode="continuous"
@@ -285,23 +310,65 @@ class TestScheduleExecutor:
             result=ScheduleSubprocessResultDAO(
                 status="completed",
                 exit_code=0,
-                session_id="session-123",
+                session_id=_TARGET_SESSION_ID,
                 summary="resume summary",
                 stdout_summary="stdout",
                 stderr_summary="",
             ),
         )
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
+        gateway: ChannelGateway = await _gateway_with_open_target(tmp_path=tmp_path)
+        executor: ScheduleExecutor = ScheduleExecutor(
+            subprocess_runner=cast(Any, runner),
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=SessionOwnershipLeaseStore(history_root=tmp_path / "history"),
+            channel_gateway=gateway,
+            report_writer=ScheduleReportWriter(),
+        )
+
+        exit_code: int = await executor.execute(reference=definition.schedule_id)
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        await gateway.close()
+
+        assert exit_code == 0
+        assert runner.calls == [
+            (
+                "resume",
+                {
+                    "definition": definition,
+                    "session_reference": "release-prep",
+                    "target_session_id": _TARGET_SESSION_ID,
+                },
+            )
+        ]
+        assert records[0].delivery_path == "resume_headless"
+        assert records[0].delivery_state == "executed"
+        assert records[0].session_id == _TARGET_SESSION_ID
+        assert pending == []
+
+    @pytest.mark.asyncio
+    async def test_expired_lease_is_inactive_and_launches_resume(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """I2: a stale ``owner.json`` (crashed TUI) still chooses the headless path, unchanged."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-stale-lease", session_mode="continuous"
+        )
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        lease_store: SessionOwnershipLeaseStore = SessionOwnershipLeaseStore(
+            history_root=tmp_path / "history"
+        )
+        await lease_store.acquire(session_id=_TARGET_SESSION_ID, owner_id="tui-crashed", ttl_seconds=-1.0)
+        runner = _FakeRunner(
+            result=ScheduleSubprocessResultDAO(status="completed", exit_code=0, summary="resumed"),
         )
         executor: ScheduleExecutor = ScheduleExecutor(
             subprocess_runner=cast(Any, runner),
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=False)),
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=lease_store,
             report_writer=ScheduleReportWriter(),
         )
 
@@ -309,88 +376,227 @@ class TestScheduleExecutor:
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
 
         assert exit_code == 0
-        assert runner.calls[0][0] == "resume"
+        assert [call[0] for call in runner.calls] == ["resume"]
         assert records[0].delivery_path == "resume_headless"
-        assert records[0].session_id == "session-123"
 
     @pytest.mark.asyncio
-    async def test_continuous_active_target_enqueues_inbox_instead_of_running_subprocess(
+    async def test_active_lease_sends_one_scheduler_prompt_row_instead_of_running_subprocess(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Active continuous targets enqueue inbox work and skip the runner."""
+        """I1: an active lease queues exactly one channel prompt from the schedule's sender."""
         _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
         definition: ScheduleDefinitionDAO = _build_definition(
             schedule_id="schedule-queue", session_mode="continuous"
-        )
-        ScheduleStore.create(definition=definition, initial_next_run_at=None)
-        runner = _FakeRunner(
-            result=ScheduleSubprocessResultDAO(status="completed", exit_code=0, summary="unused"),
-        )
-        inbox_store = _FakeInboxStore(result="queued")
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
-        )
-        executor: ScheduleExecutor = ScheduleExecutor(
-            subprocess_runner=cast(Any, runner),
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=True)),
-            session_inbox_store=cast(Any, inbox_store),
-            report_writer=ScheduleReportWriter(),
-        )
-
-        exit_code: int = await executor.execute(reference=definition.schedule_id)
-        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
-
-        assert exit_code == 0
-        assert runner.calls == []
-        assert len(inbox_store.messages) == 1
-        assert inbox_store.messages[0].run_id == records[0].run_id
-        assert inbox_store.messages[0].payload == {"cwd": "/tmp/project", "model": "gpt-5.4"}
-        assert records[0].delivery_path == "session_inbox"
-        assert records[0].delivery_state == "queued"
-
-    @pytest.mark.asyncio
-    async def test_continuous_active_target_queues_exact_openrouter_route_without_subprocess(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Active session inbox delivery retains the schedule's canonical OpenRouter route."""
-        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
-        definition: ScheduleDefinitionDAO = _build_definition(
-            schedule_id="schedule-openrouter-inbox", session_mode="continuous"
         ).model_copy(update={"model": "openrouter:vendor/scheduled"})
         ScheduleStore.create(definition=definition, initial_next_run_at=None)
         runner = _FakeRunner(
             result=ScheduleSubprocessResultDAO(status="completed", exit_code=0, summary="unused"),
         )
-        inbox_store = _FakeInboxStore(result="queued")
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
-        )
+        gateway: ChannelGateway = await _gateway_with_open_target(tmp_path=tmp_path)
         executor: ScheduleExecutor = ScheduleExecutor(
             subprocess_runner=cast(Any, runner),
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=True)),
-            session_inbox_store=cast(Any, inbox_store),
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=await _lease_store_with_active_owner(tmp_path=tmp_path),
+            channel_gateway=gateway,
             report_writer=ScheduleReportWriter(),
         )
 
         exit_code: int = await executor.execute(reference=definition.schedule_id)
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        await gateway.close()
 
         assert exit_code == 0
         assert runner.calls == []
-        assert inbox_store.messages[0].payload["model"] == "openrouter:vendor/scheduled"
+        assert len(pending) == 1
+        row: ChannelMessageDAO = pending[0]
+        assert row.message_type == "prompt"
+        assert row.message_contents == definition.prompt
+        assert row.sender_name == f"scheduler {definition.name}"
+        assert row.recipient_id == UUID(_TARGET_SESSION_ID)
+        assert row.agent_session_id == UUID(_TARGET_SESSION_ID)
+        assert row.coalesce_key == "repo-watch"
+        assert row.forced_at is None
+        assert len(records) == 1
+        assert records[0].delivery_path == "session_channel"
+        assert records[0].delivery_state == "queued"
+        assert records[0].target_session_id == _TARGET_SESSION_ID
+        assert records[0].summary == definition.prompt[:200]
+        assert records[0].coalesced_fire_count == 0
+
+    @pytest.mark.asyncio
+    async def test_two_fires_with_the_same_coalescing_key_leave_one_pending_prompt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """I1: the newer fire supersedes the older pending row and records ``coalesced``."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-coalesce", session_mode="continuous"
+        )
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        gateway: ChannelGateway = await _gateway_with_open_target(tmp_path=tmp_path)
+        executor: ScheduleExecutor = ScheduleExecutor(
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=await _lease_store_with_active_owner(tmp_path=tmp_path),
+            channel_gateway=gateway,
+            report_writer=ScheduleReportWriter(),
+        )
+
+        first_exit: int = await executor.execute(reference=definition.schedule_id)
+        first_pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        second_exit: int = await executor.execute(reference=definition.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        superseded: Optional[ChannelMessageDAO] = await gateway.get(message_id=first_pending[0].id)
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+        await gateway.close()
+
+        assert (first_exit, second_exit) == (0, 0)
+        assert len(pending) == 1
+        assert pending[0].id != first_pending[0].id
+        assert superseded is not None
+        assert superseded.cancel_reason == "superseded"
+        assert sorted(record.delivery_state for record in records) == ["coalesced", "queued"]
+        coalesced: ScheduleRunRecordDAO = next(r for r in records if r.delivery_state == "coalesced")
+        assert coalesced.delivery_path == "session_channel"
+        assert coalesced.coalesced_fire_count == 1
+
+    @pytest.mark.asyncio
+    async def test_two_fires_without_a_coalescing_key_queue_two_prompts_in_order(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without ``latest_by_key`` every fire stays queued, FIFO by message index."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-no-coalesce", session_mode="continuous"
+        ).model_copy(update={"session_policy": ScheduleSessionPolicyDAO(session_reference="release-prep")})
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        gateway: ChannelGateway = await _gateway_with_open_target(tmp_path=tmp_path)
+        executor: ScheduleExecutor = ScheduleExecutor(
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=await _lease_store_with_active_owner(tmp_path=tmp_path),
+            channel_gateway=gateway,
+            report_writer=ScheduleReportWriter(),
+        )
+
+        await executor.execute(reference=definition.schedule_id)
+        await executor.execute(reference=definition.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+        await gateway.close()
+
+        assert [row.message_index for row in pending] == [1, 2]
+        assert {row.coalesce_key for row in pending} == {None}
+        assert [record.delivery_state for record in records] == ["queued", "queued"]
+
+    @pytest.mark.asyncio
+    async def test_schedule_sender_identity_is_one_system_sender_per_schedule(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Repeated fires reuse one sender; a second schedule gets its own sender."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        first: ScheduleDefinitionDAO = _build_definition(schedule_id="schedule-a", session_mode="continuous")
+        second: ScheduleDefinitionDAO = _build_definition(schedule_id="schedule-b", session_mode="continuous")
+        ScheduleStore.create(definition=first, initial_next_run_at=None)
+        ScheduleStore.create(definition=second, initial_next_run_at=None)
+        gateway: ChannelGateway = await _gateway_with_open_target(tmp_path=tmp_path)
+        executor: ScheduleExecutor = ScheduleExecutor(
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=await _lease_store_with_active_owner(tmp_path=tmp_path),
+            channel_gateway=gateway,
+            report_writer=ScheduleReportWriter(),
+        )
+
+        await executor.execute(reference=first.schedule_id)
+        await executor.execute(reference=second.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        senders = [await gateway.get_participant(participant_id=row.sender_id) for row in pending]
+        await gateway.close()
+
+        assert len(pending) == 2
+        assert len({row.sender_id for row in pending}) == 2
+        assert [sender.external_ref for sender in senders if sender is not None] == [
+            first.schedule_id,
+            second.schedule_id,
+        ]
+        assert [sender.kind for sender in senders if sender is not None] == ["system", "system"]
+
+    @pytest.mark.asyncio
+    async def test_active_lease_for_an_unregistered_session_fails_loudly_and_queues_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A live lease whose session never registered on the queue raises; no row, no subprocess."""
+        from src.channels.errors import UnknownParticipantError
+
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-unregistered", session_mode="continuous"
+        )
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        runner = _FakeRunner(
+            result=ScheduleSubprocessResultDAO(status="completed", exit_code=0, summary="unused"),
+        )
+        gateway: ChannelGateway = ChannelGateway(
+            repository=ChannelRepository(db_path=tmp_path / "channels" / "channels.db")
+        )
+        executor: ScheduleExecutor = ScheduleExecutor(
+            subprocess_runner=cast(Any, runner),
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=await _lease_store_with_active_owner(tmp_path=tmp_path),
+            channel_gateway=gateway,
+            report_writer=ScheduleReportWriter(),
+        )
+
+        with pytest.raises(UnknownParticipantError):
+            await executor.execute(reference=definition.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        await gateway.close()
+
+        assert pending == []
+        assert runner.calls == []
+        assert _load_run_records(schedule_id=definition.schedule_id) == []
+
+    @pytest.mark.asyncio
+    async def test_active_lease_without_a_channel_gateway_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A misconfigured executor never silently drops a fire for an active session."""
+        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
+        definition: ScheduleDefinitionDAO = _build_definition(
+            schedule_id="schedule-no-gateway", session_mode="continuous"
+        )
+        ScheduleStore.create(definition=definition, initial_next_run_at=None)
+        executor: ScheduleExecutor = ScheduleExecutor(
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=await _lease_store_with_active_owner(tmp_path=tmp_path),
+            report_writer=ScheduleReportWriter(),
+        )
+
+        with pytest.raises(RuntimeError, match="channel gateway"):
+            await executor.execute(reference=definition.schedule_id)
 
     @pytest.mark.asyncio
     async def test_continuous_inactive_openrouter_target_persists_completed_headless_report(
@@ -409,23 +615,16 @@ class TestScheduleExecutor:
             result=ScheduleSubprocessResultDAO(
                 status="completed",
                 exit_code=0,
-                session_id="session-123",
+                session_id=_TARGET_SESSION_ID,
                 summary="prepared exact route",
                 stdout_summary="ordinary output",
                 stderr_summary="",
             ),
         )
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
-        )
         executor: ScheduleExecutor = ScheduleExecutor(
             subprocess_runner=cast(Any, runner),
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=False)),
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=SessionOwnershipLeaseStore(history_root=tmp_path / "history"),
             report_writer=ScheduleReportWriter(),
         )
 
@@ -439,7 +638,7 @@ class TestScheduleExecutor:
                 {
                     "definition": definition,
                     "session_reference": "release-prep",
-                    "target_session_id": "session-123",
+                    "target_session_id": _TARGET_SESSION_ID,
                 },
             )
         ]
@@ -454,7 +653,7 @@ class TestScheduleExecutor:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A failed inactive preparation persists a failed report without entering the inbox."""
+        """A failed inactive preparation persists a failed report without queueing a channel row."""
         _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
         definition: ScheduleDefinitionDAO = _build_definition(
             schedule_id="schedule-openrouter-inactive-failed",
@@ -465,28 +664,27 @@ class TestScheduleExecutor:
             result=ScheduleSubprocessResultDAO(
                 status="failed",
                 exit_code=1,
-                session_id="session-123",
+                session_id=_TARGET_SESSION_ID,
                 summary="Model preparation failed",
                 stdout_summary="",
                 stderr_summary="ordinary safe diagnostic",
             ),
         )
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
-        )
+        gateway: ChannelGateway = await _gateway_with_open_target(tmp_path=tmp_path)
         executor: ScheduleExecutor = ScheduleExecutor(
             subprocess_runner=cast(Any, runner),
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=False)),
+            target_resolver=cast(Any, _active_target_resolver()),
+            session_lease_store=SessionOwnershipLeaseStore(history_root=tmp_path / "history"),
+            channel_gateway=gateway,
             report_writer=ScheduleReportWriter(),
         )
 
         exit_code: int = await executor.execute(reference=definition.schedule_id)
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
+        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            recipient_id=UUID(_TARGET_SESSION_ID)
+        )
+        await gateway.close()
 
         assert exit_code == 1
         assert len(records) == 1
@@ -494,84 +692,21 @@ class TestScheduleExecutor:
         assert records[0].delivery_path == "resume_headless"
         assert records[0].summary == "Model preparation failed"
         assert records[0].stderr_summary == "ordinary safe diagnostic"
+        assert pending == []
 
-    @pytest.mark.asyncio
-    async def test_continuous_active_target_persists_openrouter_inbox_and_report(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A real inbox store preserves the route and a populated delivery report."""
-        from src.agents.slo_agent.history.inbox.store import SessionInboxStore
 
-        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
-        history_root: Path = (tmp_path / "history").resolve()
-        assert history_root.is_relative_to(tmp_path.resolve())
-        definition: ScheduleDefinitionDAO = _build_definition(
-            schedule_id="schedule-openrouter-persisted-inbox",
-            session_mode="continuous",
-        ).model_copy(update={"model": "openrouter:vendor/scheduled"})
-        ScheduleStore.create(definition=definition, initial_next_run_at=None)
-        inbox_store = SessionInboxStore(history_root=history_root)
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
-        )
-        executor: ScheduleExecutor = ScheduleExecutor(
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=True)),
-            session_inbox_store=inbox_store,
-            report_writer=ScheduleReportWriter(),
+class TestActiveSessionDeliveryPolicy:
+    """The policy names channel delivery; stored legacy definitions still load (108.6 §3)."""
+
+    def test_default_is_session_channel_and_legacy_session_inbox_still_validates(self) -> None:
+        """New policies default to ``session_channel``; a pre-108.6 ``session_inbox`` value is readable."""
+        fresh_policy: ScheduleSessionPolicyDAO = ScheduleSessionPolicyDAO(session_reference="release-prep")
+        legacy_policy: ScheduleSessionPolicyDAO = ScheduleSessionPolicyDAO.model_validate(
+            {"session_reference": "release-prep", "active_session_delivery": "session_inbox"}
         )
 
-        exit_code: int = await executor.execute(reference=definition.schedule_id)
-        pending: list[SessionInboxMessageDAO] = await inbox_store.list_pending(session_id="session-123")
-        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
-
-        assert exit_code == 0
-        assert len(pending) == 1
-        assert pending[0].payload == {"cwd": "/tmp/project", "model": "openrouter:vendor/scheduled"}
-        assert len(records) == 1
-        assert records[0].delivery_path == "session_inbox"
-        assert records[0].delivery_state == "queued"
-        assert records[0].summary == definition.prompt[:200]
-
-    @pytest.mark.asyncio
-    async def test_coalesced_enqueue_records_coalesced_delivery_state(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Coalesced active-session enqueues persist the `coalesced` delivery state."""
-        _set_schedules_dir(monkeypatch=monkeypatch, tmp_path=tmp_path)
-        definition: ScheduleDefinitionDAO = _build_definition(
-            schedule_id="schedule-coalesce", session_mode="continuous"
-        )
-        ScheduleStore.create(definition=definition, initial_next_run_at=None)
-        inbox_store = _FakeInboxStore(result="coalesced")
-        target_resolver = _FakeTargetResolver(
-            target=ResolvedSessionTargetDAO(
-                resolved_reference="release-prep",
-                target_session_id="session-123",
-                explicit_session_id=None,
-            ),
-        )
-        executor: ScheduleExecutor = ScheduleExecutor(
-            target_resolver=cast(Any, target_resolver),
-            session_lease_store=cast(Any, _FakeLeaseStore(active=True)),
-            session_inbox_store=cast(Any, inbox_store),
-            report_writer=ScheduleReportWriter(),
-        )
-
-        exit_code: int = await executor.execute(reference=definition.schedule_id)
-        records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
-
-        assert exit_code == 0
-        assert records[0].delivery_state == "coalesced"
-        assert records[0].coalesced_fire_count == 1
+        assert fresh_policy.active_session_delivery == "session_channel"
+        assert legacy_policy.active_session_delivery == "session_inbox"
 
 
 class TestScheduleCleanupService:

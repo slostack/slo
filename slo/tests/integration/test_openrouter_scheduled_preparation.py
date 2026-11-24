@@ -1,4 +1,4 @@
-"""Active inbox acceptance through actual scheduler, mounted TUI and local SDK.
+"""Active-session channel acceptance through actual scheduler, mounted TUI and local SDK (108.6).
 
 No headless child, capture writer, fleet or notifier is exercised here. Synthetic
 HTTP-400 bodies test adapter normalization, not arbitrary old-key text sanitation.
@@ -27,12 +27,14 @@ from src.agents.base import LLMFactory
 from src.agents.model_catalog.service import ModelCatalogService
 from src.agents.providers.openrouter import OpenRouterChatOpenAI
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.auth.credential_dao import CredentialDAO, CredentialSource, ResolvedCredentialDAO
 from src.auth.credential_resolver import CredentialResolver
+from src.channels.dao import ChannelMessageDAO
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
 from src.integrations.openrouter.client import OpenRouterAPIClient
 from src.scheduling.dao import OneShotTriggerDAO, ScheduleDefinitionDAO, ScheduleSessionPolicyDAO
 from src.scheduling.runtime.executor import ScheduleExecutor
@@ -46,7 +48,7 @@ def contained_writes(tmp_path: Path) -> Iterator[list[Path]]:
     """Reject filesystem mutation outside this test's resolved root before I/O.
 
     The audit hook remains installed but becomes inert after fixture teardown.
-    This is scoped to the in-process inbox test; it is not a subprocess sandbox.
+    This is scoped to the in-process scheduled-delivery test; it is not a subprocess sandbox.
     """
     root = tmp_path.resolve()
     active = True
@@ -90,24 +92,41 @@ def scheduled_acceptance_echo() -> str:
     return "scheduled acceptance tool output"
 
 
-async def _wait_for_idle(*, app: SloTUI, pilot: Pilot[None]) -> None:
-    """Wait for the mounted app's existing inbox-created task to finish."""
-    for _ in range(80):
-        await pilot.pause()
-        if app._in_flight_task is None:
-            return
-    raise AssertionError("mounted inbox turn did not finish")
+async def _wait_for_scheduled_turn(
+    *, app: SloTUI, pilot: Pilot[None], gateway: ChannelGateway, message_id: object
+) -> ChannelMessageDAO:
+    """Wait until the session's poller has taken the scheduled row and its run has ended.
+
+    Args:
+        app (SloTUI): The mounted app whose session poller runs the row.
+        pilot (Pilot[None]): Textual pilot driving the app's event loop.
+        gateway (ChannelGateway): A gateway on the shared queue, for read-back.
+        message_id (object): The scheduled row's id (the run record's ``run_id``).
+
+    Returns:
+        ChannelMessageDAO: The accepted scheduled row.
+    """
+    from uuid import UUID
+
+    for _ in range(600):
+        await pilot.pause(delay=0.05)
+        row = await gateway.get(message_id=UUID(str(message_id)))
+        poller = app._session.channel_poller
+        if row is not None and row.accepted_at is not None and poller is not None and not poller.busy:
+            if not app._session.is_running:
+                return row
+    raise AssertionError("mounted scheduled channel turn did not finish")
 
 
 @pytest.mark.parametrize("gateway_failure", [False, True])
-async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
+async def test_active_schedule_channel_prompt_drives_mounted_prepared_openrouter_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     gateway_failure: bool,
     contained_writes: list[Path],
 ) -> None:
-    """Queue via the active scheduler path, then consume it through mounted TUI owners."""
+    """Queue via the active scheduler path, then consume it through the mounted session's poller."""
     root = tmp_path.resolve()
     history_root = root / "history"
     schedules_root = root / "schedules"
@@ -121,8 +140,8 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
     stream_events: list[AgentStreamEventDAO] = []
     raw_errors: list[str] = []
     history_store = FilesystemSessionHistoryStore(root=history_root)
-    inbox = SessionInboxStore(history_root=history_root)
     leases = SessionOwnershipLeaseStore(history_root=history_root)
+    channels_db: Path = root / "channels" / "channels.db"
 
     for target in (history_root, schedules_root):
         assert target.resolve().is_relative_to(root)
@@ -262,16 +281,14 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
 
                 session.subscribe(handler=collect)
                 original_route = session.active_model_name
-                app = SloTUI(session=session, inbox_store=inbox, lease_store=leases)
+                app = SloTUI(
+                    session=session,
+                    lease_store=leases,
+                    channel_gateway=ChannelGateway(repository=ChannelRepository(db_path=channels_db)),
+                )
                 async with app.run_test(size=(80, 24)) as pilot:
                     await pilot.pause()
                     assert await leases.is_active(session_id="scheduled-target")
-                    # This test drives inbox delivery itself (`_poll_session_inbox` below).
-                    # The app's own 1 s poll timer would otherwise claim the queued
-                    # message before the pending-state assertions, whenever a slow
-                    # machine stretches the gap between enqueue and assertion past a tick.
-                    assert app._inbox_timer is not None
-                    app._inbox_timer.pause()
                     definition = ScheduleDefinitionDAO(
                         schedule_id="scheduled-mounted",
                         name="Scheduled mounted acceptance",
@@ -285,32 +302,32 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
                     )
                     assert definition.model != original_route, "scheduled and target routes must differ"
                     ScheduleStore.create(definition=definition, initial_next_run_at=None)
+                    # The scheduler is another process in production: it reaches the
+                    # same channels.db through its own gateway connection.
+                    scheduler_gateway = ChannelGateway(repository=ChannelRepository(db_path=channels_db))
                     executor = ScheduleExecutor(
                         target_resolver=SessionTargetResolver(history_store=history_store),
                         session_lease_store=leases,
-                        session_inbox_store=inbox,
+                        channel_gateway=scheduler_gateway,
                     )
-                    assert await executor.execute(reference=definition.schedule_id) == 0
-                    report_path = next((schedules_root / definition.schedule_id / "runs").glob("*.json"))
-                    assert report_path.resolve().is_relative_to(root)
-                    report = json.loads(report_path.read_text(encoding="utf-8"))
-                    assert report["delivery_path"] == "session_inbox"
-                    assert report["delivery_state"] == "queued"
-                    pending = await inbox.list_pending(session_id="scheduled-target")
-                    pending_files = list((history_root / "scheduled-target/inbox/pending").glob("*.json"))
-                    assert len(pending_files) == 1
-                    assert "scheduled mounted prompt" in pending_files[0].read_text(encoding="utf-8")
-                    assert len(pending) == 1 and pending[0].payload == {
-                        "cwd": str(root),
-                        "model": definition.model,
-                    }
+                    try:
+                        assert await executor.execute(reference=definition.schedule_id) == 0
+                        report_path = next((schedules_root / definition.schedule_id / "runs").glob("*.json"))
+                        assert report_path.resolve().is_relative_to(root)
+                        report = json.loads(report_path.read_text(encoding="utf-8"))
+                        assert report["delivery_path"] == "session_channel"
+                        assert report["delivery_state"] == "queued"
+                        assert not (history_root / "scheduled-target" / "inbox").exists()
+                        accepted = await _wait_for_scheduled_turn(
+                            app=app, pilot=pilot, gateway=scheduler_gateway, message_id=report["run_id"]
+                        )
+                    finally:
+                        await scheduler_gateway.close()
+                    assert accepted.message_type == "prompt"
+                    assert accepted.message_contents == "scheduled mounted prompt"
+                    assert accepted.sender_name == "scheduler Scheduled mounted acceptance"
+                    # The schedule's own model route never replaces the open session's route.
                     assert session.active_model_name == original_route == route
-                    await app._poll_session_inbox()
-                    await _wait_for_idle(app=app, pilot=pilot)
-                    assert session.active_model_name == original_route
-                    assert await inbox.list_pending(session_id="scheduled-target") == []
-                    done = await inbox.list_done(session_id="scheduled-target")
-                    assert len(done) == 1 and done[0].message_id == pending[0].message_id
                     transcript = app.query_one(ChatTranscriptComponent).logical_copy_text()
                     if gateway_failure:
                         assert "scheduled mounted answer" not in transcript
@@ -354,13 +371,10 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
         history_root / "scheduled-target/session.json": route,
         history_root / "scheduled-target/transcript.md": "scheduled acceptance tool output",
         schedules_root / "scheduled-mounted/schedule.md": "openrouter:vendor/schedule-only",
-        schedules_root / "scheduled-mounted/state.json": "session_inbox",
+        schedules_root / "scheduled-mounted/state.json": "session_channel",
         report_path: "queued",
         root / "global/model_catalog_cache.v2.json": "vendor/scheduled-mounted",
     }
-    done_files = list((history_root / "scheduled-target/inbox/done").glob("*.json"))
-    assert len(done_files) == 1
-    expected[done_files[0]] = "scheduled mounted prompt"
     for path, ordinary in expected.items():
         assert path.resolve().is_relative_to(root)
         assert path.is_file() and ordinary in path.read_text(encoding="utf-8")
@@ -373,6 +387,12 @@ async def test_active_schedule_inbox_drives_mounted_prepared_openrouter_session(
     assert private_reasoning not in public
     for path in root.rglob("*"):
         assert path.resolve().is_relative_to(root)
+        if path.is_file() and path.name.startswith("channels.db"):
+            # The SQLite queue (and its WAL) is binary: scan its raw bytes.
+            data = path.read_bytes()
+            assert raw_sentinel.encode() not in data
+            assert private_reasoning.encode() not in data
+            continue
         if path.is_file():
             contents = path.read_text(encoding="utf-8")
             assert raw_sentinel not in contents

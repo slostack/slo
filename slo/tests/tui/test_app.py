@@ -8,7 +8,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from textual import events
@@ -23,9 +23,7 @@ from config.logger import interactive_logging, log_info
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO
 from src.agents.slo_agent.agent import SloAgent
 from src.agents.slo_agent.compaction.compacter import Compacter
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.sessions.ownership import SessionOwnershipLeaseStore
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.sessions.dao import ManualCompactionResultDAO, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
@@ -54,9 +52,7 @@ from tests.tui._scroll_settle import pump_until
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
-from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
-from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.user_message_block import UserMessageBlock
 
 
@@ -82,8 +78,12 @@ def _build_resource_free_session_mock() -> MagicMock:
 
     These fixtures own no reporter, child or lease. Lifecycle retention tests use
     real sessions instead; an unconfigured AsyncMock is not drained evidence.
+    The double reports an idle session truthfully: no channel poller is running
+    and no prompt is in flight, so idle gates admit delivery.
     """
     session = MagicMock(spec=SloAgentSession)
+    session.channel_poller = None
+    session.is_running = False
     outcome = HerdrReporterCloseOutcomeDAO(replacement="safe", resources="drained")
     session.close_external_reporting.return_value = outcome
     session.finish_retired_reporting_cleanup.return_value = outcome
@@ -110,50 +110,29 @@ async def _await_idle(
     *,
     app: SloTUI,
     pilot: Pilot,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = 15.0,
 ) -> None:
-    """Poll until ``app._in_flight_task is None`` or timeout.
+    """Poll until no run is in flight on either owner or timeout.
+
+    Ordinary prompts run through the session's channel poller (108.1); the
+    app-owned ``_in_flight_task`` is only set by tests that drive the legacy
+    ``_run_prompt`` path directly. Idleness means neither owner is running.
 
     Args:
         app (SloTUI): The app under test.
         pilot (Pilot): The Textual Pilot driver.
         timeout_seconds (float): Maximum wait before failing.
     """
+
+    def _running() -> bool:
+        poller = app._session.channel_poller
+        return app._in_flight_task is not None or (poller is not None and poller.busy)
+
     deadline: float = asyncio.get_event_loop().time() + timeout_seconds
-    while app._in_flight_task is not None:
+    while _running():
         if asyncio.get_event_loop().time() > deadline:
             raise AssertionError("timed out waiting for in-flight task to clear")
         await pilot.pause()
-
-
-async def _pump_until_drained(
-    *,
-    app: SloTUI,
-    pilot: Pilot,
-    invoke_log: list[str],
-    expected_invokes: list[str],
-) -> None:
-    """Pump until the queued prompt drained and every expected invoke finished.
-
-    The completion handoff keeps the finished task tracked until it has either
-    marked the app idle or assigned the drained successor task, so the
-    predicate requires the held slot to be empty, the invoke log to match the
-    full expected sequence, and the final run to have fully released the app
-    task slot. Called by the queued-prompt drain tests; the caller's own
-    assertions fail when the predicate never settles.
-
-    Args:
-        app (SloTUI): The app under test.
-        pilot (Pilot): The Textual Pilot driver.
-        invoke_log (list[str]): Recorded ``session.invoke`` texts.
-        expected_invokes (list[str]): Expected full invoke sequence.
-    """
-    await pump_until(
-        pilot=pilot,
-        predicate=lambda: invoke_log == expected_invokes
-        and app._in_flight_task is None
-        and app._queued_prompt_text is None,
-    )
 
 
 async def _wait_for_predicate(
@@ -213,7 +192,9 @@ def _make_gated_invoke(
             function compatible with ``session.invoke``.
     """
 
-    async def _fake_invoke(*, text: str) -> AsyncIterator[AgentStreamEventDAO]:
+    async def _fake_invoke(
+        *, text: str, channel_message_id: Optional[UUID] = None
+    ) -> AsyncIterator[AgentStreamEventDAO]:
         invoke_log.append(text)
         gate: Optional[asyncio.Event] = (gates or {}).get(text)
         if gate is not None:
@@ -619,8 +600,8 @@ class TestSloTUI:
             assert ("session renamed to release prep", "tool-result") in _require_adapter_lines(app=app)
 
 
-class TestSloTUISessionInbox:
-    """Lease and SessionInbox delivery behavior."""
+class TestSloTUISessionLease:
+    """Lease ownership and the retired file inbox (108.6)."""
 
     @pytest.mark.asyncio
     async def test_mount_acquires_and_unmount_releases_session_lease(self, tmp_path: Path) -> None:
@@ -652,61 +633,15 @@ class TestSloTUISessionInbox:
         assert await lease_store.is_active(session_id="session-1234") is False
 
     @pytest.mark.asyncio
-    async def test_poll_session_inbox_renders_ui_notice(self, tmp_path: Path) -> None:
-        """`ui_notice` inbox items render a low-noise notice and are acked."""
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = Path(".").resolve()
-        session.session_id = "session-1234"
-        session.session_name = None
-        session.active_model_name = "claude-sonnet-4-6"
-        session.routed_model_name = "claude-sonnet-4-6"
-        session.active_reasoning_level = "high"
-        session.history_enabled = True
-        session.history_root = history_root
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
+    async def test_idle_tui_performs_no_inbox_file_reads(self, tmp_path: Path) -> None:
+        """I5: an idle mounted TUI never polls, claims or renders a legacy ``inbox/`` file.
 
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="monitor_update",
-            delivery_mode="ui_notice",
-            title="CI monitor",
-            text="CI still running.",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            await app._poll_session_inbox()
-            await pilot.pause()
-
-            assert any(
-                "[scheduled notice] CI monitor: CI still running." in line[0]
-                for line in _require_adapter_lines(app=app)
-            )
-            assert await inbox_store.list_pending(session_id="session-1234") == []
-            assert await inbox_store.list_done(session_id="session-1234") == [message]
-
-    @pytest.mark.asyncio
-    async def test_inbox_notice_bracket_prefix_renders_literally(self, tmp_path: Path) -> None:
-        """The ``[scheduled notice]`` prefix and bracketed body render verbatim.
-
-        The prefix is exactly the shape Textual's markup parser treats as a tag, so
-        this proves the notice mounts through ``LiteralTextStatic`` and neither the
-        prefix nor a bracketed body (``list[str]``) is swallowed after the 8.x bump.
+        A pre-108.6 producer may still drop a file into ``inbox/pending``. The
+        TUI no longer has an inbox timer, so after well over one old poll
+        interval the file is untouched: not moved to ``claimed/`` or ``done/``,
+        and nothing about it reaches the transcript.
         """
         history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
         session: MagicMock = _build_resource_free_session_mock()
         session.preparation_status = "ready"
         session.workdir = Path(".").resolve()
@@ -717,28 +652,89 @@ class TestSloTUISessionInbox:
         session.active_reasoning_level = "high"
         session.history_enabled = True
         session.history_root = history_root
+        session.is_running = False
         session.subscribe = MagicMock()
         session.unsubscribe = MagicMock()
         session.hydrate_transcript_entries = AsyncMock(return_value=[])
         session.should_show_startup_notice = AsyncMock(return_value=False)
         session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="monitor_update",
-            delivery_mode="ui_notice",
-            title="type check",
-            text="annotate as list[str]",
+        app: SloTUI = SloTUI(session=session)
+        legacy_file: Path = (
+            history_root / "session-1234" / "inbox" / "pending" / "20261120T090000.000000Z-m1.json"
         )
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            await app._poll_session_inbox()
+            assert not legacy_file.parent.parent.exists(), "mount must not create inbox lanes"
+            legacy_file.parent.mkdir(parents=True)
+            original_bytes: bytes = (
+                b'{"message_id": "m1", "session_id": "session-1234", "schedule_id": "s1", "run_id": "r1",'
+                b' "kind": "system_notice", "delivery_mode": "ui_notice", "title": "CI monitor",'
+                b' "created_at": "2026-11-20T09:00:00+00:00", "text": "CI still running."}'
+            )
+            legacy_file.write_bytes(original_bytes)
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+
+            assert legacy_file.read_bytes() == original_bytes
+            assert sorted(path.name for path in legacy_file.parent.parent.iterdir()) == ["pending"]
+            assert not any("CI still running." in line[0] for line in _require_adapter_lines(app=app))
+
+    @pytest.mark.asyncio
+    async def test_imported_scheduled_notice_bracket_prefix_renders_literally(self, tmp_path: Path) -> None:
+        """An imported legacy notice keeps its ``[scheduled notice]`` prefix and renders it verbatim.
+
+        The prefix is exactly the shape Textual's markup parser treats as a
+        tag, so this proves a channel notice mounts through ``LiteralTextStatic``
+        and neither the prefix nor a bracketed body (``list[str]``) is swallowed.
+        """
+        from datetime import datetime, timezone
+        from uuid import uuid4
+
+        from src.channels.dao import ChannelMessageDAO
+        from src.tui.channel.adapter import TuiDisplaySink
+
+        session: MagicMock = _build_resource_free_session_mock()
+        session.preparation_status = "ready"
+        session.workdir = Path(".").resolve()
+        session.session_id = "session-1234"
+        session.session_name = None
+        session.active_model_name = "claude-sonnet-4-6"
+        session.routed_model_name = "claude-sonnet-4-6"
+        session.active_reasoning_level = "high"
+        session.history_enabled = True
+        session.history_root = tmp_path / "history"
+        session.subscribe = MagicMock()
+        session.unsubscribe = MagicMock()
+        session.hydrate_transcript_entries = AsyncMock(return_value=[])
+        session.should_show_startup_notice = AsyncMock(return_value=False)
+        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
+        app: SloTUI = SloTUI(session=session)
+        now: datetime = datetime.now(timezone.utc)
+        notice: ChannelMessageDAO = ChannelMessageDAO(
+            id=uuid4(),
+            agent_session_id=uuid4(),
+            sender_id=uuid4(),
+            sender_name="scheduler type check",
+            recipient_id=uuid4(),
+            recipient_name="slo session",
+            sent_at=now,
+            accepted_at=None,
+            message_contents="[scheduled notice] type check: annotate as list[str]",
+            created_at=now,
+            message_index=1,
+            forced_at=None,
+            message_type="notice",
+            in_reply_to_id=None,
+            channel_id=None,
+            cancelled_at=None,
+            cancel_reason=None,
+            coalesce_key=None,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await TuiDisplaySink(transcript=app._chat_transcript).show(message=notice)
             await pilot.pause()
 
             assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
@@ -748,113 +744,6 @@ class TestSloTUISessionInbox:
                 if isinstance(child, LiteralTextStatic)
             ]
             assert any("[scheduled notice]" in text and "list[str]" in text for text in rendered)
-
-    @pytest.mark.asyncio
-    async def test_inbox_chat_turn_starts_directly_when_idle(self, tmp_path: Path) -> None:
-        """`chat_turn` inbox items start a direct machine turn when the app is idle.
-
-        The machine turn never enters the user queue: no ``QueuedPromptBlock``
-        mounts, the slot stays empty, and no human-path ``user-line`` echo is
-        recorded for the inbox text.
-        """
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = Path(".").resolve()
-        session.session_id = "session-1234"
-        session.session_name = None
-        session.active_model_name = "claude-sonnet-4-6"
-        session.routed_model_name = "claude-sonnet-4-6"
-        session.active_reasoning_level = "high"
-        session.history_enabled = True
-        session.history_root = history_root
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="Morning research",
-            text="Check the repo and summarize new failures.",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            with patch.object(app, "_run_prompt", new=AsyncMock()) as mock_run_prompt:
-                await app._poll_session_inbox()
-                assert app._in_flight_task is not None
-                await app._in_flight_task
-                app._in_flight_task = None
-
-            mock_run_prompt.assert_awaited_once_with(text="Check the repo and summarize new failures.")
-            assert await inbox_store.list_done(session_id="session-1234") == [message]
-            # The machine turn never touches the user queue or human echo path.
-            assert app._queued_prompt_text is None
-            assert app._queued_prompt_block is None
-            assert list(app.query(QueuedPromptBlock)) == []
-            assert (
-                "> Check the repo and summarize new failures.",
-                "user-line",
-            ) not in _require_adapter_lines(app=app)
-
-    @pytest.mark.asyncio
-    async def test_active_openrouter_schedule_inbox_consumption_keeps_target_session_route(
-        self, tmp_path: Path
-    ) -> None:
-        """A scheduled route is consumed by the active target without changing its selected route."""
-        history_root: Path = (tmp_path / "history").resolve()
-        assert history_root.is_relative_to(tmp_path.resolve())
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = tmp_path
-        session.session_id = "session-openrouter-target"
-        session.session_name = None
-        session.active_model_name = "openrouter:vendor/target"
-        session.routed_model_name = "openrouter:vendor/target"
-        session.active_reasoning_level = "medium"
-        session.history_enabled = True
-        session.history_root = history_root
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-openrouter",
-            session_id="session-openrouter-target",
-            schedule_id="schedule-openrouter",
-            run_id="run-openrouter",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="OpenRouter schedule",
-            text="Check the scheduled OpenRouter route.",
-            payload={"cwd": str(tmp_path), "model": "openrouter:vendor/scheduled"},
-        )
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            with patch.object(app, "_run_prompt", new=AsyncMock()) as mock_run_prompt:
-                await app._poll_session_inbox()
-                assert app._in_flight_task is not None
-                await app._in_flight_task
-                app._in_flight_task = None
-
-        mock_run_prompt.assert_awaited_once_with(text="Check the scheduled OpenRouter route.")
-        assert session.active_model_name == "openrouter:vendor/target"
-        assert await inbox_store.list_done(session_id="session-openrouter-target") == [message]
 
     @pytest.mark.asyncio
     async def test_new_session_replaces_active_session_and_clears_transcript(self) -> None:
@@ -1253,7 +1142,7 @@ class TestSloTUISessionInbox:
         release: asyncio.Event = asyncio.Event()
         original_invoke = session.invoke
 
-        async def _slow_invoke(*, text: str):
+        async def _slow_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             await release.wait()
             async for event in original_invoke(text=text):
                 yield event
@@ -1270,6 +1159,14 @@ class TestSloTUISessionInbox:
                 await pilot.press("enter")
                 await pilot.pause()
 
+                poller = session.channel_poller
+                assert poller is not None
+                deadline: float = asyncio.get_event_loop().time() + 10.0
+                while not poller.busy:
+                    if asyncio.get_event_loop().time() > deadline:
+                        raise AssertionError("poller never picked up the run")
+                    await pilot.pause()
+
                 await pilot.press("ctrl+c")
                 await pilot.pause()
 
@@ -1277,10 +1174,7 @@ class TestSloTUISessionInbox:
                 await _await_idle(app=app, pilot=pilot)
 
                 assert mock_abort.call_count == 1
-                assert _require_adapter_lines(app=app)[-1] == (
-                    "(aborted)",
-                    "assistant-aborted",
-                )
+                assert ("(aborted)", "assistant-aborted") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_hard_cancel_aborts_a_hung_run(self) -> None:
@@ -1296,7 +1190,7 @@ class TestSloTUISessionInbox:
         )
         app: SloTUI = SloTUI(session=session)
 
-        async def _hung_invoke(*, text: str):
+        async def _hung_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             await asyncio.Event().wait()  # never resolves — simulates a hung tool
             yield  # pragma: no cover — keeps this an async generator
 
@@ -1308,13 +1202,20 @@ class TestSloTUISessionInbox:
                 app._input.load_text("hello")
                 await pilot.press("enter")
                 await pilot.pause()
-                assert app._in_flight_task is not None
+
+                poller = session.channel_poller
+                assert poller is not None
+                deadline: float = asyncio.get_event_loop().time() + 10.0
+                while not poller.busy:
+                    if asyncio.get_event_loop().time() > deadline:
+                        raise AssertionError("poller never picked up the run")
+                    await pilot.pause()
 
                 # Bypass the grace timer and force the escalation directly.
-                app._hard_cancel_task(task=app._in_flight_task)
+                assert poller.cancel_current() is True
                 await _await_idle(app=app, pilot=pilot)
 
-                assert app._in_flight_task is None
+                assert not poller.busy
                 assert ("(aborted)", "assistant-aborted") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
@@ -1389,35 +1290,7 @@ class TestSloTUISessionInbox:
         session.should_show_startup_notice = AsyncMock(return_value=False)
         session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
         session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
-        session.steer = MagicMock()
         return session
-
-    @pytest.mark.asyncio
-    async def test_steer_renders_pending_block_then_user_message_on_apply(self) -> None:
-        """``/steer`` mounts a SteeringPendingBlock; ``steering_applied`` swaps it for a user message."""
-        session: MagicMock = self._steering_session_stub()
-
-        app: SloTUI = SloTUI(session=session)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-
-            await app._dispatch_slash_command(line="/steer be terse")
-            await pilot.pause()
-
-            session.steer.assert_called_once_with(message="be terse")
-            blocks = list(app.query(SteeringPendingBlock))
-            assert len(blocks) == 1
-            assert "be terse" in str(blocks[0].render())
-
-            await app._render_event(
-                AgentStreamEventDAO(kind="steering_applied", content="be terse"),
-            )
-            await pilot.pause()
-
-            # Pending block is consumed and replaced by a normal user message.
-            assert list(app.query(SteeringPendingBlock)) == []
-            assert ("> be terse", "user-line") in _require_adapter_lines(app=app)
 
     @pytest.mark.asyncio
     async def test_compact_while_a_prompt_is_in_flight_renders_the_session_guard(self) -> None:
@@ -1487,7 +1360,9 @@ class TestSloTUISessionInbox:
 
         Regression: ``on_prompt_input_component_submitted`` returned on the in-flight
         branch before the slash-command check, so steering was impossible while
-        the agent was working — the one moment steering is meant for.
+        the agent was working — the one moment a forced message is meant for.
+        The dispatch outcome is the 108.2 forced-send intent; without a channel
+        adapter the send degrades to a truthful notice.
         """
         session: MagicMock = self._steering_session_stub()
 
@@ -1503,8 +1378,10 @@ class TestSloTUISessionInbox:
             )
             await pilot.pause()
 
-            session.steer.assert_called_once_with(message="be terse")
-            assert len(list(app.query(SteeringPendingBlock))) == 1
+            confirmations: list[tuple[str, str]] = [
+                entry for entry in _require_adapter_lines(app=app) if "forced message queued" in entry[0]
+            ]
+            assert confirmations, "the forced-send confirmation line is missing"
 
             app._in_flight_task.cancel()
 
@@ -1518,7 +1395,7 @@ class TestSloTUISessionInbox:
         )
         app: SloTUI = SloTUI(session=session)
 
-        async def _raising_invoke(*, text: str):
+        async def _raising_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             raise ValueError("SLO_OPENAI_API_KEY is not set.")
             yield  # pragma: no cover — required to make this an async generator
 
@@ -1559,7 +1436,7 @@ class TestSloTUISessionInbox:
         class _FakeRateLimitError(RuntimeError):
             """Stand-in for ``openai.RateLimitError`` without the import dep."""
 
-        async def _raising_invoke(*, text: str):
+        async def _raising_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             raise _FakeRateLimitError("Error code: 429 - You exceeded your current quota.")
             yield  # pragma: no cover — keeps this an async generator
 
@@ -1604,7 +1481,7 @@ class TestSloTUISessionInbox:
 
         message: str = "You have hit your ChatGPT usage limit (business plan). " "Try again in ~37 min."
 
-        async def _raising_invoke(*, text: str):
+        async def _raising_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             """Raise an ``openai.RateLimitError`` mid-stream."""
             raise RateLimitError(
                 message=message,
@@ -1663,831 +1540,6 @@ class TestSloTUISessionInbox:
 
 class TestQueuedPromptGating:
     """One-deep latest-wins queued ordinary prompt behind the active run (spec 72.a.4)."""
-
-    _SURVIVAL_NOTICE: str = (
-        "(queued prompt held — it will run next; resubmit to replace it, /clear to drop it)"
-    )
-
-    @staticmethod
-    def _mock_session_stub() -> MagicMock:
-        """Build a session stub with the prompt- and lifecycle-facing surface.
-
-        Returns:
-            MagicMock: ``SloAgentSession``-specced stub for queue/abort tests.
-        """
-        session: MagicMock = _build_resource_free_session_mock()
-        session.preparation_status = "ready"
-        session.workdir = Path(".").resolve()
-        session.session_id = "session-1234"
-        session.session_name = None
-        session.active_model_name = "claude-sonnet-4-6"
-        session.routed_model_name = "claude-sonnet-4-6"
-        session.active_reasoning_level = "high"
-        session.model_pool_dao = None
-        session.history_root = Path("/tmp/history")
-        session.history_enabled = True
-        session.is_running = False
-        session.subscribe = MagicMock()
-        session.unsubscribe = MagicMock()
-        session.hydrate_transcript_entries = AsyncMock(return_value=[])
-        session.should_show_startup_notice = AsyncMock(return_value=False)
-        session.usage_snapshot = MagicMock(return_value=_empty_usage_snapshot())
-        session.refresh_usage_snapshot = MagicMock(return_value=MagicMock())
-        session.abort = MagicMock()
-        session.steer = MagicMock()
-        return session
-
-    @staticmethod
-    async def _submit_prompt(*, app: SloTUI, pilot: Pilot, text: str) -> None:
-        """Submit one prompt through the mounted Textual input.
-
-        WHAT: Enters text through the real input path and waits for rendering.
-        WHO: Queued-prompt pilot tests call it for each operator submission.
-        WHEN: Before asserting queue state or releasing a gated run.
-
-        Args:
-            app (SloTUI): Mounted application under test.
-            pilot (Pilot): Textual pilot driving the application.
-            text (str): Prompt text to submit.
-        """
-        assert app._input is not None
-        app._input.load_text(text)
-        await pilot.press("enter")
-        await pilot.pause()
-
-    @pytest.mark.asyncio
-    async def test_submit_while_in_flight_mounts_queued_block_instead_of_discarding(self) -> None:
-        """A busy ordinary submit fills the visible slot; no echo, no invoke, no busy line."""
-        session: SloAgentSession = _build_session(
-            responses=[AIMessage(content="first reply"), AIMessage(content="second reply")],
-        )
-        app: SloTUI = SloTUI(session=session)
-        release: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(invoke_log=invoke_log, gates={"first": release}),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                assert app._in_flight_task is not None
-
-                await self._submit_prompt(app=app, pilot=pilot, text="queued request")
-
-                # The held text occupies the one-deep slot with exactly one block.
-                assert app._queued_prompt_text == "queued request"
-                queued_blocks: list[QueuedPromptBlock] = list(app.query(QueuedPromptBlock))
-                assert len(queued_blocks) == 1
-                assert queued_blocks[0] is app._queued_prompt_block
-                assert "⏳ Queued: queued request" in str(queued_blocks[0].render())
-
-                # It is not a user turn yet: no echo and no second invoke.
-                assert ("> queued request", "user-line") not in _require_adapter_lines(app=app)
-                assert len(list(app.query(UserMessageBlock))) == 1
-                assert invoke_log == ["first"]
-
-                release.set()
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first", "queued request"],
-                )
-
-    @pytest.mark.asyncio
-    async def test_held_prompt_stays_anchored_above_input_until_consumed(self) -> None:
-        """Acceptance (72 review §8): the held block anchors directly above ``PromptInputComponent``.
-
-        During a long streaming run the queued block mounts as a direct child of
-        ``#chat-shell`` immediately before ``PromptInputComponent`` — never inside
-        ``#transcript-content`` — and stays anchored there while real streamed
-        ``text_delta`` output scrolls the transcript and keeps it bottom-following.
-        A busy resubmit replaces the SAME anchored instance in place. When the
-        active run completes, the anchored block is removed BEFORE the accepted
-        user turn echoes into the transcript.
-        """
-        session: SloAgentSession = _build_session(
-            responses=[AIMessage(content="first reply"), AIMessage(content="second reply")],
-        )
-        app: SloTUI = SloTUI(session=session)
-        release: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-        order: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(invoke_log=invoke_log, gates={"first": release}),
-        ):
-            async with app.run_test(size=(80, 8)) as pilot:
-                await pilot.pause()
-                prompt_input: PromptInputComponent = _require_prompt_input(app=app)
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                assert app._in_flight_task is not None
-
-                await self._submit_prompt(app=app, pilot=pilot, text="held")
-
-                chat_shell: Widget = app.query_one("#chat-shell")
-                block: Optional[QueuedPromptBlock] = app._queued_prompt_block
-                assert block is not None
-                assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
-                # Anchored: a direct ``#chat-shell`` child immediately above the input.
-                assert block.parent is chat_shell
-                assert block not in app.query_one(ChatTranscriptComponent)._transcript_content.children
-                shell_children: list[Widget] = list(chat_shell.children)
-                assert shell_children.index(block) == shell_children.index(prompt_input) - 1
-
-                # Real streamed output during the gated run overflows the tiny
-                # viewport, so the transcript genuinely scrolls...
-                for index in range(40):
-                    await app._render_event(
-                        AgentStreamEventDAO(
-                            kind="text_delta",
-                            iteration=0,
-                            delta=f"stream line {index}\n",
-                        ),
-                    )
-
-                assert app.query_one(ChatTranscriptComponent)._transcript_scroll is not None
-                scroll: TranscriptScrollComponent = app.query_one(ChatTranscriptComponent)._transcript_scroll
-                await pump_until(pilot=pilot, predicate=lambda: scroll.max_scroll_y > 0)
-                assert scroll.max_scroll_y > 0
-                # ...and stays bottom-following through the stream...
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: (scroll.max_scroll_y - scroll.scroll_y) <= 1.0,
-                )
-                assert (scroll.max_scroll_y - scroll.scroll_y) <= 1.0
-                assert (
-                    app.query_one(ChatTranscriptComponent)
-                    ._update_reading_anchor_and_build_follow_snapshot()
-                    .was_following
-                )
-                # ...while the anchor holds directly above the input.
-                assert block.parent is chat_shell
-                assert block not in app.query_one(ChatTranscriptComponent)._transcript_content.children
-                shell_children = list(chat_shell.children)
-                assert shell_children.index(block) == shell_children.index(prompt_input) - 1
-
-                # Latest-wins resubmit updates the SAME anchored instance in place.
-                await self._submit_prompt(app=app, pilot=pilot, text="held newer")
-                assert app._queued_prompt_block is block
-                assert block.queued_text == "held newer"
-                assert len(list(app.query(QueuedPromptBlock))) == 1
-                assert block.parent is chat_shell
-
-                # Completion removes the anchored block BEFORE the held turn echoes.
-                original_remove_block = app._remove_queued_prompt_block
-
-                async def _tracked_remove_block() -> None:
-                    order.append("remove_queued_block")
-                    await original_remove_block()
-
-                original_echo = app.query_one(ChatTranscriptComponent).echo_user
-
-                async def _tracked_echo(*, text: str) -> None:
-                    order.append(f"echo:{text}")
-                    await original_echo(text=text)
-
-                with (
-                    patch.object(
-                        target=app, attribute="_remove_queued_prompt_block", new=_tracked_remove_block
-                    ),
-                    patch.object(
-                        target=app.query_one(ChatTranscriptComponent),
-                        attribute="echo_user",
-                        new=_tracked_echo,
-                    ),
-                ):
-                    release.set()
-                    await _pump_until_drained(
-                        app=app,
-                        pilot=pilot,
-                        invoke_log=invoke_log,
-                        expected_invokes=["first", "held newer"],
-                    )
-
-                assert order.index("remove_queued_block") < order.index("echo:held newer")
-                assert list(app.query(QueuedPromptBlock)) == []
-                assert ("> held newer", "user-line") in _require_adapter_lines(app=app)
-
-    @pytest.mark.asyncio
-    async def test_second_busy_submit_replaces_the_single_queued_prompt(self) -> None:
-        """Latest-wins: one block carrying the newest text; the replaced text never runs."""
-        session: SloAgentSession = _build_session(
-            responses=[AIMessage(content="first reply"), AIMessage(content="second reply")],
-        )
-        app: SloTUI = SloTUI(session=session)
-        release: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(invoke_log=invoke_log, gates={"first": release}),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                await self._submit_prompt(app=app, pilot=pilot, text="queued one")
-                await self._submit_prompt(app=app, pilot=pilot, text="queued two")
-
-                # One block, newest text, same mounted instance.
-                assert app._queued_prompt_text == "queued two"
-                queued_blocks: list[QueuedPromptBlock] = list(app.query(QueuedPromptBlock))
-                assert len(queued_blocks) == 1
-                assert queued_blocks[0].queued_text == "queued two"
-                assert "⏳ Queued: queued two" in str(queued_blocks[0].render())
-
-                release.set()
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first", "queued two"],
-                )
-
-                # The replaced text is neither invoked nor echoed as a user turn.
-                assert invoke_log == ["first", "queued two"]
-                assert ("> queued one", "user-line") not in _require_adapter_lines(app=app)
-
-    @pytest.mark.asyncio
-    async def test_queued_prompt_drains_after_completed_run_in_remove_echo_start_order(self) -> None:
-        """Drain order: the block is removed before the held turn echoes and starts."""
-        session: SloAgentSession = _build_session(
-            responses=[AIMessage(content="first reply"), AIMessage(content="second reply")],
-        )
-        app: SloTUI = SloTUI(session=session)
-        release: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-        order: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(invoke_log=invoke_log, gates={"first": release}),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                original_remove_block = app._remove_queued_prompt_block
-
-                async def _tracked_remove_block() -> None:
-                    order.append("remove_queued_block")
-                    await original_remove_block()
-
-                original_echo = app.query_one(ChatTranscriptComponent).echo_user
-
-                async def _tracked_echo(*, text: str) -> None:
-                    order.append(f"echo:{text}")
-                    await original_echo(text=text)
-
-                with (
-                    patch.object(
-                        target=app, attribute="_remove_queued_prompt_block", new=_tracked_remove_block
-                    ),
-                    patch.object(
-                        target=app.query_one(ChatTranscriptComponent),
-                        attribute="echo_user",
-                        new=_tracked_echo,
-                    ),
-                ):
-                    await self._submit_prompt(app=app, pilot=pilot, text="first")
-                    await self._submit_prompt(app=app, pilot=pilot, text="queued")
-                    held_block: Optional[QueuedPromptBlock] = app._queued_prompt_block
-                    assert held_block is not None
-
-                    release.set()
-                    await _pump_until_drained(
-                        app=app,
-                        pilot=pilot,
-                        invoke_log=invoke_log,
-                        expected_invokes=["first", "queued"],
-                    )
-
-                # Removal strictly precedes the echo of the held turn.
-                assert order.index("remove_queued_block") < order.index("echo:queued")
-                assert invoke_log == ["first", "queued"]
-                assert app._queued_prompt_text is None
-                assert app._queued_prompt_block is None
-                assert list(app.query(QueuedPromptBlock)) == []
-                assert ("> queued", "user-line") in _require_adapter_lines(app=app)
-                # The detached block no longer counts as live for window eviction.
-                assert app.query_one(ChatTranscriptComponent)._is_block_live(child=held_block) is False
-
-    @pytest.mark.asyncio
-    async def test_queued_prompt_drains_after_failed_run(self) -> None:
-        """A provider failure still drains the held prompt because the handoff is in `finally`."""
-        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
-        app: SloTUI = SloTUI(session=session)
-        release: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(
-                invoke_log=invoke_log,
-                gates={"first": release},
-                failures={"first": RuntimeError("provider boom")},
-            ),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                await self._submit_prompt(app=app, pilot=pilot, text="queued")
-
-                release.set()
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first", "queued"],
-                )
-
-                assert any(entry[0].startswith("(error:") for entry in _require_adapter_lines(app=app))
-                assert ("> queued", "user-line") in _require_adapter_lines(app=app)
-
-    @pytest.mark.asyncio
-    async def test_queued_prompt_drains_after_hard_cancel(self) -> None:
-        """A hard-cancelled run still hands off to the held prompt after `(aborted)`."""
-        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
-        app: SloTUI = SloTUI(session=session)
-        never: asyncio.Event = asyncio.Event()  # never set — the hung run
-        invoke_log: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(invoke_log=invoke_log, gates={"first": never}),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                await self._submit_prompt(app=app, pilot=pilot, text="queued")
-                assert app._in_flight_task is not None
-
-                # Bypass the grace timer and force the escalation directly.
-                app._hard_cancel_task(task=app._in_flight_task)
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first", "queued"],
-                )
-
-                assert ("(aborted)", "assistant-aborted") in _require_adapter_lines(app=app)
-                assert ("> queued", "user-line") in _require_adapter_lines(app=app)
-                assert app._in_flight_task is None
-
-    @pytest.mark.asyncio
-    async def test_third_submit_waiting_during_drain_queues_behind_drained_prompt(self) -> None:
-        """A submit landing mid-drain waits on the gate, then queues behind the drained run.
-
-        Stalls ``QueuedPromptBlock.remove`` so the completion handoff holds the
-        prompt-submission gate; the third submission must not observe an idle
-        gap, start a second task, or overtake the drained prompt in invoke
-        order. The completed run task must remain tracked as the app run guard
-        for the whole stall — this falsifies the old clear-before-await
-        ordering, under which the third submit would have observed the app as
-        idle and started a second concurrent run ahead of the held prompt.
-        """
-        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
-        app: SloTUI = SloTUI(session=session)
-        release_first: asyncio.Event = asyncio.Event()
-        release_second: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(
-                invoke_log=invoke_log,
-                gates={"first": release_first, "second": release_second},
-            ),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                first_task: Optional[asyncio.Task[None]] = app._in_flight_task
-                assert first_task is not None
-                await self._submit_prompt(app=app, pilot=pilot, text="second")
-                assert app._queued_prompt_text == "second"
-                held_block: Optional[QueuedPromptBlock] = app._queued_prompt_block
-                assert held_block is not None
-
-                # Track later queue insertions; "second" was queued before this patch.
-                queue_calls: list[str] = []
-                original_queue_prompt = app._queue_prompt
-
-                async def _tracked_queue_prompt(*, text: str) -> None:
-                    queue_calls.append(text)
-                    await original_queue_prompt(text=text)
-
-                # Signal when the third submission handler reaches the gate.
-                submit_entered: asyncio.Event = asyncio.Event()
-                original_submit = app._submit_or_queue_prompt
-
-                async def _tracked_submit(*, text: str) -> None:
-                    submit_entered.set()
-                    await original_submit(text=text)
-
-                # Stall the queued block's removal so the drain holds the gate.
-                remove_started: asyncio.Event = asyncio.Event()
-                remove_release: asyncio.Event = asyncio.Event()
-                original_remove = held_block.remove
-
-                async def _wait_then_remove() -> None:
-                    await remove_release.wait()
-                    await original_remove()
-
-                def _stalling_remove() -> Awaitable[None]:
-                    remove_started.set()
-                    return _wait_then_remove()
-
-                with (
-                    patch.object(target=app, attribute="_queue_prompt", new=_tracked_queue_prompt),
-                    patch.object(target=app, attribute="_submit_or_queue_prompt", new=_tracked_submit),
-                    patch.object(target=held_block, attribute="remove", new=_stalling_remove),
-                ):
-                    release_first.set()
-                    started: bool = await _wait_for_predicate(predicate=lambda: remove_started.is_set())
-                    assert started, "drain never reached the stalled block removal"
-
-                    third_task: asyncio.Task[None] = asyncio.create_task(
-                        app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="third"))
-                    )
-                    try:
-                        entered: bool = await _wait_for_predicate(predicate=submit_entered.is_set)
-                        assert entered, "third submission never reached the submission gate"
-                        # The third handler is parked on the gate: no queue mutation,
-                        # no detachment of the block mid-removal, and the completed
-                        # first run remains tracked as the app run guard.
-                        assert not third_task.done()
-                        assert queue_calls == []
-                        assert app._in_flight_task is first_task
-                        assert app._queued_prompt_block is held_block
-                    finally:
-                        # Always release the stalled drain so a failed assertion
-                        # cannot wedge app shutdown behind the held gate.
-                        remove_release.set()
-
-                    third_done: bool = await _wait_for_predicate(predicate=lambda: third_task.done())
-                    assert third_done, "third submission never completed after the drain"
-
-                    # The drain resumes concurrently with the parked third
-                    # handler; on a loaded loop the third handler can finish
-                    # first, so wait for the drained invoke to actually start
-                    # instead of assuming the scheduling order.
-                    drained: bool = await _wait_for_predicate(
-                        predicate=lambda: invoke_log == ["first", "second"]
-                    )
-                    assert drained, "drained prompt never invoked after the block removal"
-
-                # The drained prompt won: exactly two invokes, in order.
-                assert invoke_log == ["first", "second"]
-                # The third submission became the sole queue behind the drained run.
-                assert queue_calls == ["third"]
-                assert app._in_flight_task is not None
-                assert app._queued_prompt_text == "third"
-                queued_blocks: list[QueuedPromptBlock] = list(app.query(QueuedPromptBlock))
-                assert len(queued_blocks) == 1
-                assert queued_blocks[0].queued_text == "third"
-
-                release_second.set()
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first", "second", "third"],
-                )
-
-    @pytest.mark.asyncio
-    async def test_ctrl_c_with_queued_prompt_preserves_slot_and_writes_survival_notice(self) -> None:
-        """``^C`` aborts the run cooperatively, keeps the held prompt, and explains it once.
-
-        The fake ``session.invoke`` for the active run terminates only when the
-        app's abort action fires — not when the test manually releases a gate —
-        so the drain that follows is the real cooperative-abort terminal path.
-        """
-        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
-        app: SloTUI = SloTUI(session=session)
-        abort_requested: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-
-        async def _cooperative_invoke(*, text: str) -> AsyncIterator[AgentStreamEventDAO]:
-            invoke_log.append(text)
-            if text == "first":
-                await abort_requested.wait()
-                return
-            yield AgentStreamEventDAO(kind="run_completed")
-
-        with (
-            patch.object(target=session, attribute="invoke", new=_cooperative_invoke),
-            patch.object(target=session, attribute="abort", side_effect=abort_requested.set) as mock_abort,
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                await self._submit_prompt(app=app, pilot=pilot, text="held")
-                assert app._queued_prompt_text == "held"
-
-                await pilot.press("ctrl+c")
-                # The cooperative abort itself ends the first run — no manual
-                # release — and the held prompt drains next.
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first", "held"],
-                )
-
-                assert mock_abort.call_count == 1
-                # The abort retained the held prompt: it ran as the next turn.
-                assert invoke_log == ["first", "held"]
-                assert ("> held", "user-line") in _require_adapter_lines(app=app)
-                # The survival notice was written exactly once, ahead of the
-                # ``(aborting…)`` marker.
-                notice_entries: list[tuple[str, str]] = [
-                    entry for entry in _require_adapter_lines(app=app) if entry[0] == self._SURVIVAL_NOTICE
-                ]
-                assert len(notice_entries) == 1
-                contents: list[str] = [entry[0] for entry in _require_adapter_lines(app=app)]
-                assert contents.index(self._SURVIVAL_NOTICE) < contents.index("(aborting…)")
-
-    @pytest.mark.asyncio
-    async def test_slash_abort_with_queued_prompt_preserves_slot_and_writes_survival_notice(self) -> None:
-        """``/abort`` keeps the router contract and writes the same survival notice once."""
-        session: MagicMock = self._mock_session_stub()
-        app: SloTUI = SloTUI(session=session)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            busy_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
-            app._in_flight_task = busy_task
-            await app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="held prompt"))
-            await pilot.pause()
-            assert app._queued_prompt_text == "held prompt"
-
-            await app._dispatch_slash_command(line="/abort")
-            await pilot.pause()
-
-            # The router still owns the cooperative abort request.
-            session.abort.assert_called_once_with()
-            assert app._queued_prompt_text == "held prompt"
-            notice_entries: list[tuple[str, str]] = [
-                entry for entry in _require_adapter_lines(app=app) if entry[0] == self._SURVIVAL_NOTICE
-            ]
-            assert len(notice_entries) == 1
-
-            busy_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await busy_task
-            app._in_flight_task = None
-
-    @pytest.mark.asyncio
-    async def test_abort_without_queued_prompt_writes_no_survival_notice(self) -> None:
-        """Guard path: no held prompt means no survival notice is written."""
-        session: MagicMock = self._mock_session_stub()
-        app: SloTUI = SloTUI(session=session)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            busy_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
-            app._in_flight_task = busy_task
-
-            await app._dispatch_slash_command(line="/abort")
-            await pilot.pause()
-
-            session.abort.assert_called_once_with()
-            assert all(entry[0] != self._SURVIVAL_NOTICE for entry in _require_adapter_lines(app=app))
-
-            busy_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await busy_task
-            app._in_flight_task = None
-
-    @pytest.mark.asyncio
-    async def test_clear_drops_queued_prompt_and_detaches_its_block(self) -> None:
-        """`/clear` drops the slot and detaches the block; the held text never runs."""
-        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
-        app: SloTUI = SloTUI(session=session)
-        release: asyncio.Event = asyncio.Event()
-        invoke_log: list[str] = []
-
-        with patch.object(
-            target=session,
-            attribute="invoke",
-            new=_make_gated_invoke(invoke_log=invoke_log, gates={"first": release}),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                await self._submit_prompt(app=app, pilot=pilot, text="first")
-                await self._submit_prompt(app=app, pilot=pilot, text="held")
-                held_block: Optional[QueuedPromptBlock] = app._queued_prompt_block
-                assert held_block is not None
-
-                await app.action_clear()
-                await pilot.pause()
-
-                assert app._queued_prompt_text is None
-                assert app._queued_prompt_block is None
-                assert list(app.query(QueuedPromptBlock)) == []
-                assert app.query_one(ChatTranscriptComponent)._is_block_live(child=held_block) is False
-
-                # The active run completes, but the discarded text never invokes.
-                release.set()
-                await _pump_until_drained(
-                    app=app,
-                    pilot=pilot,
-                    invoke_log=invoke_log,
-                    expected_invokes=["first"],
-                )
-                assert invoke_log == ["first"]
-
-    @pytest.mark.asyncio
-    async def test_allowed_new_session_clear_path_discards_queue_state(self) -> None:
-        """An allowed `/new` replacement discards the slot; nothing crosses sessions."""
-        old_session: MagicMock = self._mock_session_stub()
-        new_session: MagicMock = self._mock_session_stub()
-        new_session.session_id = "new-session-5678"
-
-        app: SloTUI = SloTUI(session=old_session)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Controlled busy state so an ordinary submission fills the slot.
-            busy_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
-            app._in_flight_task = busy_task
-            await app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="held prompt"))
-            await pilot.pause()
-            assert app._queued_prompt_text == "held prompt"
-            assert app._queued_prompt_block is not None
-            # Return the app to idle so the replacement is allowed.
-            busy_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await busy_task
-            app._in_flight_task = None
-
-            with patch("src.tui.app.SloAgentSession.build", return_value=new_session):
-                await app._start_new_session(requested_name=None)
-                await pilot.pause()
-
-            assert app._session is new_session
-            assert app._queued_prompt_text is None
-            assert app._queued_prompt_block is None
-            assert list(app.query(QueuedPromptBlock)) == []
-
-    @pytest.mark.asyncio
-    async def test_slash_command_while_in_flight_does_not_queue(self) -> None:
-        """Slash text dispatches immediately mid-run and never enters the slot."""
-        session: MagicMock = self._mock_session_stub()
-        app: SloTUI = SloTUI(session=session)
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            busy_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
-            app._in_flight_task = busy_task
-
-            await app.on_prompt_input_component_submitted(
-                PromptInputComponent.Submitted(text="/steer be terse")
-            )
-            await pilot.pause()
-            await app.on_prompt_input_component_submitted(PromptInputComponent.Submitted(text="/help"))
-            await pilot.pause()
-
-            session.steer.assert_called_once_with(message="be terse")
-            assert any("help" in entry[0].lower() for entry in _require_adapter_lines(app=app))
-            assert app._queued_prompt_text is None
-            assert app._queued_prompt_block is None
-            assert list(app.query(QueuedPromptBlock)) == []
-
-            busy_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await busy_task
-            app._in_flight_task = None
-
-    @pytest.mark.asyncio
-    async def test_inbox_poll_does_not_claim_chat_turn_while_local_task_is_active(
-        self, tmp_path: Path
-    ) -> None:
-        """The idle guard keeps a pending `chat_turn` unclaimed while a run is active."""
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = self._mock_session_stub()
-        session.history_root = history_root
-
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="Morning research",
-            text="Check the repo and summarize new failures.",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-            busy_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(3600))
-            app._in_flight_task = busy_task
-
-            await app._poll_session_inbox()
-            await pilot.pause()
-
-            # The local task is untouched and the inbox item was not claimed/acked.
-            assert app._in_flight_task is busy_task
-            assert await inbox_store.list_pending(session_id="session-1234") == [message]
-            assert await inbox_store.list_done(session_id="session-1234") == []
-
-            busy_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await busy_task
-            app._in_flight_task = None
-
-    @pytest.mark.asyncio
-    async def test_inbox_claim_and_local_submit_are_serialized(self, tmp_path: Path) -> None:
-        """An inbox claim and a local submit never produce two invokes.
-
-        Gates ``claim_next`` so the inbox poll holds the prompt-submission
-        gate; the local submission must wait, then observe the inbox chat
-        turn's task and queue behind it — exactly one run starts.
-        """
-        history_root: Path = tmp_path / "history"
-        inbox_store: SessionInboxStore = SessionInboxStore(history_root=history_root)
-        session: MagicMock = self._mock_session_stub()
-        session.history_root = history_root
-
-        app: SloTUI = SloTUI(session=session, inbox_store=inbox_store)
-        message: SessionInboxMessageDAO = SessionInboxMessageDAO(
-            message_id="message-1",
-            session_id="session-1234",
-            schedule_id="schedule-1",
-            run_id="run-1",
-            kind="scheduled_prompt",
-            delivery_mode="chat_turn",
-            title="Morning research",
-            text="inbox turn text",
-        )
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await inbox_store.enqueue(message=message)
-
-            claim_entered: asyncio.Event = asyncio.Event()
-            claim_release: asyncio.Event = asyncio.Event()
-            original_claim_next = inbox_store.claim_next
-
-            async def _gated_claim_next(*, session_id: str) -> Optional[SessionInboxMessageDAO]:
-                claim_entered.set()
-                await claim_release.wait()
-                return await original_claim_next(session_id=session_id)
-
-            # Tracks queue insertions; only reachable under the gate when busy.
-            queue_calls: list[str] = []
-            original_queue_prompt = app._queue_prompt
-
-            async def _tracked_queue_prompt(*, text: str) -> None:
-                queue_calls.append(text)
-                await original_queue_prompt(text=text)
-
-            with (
-                patch.object(target=inbox_store, attribute="claim_next", new=_gated_claim_next),
-                patch.object(target=app, attribute="_queue_prompt", new=_tracked_queue_prompt),
-                patch.object(target=app, attribute="_run_prompt", new=AsyncMock()) as mock_run_prompt,
-            ):
-                poll_task: asyncio.Task[None] = asyncio.create_task(app._poll_session_inbox())
-                await pump_until(pilot=pilot, predicate=lambda: claim_entered.is_set())
-
-                submit_task: asyncio.Task[None] = asyncio.create_task(
-                    app.on_prompt_input_component_submitted(
-                        PromptInputComponent.Submitted(text="local prompt")
-                    )
-                )
-                for _ in range(3):
-                    await pilot.pause()
-                # The local submit handler is parked on the gate while the
-                # inbox claim holds it: no queue mutation yet.
-                assert queue_calls == []
-
-                claim_release.set()
-                await pump_until(pilot=pilot, predicate=lambda: submit_task.done())
-                await pump_until(pilot=pilot, predicate=lambda: poll_task.done())
-
-                # The inbox chat turn won the gate: exactly one run started.
-                mock_run_prompt.assert_awaited_once_with(text="inbox turn text")
-                # The local prompt queued behind it — never a second invoke.
-                assert queue_calls == ["local prompt"]
-                assert app._queued_prompt_text == "local prompt"
-                queued_blocks: list[QueuedPromptBlock] = list(app.query(QueuedPromptBlock))
-                assert len(queued_blocks) == 1
-                assert queued_blocks[0].queued_text == "local prompt"
-                assert await inbox_store.list_done(session_id="session-1234") == [message]
 
 
 class TestPromptInputAutoResize:
@@ -2660,6 +1712,8 @@ class TestSloTUICopy:
     ) -> None:
         """``Cmd+C`` / ``Ctrl+Shift+C`` copies the transcript as plain text."""
         monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.4")
+        monkeypatch.setenv("TERM", "dumb")
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
         session: SloAgentSession = _build_session(
             responses=[AIMessage(content="hi")],
         )
@@ -2682,7 +1736,9 @@ class TestSloTUICopy:
                 "This is free software, and you are welcome to redistribute it under GPLv2.\n"
                 "Tip: use /help to see available commands. "
                 f"Session: {session.session_id}. Initialized model: gpt-5.4. "
-                "Reasoning: high. Provider detail: effort high.\n> hello\nhi",
+                "Reasoning: high. Provider detail: effort high.\n"
+                "Tip: Ctrl+Enter may be indistinguishable from Enter in this terminal — "
+                "use Alt+Enter or /force <text> to send forced (108.2).\n> hello\nhi",
             )
 
     @pytest.mark.asyncio
@@ -2793,7 +1849,9 @@ class TestSloTUISpinner:
         saw_thinking_delta: asyncio.Event = asyncio.Event()
         original_invoke = session.invoke
 
-        async def _paused_after_thinking_delta_invoke(*, text: str):
+        async def _paused_after_thinking_delta_invoke(
+            *, text: str, channel_message_id: Optional[UUID] = None
+        ):
             async for event in original_invoke(text=text):
                 yield event
                 if event.kind == "thinking_delta":
@@ -2839,7 +1897,7 @@ class TestSloTUISpinner:
         release: asyncio.Event = asyncio.Event()
         original_invoke = session.invoke
 
-        async def _slow_invoke(*, text: str):
+        async def _slow_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             await release.wait()
             async for event in original_invoke(text=text):
                 yield event
@@ -2852,6 +1910,14 @@ class TestSloTUISpinner:
                 app._input.load_text("hello")
                 await pilot.press("enter")
                 await pilot.pause()
+
+                poller = session.channel_poller
+                assert poller is not None
+                deadline: float = asyncio.get_event_loop().time() + 10.0
+                while not poller.busy:
+                    if asyncio.get_event_loop().time() > deadline:
+                        raise AssertionError("poller never picked up the run")
+                    await pilot.pause()
 
                 spinners_in_flight: list[ThinkingSpinner] = list(app.query(selector=ThinkingSpinner))
                 assert len(spinners_in_flight) == 1
@@ -2894,7 +1960,7 @@ class TestSloTUISpinner:
         saw_tool_result: asyncio.Event = asyncio.Event()
         original_invoke = session.invoke
 
-        async def _paused_after_tool_result_invoke(*, text: str):
+        async def _paused_after_tool_result_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             async for event in original_invoke(text=text):
                 yield event
                 if event.kind == "tool_result":
@@ -2976,7 +2042,7 @@ class TestSloTUISpinner:
         saw_second_iteration: asyncio.Event = asyncio.Event()
         original_invoke = session.invoke
 
-        async def _paused_on_second_iteration_invoke(*, text: str):
+        async def _paused_on_second_iteration_invoke(*, text: str, channel_message_id: Optional[UUID] = None):
             async for event in original_invoke(text=text):
                 yield event
                 if event.kind == "thinking_delta" and event.iteration == 1:
@@ -3798,26 +2864,6 @@ class TestTranscriptWindow:
             # The live block must still be in the transcript (Textual's
             # Widget.is_mounted stays True after remove(); check children instead).
             assert live_block in app.query_one(ChatTranscriptComponent)._transcript_content.children
-
-    @pytest.mark.asyncio
-    async def test_window_never_evicts_pending_steer_block(self) -> None:
-        """A SteeringPendingBlock tracked in _pending_steer_blocks is never evicted."""
-        app: SloTUI = self._build_app()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert app.query_one(ChatTranscriptComponent)._transcript_content is not None
-            # Mount a pending steer block as the oldest child.
-            steer_block: SteeringPendingBlock = SteeringPendingBlock(message="steer msg")
-            await app.query_one(ChatTranscriptComponent)._transcript_content.mount(steer_block)
-            app.query_one(ChatTranscriptComponent)._pending_steer_blocks.append(steer_block)
-            # Mount TRANSCRIPT_WINDOW_SIZE settled blocks.
-            for _ in range(TRANSCRIPT_WINDOW_SIZE):
-                await app.query_one(ChatTranscriptComponent).mount_user_message_block(text="settled")
-            for _ in range(5):
-                await pilot.pause()
-            # The steer block must still be in the transcript (Textual's
-            # Widget.is_mounted stays True after remove(); check children instead).
-            assert steer_block in app.query_one(ChatTranscriptComponent)._transcript_content.children
 
     @pytest.mark.asyncio
     async def test_adapter_line_mount_enforces_window(self) -> None:

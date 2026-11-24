@@ -218,7 +218,9 @@ class WorkflowProgressUpdatesAdapter:
             return False
         self._release_owned_view()
         self._screen = SessionProgressScreen(
-            key=key, viewport=self._viewports.get(key, ProgressViewportDAO())
+            key=key,
+            viewport=self._viewports.get(key, ProgressViewportDAO()),
+            composer=self._host.progress_composer_for(key=key),
         )
         self._selected_identity = self._identities.get(key)
         self._screen_mount = self._host.present_progress(

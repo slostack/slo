@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from time import monotonic
-from typing import Optional, Protocol, cast
+from typing import Awaitable, Callable, Optional, Protocol, cast
+from uuid import UUID
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -25,10 +26,11 @@ from config.logger import log_error
 from src.agents.slo_agent.herdr.dao import HerdrReporterCloseOutcomeDAO, VisualizerLaunchOutcomeDAO
 from src.agents.slo_agent.herdr.service import HerdrTaskJoin
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore, WorkflowResumeLauncher
-from src.agents.slo_agent.history.inbox.dao import SessionInboxMessageDAO
-from src.agents.slo_agent.history.inbox.lease import SessionOwnershipLeaseStore
-from src.agents.slo_agent.history.inbox.dao import SessionOwnershipLeaseDAO
-from src.agents.slo_agent.history.inbox.store import SessionInboxStore
+from src.agents.slo_agent.sessions.ownership import (
+    SessionOwnedElsewhereError,
+    SessionOwnershipLeaseDAO,
+    SessionOwnershipLeaseStore,
+)
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -37,6 +39,13 @@ from src.auth.browser_host import BrowserHost
 from src.auth.credential_dao import CredentialDAO, ProviderName
 from src.auth.credential_resolver import CredentialResolver
 from src.auth.provider_for_model import provider_for_model
+from src.channels.dao import ChannelMessageDAO
+from src.channels.gateway import ChannelGateway
+from src.tui.channel.adapter import TuiChannelAdapter, TuiDisplaySink
+from src.tui.components.agent_composer.component import AgentComposerComponent
+from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
+from src.tui.channel.runner import TuiTurnRunner
+from src.tui.keyboard_capability import ctrl_enter_hint_line
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.components.chat_transcript.commands import (
     SetTranscriptVisibilityDAO,
@@ -49,9 +58,10 @@ from src.tui.components.chat_transcript.commands import (
     BindHistoryDAO,
     ClearTranscriptDAO,
     BeginTranscriptRunDAO,
-    ShowPendingSteeringDAO,
     MountTreeOutputDAO,
 )
+from src.tui.components.queued_messages.component import QueuedMessagesComponent
+from src.tui.components.queued_messages.commands import ClearQueuedDAO, ShowQueuedDAO
 from src.tui.components.workflow_progress.component import WorkflowProgressComponent
 from src.tui.components.workflow_progress.events import ConfirmAbortDAO
 from src.tui.components.prompt_input.component import PromptInputComponent
@@ -80,9 +90,7 @@ from src.tui.editor_launcher import EditorLauncher
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
 from src.tui.widgets.assistant_stream_thinking_block import AssistantStreamThinkingBlock
 from src.tui.widgets.literal_text_static import LiteralTextStatic
-from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
-from src.tui.widgets.steering_pending_block import SteeringPendingBlock
 from src.tui.widgets.sub_agent_fleet_panel import SubAgentFleetPanel
 from src.tui.widgets.tool_execution_block import ToolExecutionBlock
 from src.tui.widgets.tree_html_exporter import TreeHtmlExporter
@@ -92,7 +100,7 @@ from src.tui.widgets.usage_status_bar import UsageStatusBar
 from src.tui.widgets.user_message_block import UserMessageBlock
 from src.tui.workflows.dao import (
     ChildAbortTargetDAO,
-    HandleAdvanceOutcomeDAO,
+    DetachedWorkflowUiEffectDAO,
     LiveWorkflowLabelDAO,
     ProgressViewportDAO,
     SessionProgressSnapshotDAO,
@@ -177,7 +185,6 @@ class _DeliveryInitialization:
     session_id: str
     owner_id: str
     lease_store: Optional[SessionOwnershipLeaseStore]
-    inbox_store: Optional[SessionInboxStore]
     service: Optional[DetachedWorkflowAppService]
     renderer: Optional[DetachedWorkflowRenderer]
 
@@ -192,7 +199,6 @@ After this grace, the TUI cancels the asyncio task outright, raising
 
 _SESSION_LEASE_TTL_SECONDS: float = 30.0
 _SESSION_LEASE_HEARTBEAT_SECONDS: float = 10.0
-_SESSION_INBOX_POLL_SECONDS: float = 1.0
 
 _SUB_AGENT_NOTICE_STATUSES: dict[str, str] = {
     "sub_agent_spawned": "spawned",
@@ -275,7 +281,6 @@ class SloTUI(App):
         self,
         *,
         session: SloAgentSession,
-        inbox_store: Optional[SessionInboxStore] = None,
         lease_store: Optional[SessionOwnershipLeaseStore] = None,
         workflow_handle_store: Optional[WorkflowHandleStore] = None,
         browser_host: Optional[BrowserHost] = None,
@@ -286,6 +291,7 @@ class SloTUI(App):
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
         path_reader: Optional[PathSuggestionReader] = None,
         editor_launcher: Optional[EditorLauncher] = None,
+        channel_gateway: Optional[ChannelGateway] = None,
     ) -> None:
         """Compose the TUI around a pre-built session.
 
@@ -297,8 +303,6 @@ class SloTUI(App):
 
         Args:
             session (SloAgentSession): The in-process session to drive.
-            inbox_store (Optional[SessionInboxStore]): Optional injected inbox
-                store for tests. ``None`` uses the session history root.
             lease_store (Optional[SessionOwnershipLeaseStore]): Optional injected
                 lease store for tests. ``None`` uses the session history root.
             workflow_handle_store (Optional[WorkflowHandleStore]): Optional
@@ -313,6 +317,10 @@ class SloTUI(App):
             workflow_service_factory: Optional real-service composition boundary.
             workflow_coordinator_factory: Optional coordinator composition boundary;
                 defaults to the production coordinator with the app-owned sink.
+            channel_gateway (Optional[ChannelGateway]): Optional injected channel
+                gateway (108.1). ``None`` opens the shared ``channels.db``
+                gateway at mount; the app owns the gateway's lifecycle in both
+                cases.
         """
         super().__init__()
         self._session_factory = session_factory
@@ -348,7 +356,12 @@ class SloTUI(App):
         self._herdr_successor_suppressed: bool = False
         self._replacement_delivery_safe: bool = True
         self._delivery_quiescing: bool = False
-        self._attach_pool_to_session(session=self._session)
+        # The gateway object exists from construction so the session tools
+        # (``send_message``, 108.4) bind to it; it is opened on mount.
+        self._channel_gateway: Optional[ChannelGateway] = (
+            channel_gateway if channel_gateway is not None else ChannelGateway.at_default_path()
+        )
+        self._attach_pool_to_session(session=self._session, channel_gateway=self._channel_gateway)
         self._chat_transcript: ChatTranscriptComponent = ChatTranscriptComponent(
             history_reader=self._session.hydrate_transcript_entries
         )
@@ -362,10 +375,6 @@ class SloTUI(App):
         self._in_flight_task: Optional[asyncio.Task[None]] = None
         self._prompt_submission_lock: asyncio.Lock = asyncio.Lock()
         """Serializes ordinary-prompt acceptance and run-completion handoff only."""
-        self._queued_prompt_text: Optional[str] = None
-        """One-deep latest-wins ordinary text not yet accepted as a user turn."""
-        self._queued_prompt_block: Optional[QueuedPromptBlock] = None
-        """Mounted visual counterpart of ``_queued_prompt_text``, when mounted."""
         self._spinner: Optional[ThinkingSpinner] = None
         self._path_suggestions = PathSuggestionController(
             view=self, reader=path_reader, run_worker=self.run_worker
@@ -393,11 +402,15 @@ class SloTUI(App):
         # and unclosed for that exact identity.
         self._workflow_observation_session_id: Optional[str] = None
         self._workflow_renderer: Optional[DetachedWorkflowRenderer] = None
-        self._inbox_store: Optional[SessionInboxStore] = inbox_store
         self._lease_store: Optional[SessionOwnershipLeaseStore] = lease_store
         self._session_owner_id: str = SessionOwnershipLeaseStore.default_owner_id()
         self._lease_timer: Optional[Timer] = None
-        self._inbox_timer: Optional[Timer] = None
+        self._channel_adapter: Optional[TuiChannelAdapter] = None
+        self._queued_refresh_timer: Optional[Timer] = None
+        self._queued_refresh_failure_reported: bool = False
+        self._queued_rows_snapshot: Callable[[], Awaitable[tuple[list[ChannelMessageDAO], bool]]] = (
+            self._read_queue_snapshot
+        )
         self._failed_delivery_timers: tuple[Timer, ...] = ()
 
     def compose(self) -> ComposeResult:
@@ -416,6 +429,9 @@ class SloTUI(App):
                 yield self._suggestion_menu
             self._input = PromptInputComponent()
             yield self._input
+            # Queued prompts: below the input, hidden while the queue is empty (108.1 §5.5).
+            self._queued_messages = QueuedMessagesComponent()
+            yield self._queued_messages
             # Workflow progress: below PromptInputComponent, hidden while it has no rows.
             # The orchestrator transcript always stays in the foreground.
             self._workflow_progress = WorkflowProgressComponent(host=self)
@@ -657,6 +673,11 @@ class SloTUI(App):
                 classes="tool-result",
             )
         )
+        hint_line: Optional[str] = ctrl_enter_hint_line()
+        if hint_line is not None:
+            await self._chat_transcript.handle(
+                command=TranscriptNoticeDAO(content=hint_line, classes="tool-result")
+            )
         await session.mark_startup_notice_shown()
 
     @staticmethod
@@ -874,10 +895,16 @@ class SloTUI(App):
         report is admitted after shutdown begins; the joins reuse the retained
         mount/replacement tasks outside ``_prompt_submission_lock`` and the one
         shielded observation close task — no second shutdown owner is created.
+        Channel delivery (108.1) stops first so the session participant closes
+        before presentation pruning.
         """
         self._app_closing = True
         self._delivery_quiescing = True
         self._session.begin_external_reporting_close()
+        try:
+            await self._stop_channel_delivery(reason="session_closed")
+        except Exception as exc:  # noqa: BLE001 — shutdown must continue
+            log_error(msg=f"channel delivery shutdown failed: {exc}")
         if self._mount_runtime_task is not None:
             await HerdrTaskJoin.wait(task=self._mount_runtime_task)
         if self._session_replacement_task is not None:
@@ -998,25 +1025,33 @@ class SloTUI(App):
         self._retired_herdr_session = None
 
     async def _initialize_mounted_delivery(self) -> None:
-        """Retain mount-owned filesystem work under the submission gate."""
+        """Start channel delivery, then retain mount-owned filesystem work."""
+        await self._start_channel_delivery()
         async with self._prompt_submission_lock:
             await self._finish_replacement_runtime()
+        await self._announce_recovered_queue_pause()
+        await self._announce_recovered_channel_database()
 
     async def _initialize_session_delivery(self) -> None:
-        """Contain partial startup before mount or replacement continues."""
-        if self._lease_timer is not None or self._inbox_timer is not None:
+        """Contain partial startup before mount or replacement continues.
+
+        Session delivery is the ownership lease (and its heartbeat timer) plus
+        the workflow observation reconcile; prompts and every other message
+        travel through the channel queue (108.6).
+        """
+        if self._lease_timer is not None:
             return
         session = self._session
         owner_id = self._session_owner_id
         self._delivery_quiescing = True
-        if not self._replacement_delivery_safe or not self._session_supports_inbox_delivery():
+        if not self._replacement_delivery_safe or not self._session_is_history_backed():
             return
         try:
             self._build_session_delivery(session=session)
         except Exception:
             await self._rollback_session_delivery(session=session, owner_id=owner_id, timers=())
             await self._write_lifecycle_notice(
-                content="Session inbox unavailable; local prompts remain available.", classes="tool-result"
+                content="Session lease unavailable; local prompts remain available.", classes="tool-result"
             )
             return
         binding = _DeliveryInitialization(
@@ -1024,7 +1059,6 @@ class SloTUI(App):
             session_id=session.session_id,
             owner_id=owner_id,
             lease_store=self._lease_store,
-            inbox_store=self._inbox_store,
             service=self._workflow_app_service,
             renderer=self._workflow_renderer,
         )
@@ -1033,7 +1067,7 @@ class SloTUI(App):
             await self._prepare_session_delivery(binding=binding)
             if binding.service is not None:
                 self._publish_delivery_timers(binding=binding, timers=timers)
-        except Exception:
+        except Exception as exc:
             await self._rollback_session_delivery(
                 session=session,
                 owner_id=owner_id,
@@ -1041,7 +1075,11 @@ class SloTUI(App):
                 timers=tuple(timers),
             )
             await self._write_lifecycle_notice(
-                content="Session inbox unavailable; local prompts remain available.",
+                content=(
+                    "Session is open in another TUI; this window does not run its queue."
+                    if isinstance(exc, SessionOwnedElsewhereError)
+                    else "Session lease unavailable; local prompts remain available."
+                ),
                 classes="tool-result",
             )
 
@@ -1086,7 +1124,7 @@ class SloTUI(App):
         WHAT: When rollback runs for a binding whose captured service is still
             the app's published observation service, the whole captured
             coordinator → service → sink trio is closed and the panel reset
-            once, in the canonical teardown order, so a failed inbox/timer setup
+            once, in the canonical teardown order, so a failed lease/timer setup
             never orphans a live reader the app can no longer reach. When any
             successor binding (rebind, adoption or an earlier close) displaced
             the capture, nothing is touched: a displaced successor owns its own
@@ -1123,13 +1161,11 @@ class SloTUI(App):
         """
         if not self._runtime_may_start(session=session):
             return
-        if not self._session_supports_inbox_delivery():
+        if not self._session_is_history_backed():
             return
         history_root: Path = cast(Path, self._session.history_root)
         if self._lease_store is None:
             self._lease_store = SessionOwnershipLeaseStore(history_root=history_root)
-        if self._inbox_store is None:
-            self._inbox_store = SessionInboxStore(history_root=history_root)
 
     def _require_initialization_binding(self, *, binding: _DeliveryInitialization) -> None:
         """Reject any displaced collaborator before continuing initialization.
@@ -1145,7 +1181,6 @@ class SloTUI(App):
             and binding.session.session_id == binding.session_id
             and self._session_owner_id == binding.owner_id
             and self._lease_store is binding.lease_store
-            and self._inbox_store is binding.inbox_store
             and self._workflow_app_service is binding.service
             and self._workflow_renderer is binding.renderer
         ):
@@ -1158,7 +1193,7 @@ class SloTUI(App):
             binding (_DeliveryInitialization): Captured session, lease owner and
                 delivery collaborators, revalidated after each awaited boundary.
         """
-        if binding.service is None or binding.inbox_store is None:
+        if binding.service is None:
             return
         await binding.service.reconcile_snapshot()
         self._require_initialization_binding(binding=binding)
@@ -1166,11 +1201,9 @@ class SloTUI(App):
         self._require_initialization_binding(binding=binding)
         if lease.session_id != binding.session_id or lease.owner_id != binding.owner_id:
             raise RuntimeError("Session lease unavailable")
-        await binding.inbox_store.ensure_session_inbox(session_id=binding.session_id)
-        self._require_initialization_binding(binding=binding)
 
     def _publish_delivery_timers(self, *, binding: _DeliveryInitialization, timers: list[Timer]) -> None:
-        """Publish both timers only while the captured lifetime remains open.
+        """Publish the lease heartbeat timer only while the captured lifetime remains open.
 
         Args:
             binding (_DeliveryInitialization): Captured lifetime whose preparation
@@ -1184,7 +1217,6 @@ class SloTUI(App):
         self._require_initialization_binding(binding=binding)
         for slot, interval, callback in (
             ("_lease_timer", _SESSION_LEASE_HEARTBEAT_SECONDS, self._renew_session_lease),
-            ("_inbox_timer", _SESSION_INBOX_POLL_SECONDS, self._poll_session_inbox),
         ):
             timer = self.set_interval(interval=interval, callback=callback)
             timers.append(timer)
@@ -1219,7 +1251,7 @@ class SloTUI(App):
             (``_history_backed_workflow_service``). The mount-time handle store is
             reused across ``/new`` because the replacement session copies the old
             session's ``history_root``.
-        WHO: ``on_mount`` before inbox delivery, and ``/new`` session adoption.
+        WHO: ``on_mount`` before lease delivery, and ``/new`` session adoption.
         WHEN: Once per owning session, so no rows, caches or timers cross sessions.
         """
         await self._close_workflow_observation()
@@ -1337,7 +1369,7 @@ class SloTUI(App):
                 supplier and child-abort seams (with or without history) and, when
                 history-backed, handle store and history adapter.
         """
-        history_backed: bool = self._session_supports_inbox_delivery()
+        history_backed: bool = self._session_is_history_backed()
         if history_backed and self._workflow_handle_store is None:
             self._workflow_handle_store = WorkflowHandleStore(
                 history_root=cast(Path, self._session.history_root)
@@ -1380,20 +1412,18 @@ class SloTUI(App):
             Optional[DetachedWorkflowAppService]: The bound service for a
                 history-backed session, else ``None``.
         """
-        if not self._session_supports_inbox_delivery():
+        if not self._session_is_history_backed():
             return None
         return self._workflow_app_service
 
-    def _session_supports_inbox_delivery(self) -> bool:
-        """Return whether this TUI session should expose inbox delivery.
+    def _session_is_history_backed(self) -> bool:
+        """Return whether this TUI session has on-disk history (lease and workflow handles).
 
-        In-memory / no-history sessions cannot join the inbox delivery path:
-        the session inbox is a filesystem-backed, cross-process queue that is
-        colocated with the session history tree. The scheduler and detached
-        workflow runners enqueue from *other* processes by writing message
-        files under ``<history_root>/<session_id>/inbox/``, so this session is
-        only reachable when it has BOTH ``history_enabled`` set to ``True``
-        AND an on-disk ``Path`` history root for those writers to target.
+        The ownership lease (``owner.json``) and the durable workflow handles
+        live in the session's history tree, so only a session with BOTH
+        ``history_enabled`` set to ``True`` AND an on-disk ``Path`` history
+        root holds a lease the scheduler can see, or gets durable workflow
+        launch effects. Channel delivery itself does not depend on history.
 
         Returns:
             bool: True when history is enabled and rooted on disk.
@@ -1445,190 +1475,32 @@ class SloTUI(App):
             owner_id=self._session_owner_id,
         )
 
-    async def _poll_session_inbox(self) -> None:
-        """Claim and process at most one inbox item only when the app is idle.
-
-        WHAT: Serializes inbox claim/start with local prompt acceptance and drain.
-        WHO: The mounted TUI's inbox timer calls it at its existing interval.
-        WHEN: It runs for the TUI lifetime; it never holds the gate during a model run.
-        """
-        if self._inbox_store is None:
-            return
-        async with self._prompt_submission_lock:
-            await self._claim_and_handle_idle_inbox_message()
-
-    async def _claim_and_handle_idle_inbox_message(self) -> None:
-        """Claim, handle, and acknowledge one inbox item under the prompt gate.
-
-        WHAT: Leaves the inbox untouched when a local or prior inbox task is active.
-        WHO: ``_poll_session_inbox`` calls it while owning the submission gate.
-        WHEN: The inbox timer finds a configured store.
-        """
-        if self._inbox_store is None or not self._inbox_delivery_may_start():
-            return
-        session: SloAgentSession = self._session
-        store: SessionInboxStore = self._inbox_store
-        message: Optional[SessionInboxMessageDAO] = await store.claim_next(session_id=session.session_id)
-        if message is None:
-            return
-        if self._session is not session or not self._inbox_delivery_may_start():
-            await self._notice_retained_inbox_claim()
-            return
-        if not await self._handle_inbox_message(message=message):
-            await self._notice_retained_inbox_claim()
-            return
-        await store.ack(session_id=session.session_id, message_id=message.message_id)
-
-    async def _notice_retained_inbox_claim(self) -> None:
-        """Report deferred admission without private content or disposition changes."""
-        await self._write_lifecycle_notice(
-            content="Inbox delivery deferred during shutdown; claimed item retained.",
-            classes="tool-result",
-        )
-
-    def _inbox_delivery_may_start(self) -> bool:
-        """Return delivery authority under the caller-owned submission gate."""
-        return (
-            not self._app_closing
-            and not self._session_transitioning
-            and not self._delivery_quiescing
-            and self._replacement_delivery_safe
-            and self._in_flight_task is None
-        )
-
-    async def _handle_inbox_message(self, *, message: SessionInboxMessageDAO) -> bool:
-        """Route one claimed inbox item according to its delivery mode.
-
-        Workflow lifecycle messages (spec 57.a.5) additionally advance the
-        durable workflow handle before their delivery-mode rendering runs, so
-        `/workflows` state stays truthful regardless of the delivery mode.
-
-        Args:
-            message (SessionInboxMessageDAO): Claimed inbox item.
-        """
-        if not self._inbox_delivery_may_start():
-            return False
-        session = self._session
-        await self._advance_workflow_handle_state(message=message)
-        if self._session is not session or not self._inbox_delivery_may_start():
-            return False
-        if message.delivery_mode == "ui_notice":
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content=self._format_inbox_notice(message=message),
-                    classes="tool-result",
-                )
-            )
-            return True
-        if message.delivery_mode == "transcript_note":
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content=self._format_inbox_note(message=message),
-                    classes="tool-result",
-                )
-            )
-            return True
-        if message.delivery_mode == "context_note":
-            await self._deliver_context_note(message=message)
-            return True
-        return await self._start_inbox_chat_turn(message=message)
-
-    async def _deliver_context_note(self, *, message: SessionInboxMessageDAO) -> None:
-        """Render a context note AND persist it into model context (spec 57.a.4).
-
-        Writes the ``⊛`` transcript line, then persists one ``workflow_update``
-        history event via ``SloAgentSession.record_workflow_update`` — no LLM
-        call happens. Persistence is idempotent on ``message_id``, so a
-        re-claimed message (claim → crash → re-claim) renders again but is
-        recorded at most once.
-
-        Args:
-            message (SessionInboxMessageDAO): Claimed ``context_note`` item.
-        """
-        if self._chat_transcript is not None:
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content=f"⊛ {message.title or message.kind}: {message.text}",
-                    classes="sub-agent-notice",
-                )
-            )
-        await self._session.record_workflow_update(
-            text=message.text,
-            message_id=message.message_id,
-            workflow_id=str((message.payload or {}).get("workflow_id", "wf-unknown")),
-        )
-
-    @staticmethod
-    def _format_inbox_notice(*, message: SessionInboxMessageDAO) -> str:
-        """Return the transcript line for a UI notice inbox item.
-
-        Args:
-            message (SessionInboxMessageDAO): Inbox item under rendering.
-
-        Returns:
-            str: Rendered notice text.
-        """
-        title: str = message.title or message.kind.replace("_", " ")
-        return f"[scheduled notice] {title}: {message.text}"
-
-    @staticmethod
-    def _format_inbox_note(*, message: SessionInboxMessageDAO) -> str:
-        """Return the transcript line for a transcript-note inbox item.
-
-        Args:
-            message (SessionInboxMessageDAO): Inbox item under rendering.
-
-        Returns:
-            str: Rendered note text.
-        """
-        title: str = message.title or message.kind.replace("_", " ")
-        return f"[scheduled update] {title}: {message.text}"
-
-    async def _start_inbox_chat_turn(self, *, message: SessionInboxMessageDAO) -> bool:
-        """Submit one claimed inbox item as a real chat turn.
-
-        Called while the caller holds ``_prompt_submission_lock`` (see
-        ``_claim_and_handle_idle_inbox_message``), so the machine turn's task
-        creation is atomic with local prompt acceptance. A machine turn never
-        enters the user queue: it must not call ``_queue_prompt``,
-        the component's accepted-prompt recall, or ``_echo_user_line``.
-
-        Args:
-            message (SessionInboxMessageDAO): Claimed inbox item.
-        """
-        if not self._inbox_delivery_may_start():
-            return False
-        await self._chat_transcript.handle(
-            command=TranscriptNoticeDAO(
-                content=self._format_inbox_note(message=message),
-                classes="tool-result",
-            )
-        )
-        return self._register_prompt_task(text=message.text)
-
     # ---- Detached-workflow receive path (spec 57.a.5) ----------------------
 
-    async def _advance_workflow_handle_state(self, *, message: SessionInboxMessageDAO) -> None:
-        """Delegate one claimed inbox message to the workflow app service.
+    async def _advance_workflow_lifecycle(self, *, message: ChannelMessageDAO) -> None:
+        """Keep workflow handle lifecycle truthful when another participant's row arrives (57.a.5).
 
-        The app passes the raw kind/payload to the service exactly once;
-        every durable and UI decision rides back in the typed
-        ``HandleAdvanceOutcomeDAO``. The renderer executes the typed effects
-        (including terminal ``reset_launch_guard`` effects) — the app never
-        parses workflow payloads, mutates durable state, branches on
-        terminal fields, or launches windows.
+        WHAT: For a row the TUI's own user did not send (a workflow's started
+            note, fleet notice or terminal prompt), the app service reconciles
+            the durable handles from each orchestrator's self-report and the
+            renderer executes the resulting typed effects: the live-label cache
+            behind the exit hint, the resume-case visualizer launch, and the
+            terminal launch-guard reset. The app never parses row text.
+        WHO: ``TuiDisplaySink.show`` after a note/notice is displayed and
+            ``TuiTurnRunner.run`` before a prompt row runs.
+        WHEN: Once per displayed or run row; the operator's own prompts skip it.
 
         Args:
-            message (SessionInboxMessageDAO): Claimed inbox item.
+            message (ChannelMessageDAO): The displayed or about-to-run row.
         """
-        service: Optional[DetachedWorkflowAppService] = self._workflow_app_service
-        if service is None:
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is not None and adapter.is_sent_by_operator(message=message):
             return
-        outcome: HandleAdvanceOutcomeDAO = await service.advance_from_inbox_message(
-            kind=message.kind,
-            payload=message.payload,
-        )
-        self._ensure_workflow_renderer().apply_effects(effects=outcome.effects)
+        service: Optional[DetachedWorkflowAppService] = self._history_backed_workflow_service()
+        if service is None or self._chat_transcript is None:
+            return
+        effects: list[DetachedWorkflowUiEffectDAO] = await service.advance_from_reconciliation()
+        self._ensure_workflow_renderer().apply_effects(effects=effects)
 
     def _ensure_workflow_renderer(self) -> DetachedWorkflowRenderer:
         """Return the workflow renderer, composing it lazily on first use.
@@ -1868,124 +1740,312 @@ class SloTUI(App):
             # on ``session.is_running``.
             await self._dispatch_slash_command(line=text)
             return
-        await self._submit_or_queue_prompt(text=text)
+        await self._submit_or_queue_prompt(text=text, force=event.force)
 
-    async def _submit_or_queue_prompt(self, *, text: str) -> None:
-        """Accept an idle ordinary prompt or replace the one held behind a run.
+    async def _submit_or_queue_prompt(self, *, text: str, force: bool = False) -> None:
+        """Record an ordinary prompt and enqueue it as a channel queue row (108.1).
 
-        WHAT: Makes the app's task check and its consequent state transition atomic.
-        WHO: ``on_prompt_input_component_submitted`` calls it for non-slash non-empty input.
-        WHEN: Runs at operator submission time; it does not hold the lock during a run.
+        WHAT: Replaces the one-deep held-prompt slot: every ordinary prompt is
+        accepted immediately and sent through the TUI channel adapter; the
+        session's channel poller runs the rows in order. A forced submission
+        (108.2, Ctrl+Enter) stamps the row so it joins the current run at its
+        next safe boundary instead of waiting for the run to end.
+        WHO: ``on_prompt_input_component_submitted`` calls it for non-slash
+        non-empty input.
+        WHEN: At operator submission time; it never blocks on a running turn.
 
         Args:
             text (str): Normalized ordinary prompt text.
+            force (bool): True marks the row forced (108.2).
         """
         if self._app_closing or self._session_transitioning:
             return
-        if self._session.preparation_status != "ready":
+        model_preparation_is_pending: bool = self._session.preparation_status != "ready"
+        if self._input is not None:
+            await self._input.handle(command=RecordAcceptedPromptDAO(text=text))
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
             if self._chat_transcript is not None:
                 await self._chat_transcript.handle(
                     command=TranscriptNoticeDAO(
-                        content="Model preparation required; use /auth or /model refresh.",
+                        content="Channel delivery unavailable; prompt not queued.",
                         classes="tool-result",
                     )
                 )
             return
-        async with self._prompt_submission_lock:
-            if self._app_closing or self._session_transitioning:
-                return
-            if self._in_flight_task is not None:
-                await self._queue_prompt(text=text)
-                return
-            await self._start_accepted_prompt(text=text)
-
-    async def _start_accepted_prompt(self, *, text: str) -> None:
-        """Record, echo, and start one already-admitted ordinary prompt.
-
-        WHAT: Converts text from either idle input or completion drain into a real
-        user turn and starts the single app task.
-        WHO: The submission and completion-handoff methods call it while holding
-        ``_prompt_submission_lock``.
-        WHEN: Only after the caller has established that no other app task may start.
-
-        Args:
-            text (str): Accepted text to persist through the normal session invoke path.
-        """
-        if self._app_closing or self._session_transitioning:
+        try:
+            await adapter.send_prompt(text=text, force=force)
+        except Exception as exc:  # noqa: BLE001 — a failed enqueue must not lose the text
+            if self._input is not None:
+                await self._input.handle(command=ReplacePromptDAO(text=text))
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=f"(channel send failed: {exc})",
+                        classes="tool-result",
+                    )
+                )
             return
-        if self._input is not None:
-            await self._input.handle(command=RecordAcceptedPromptDAO(text=text))
-        await self._chat_transcript.handle(command=EchoUserDAO(text=text))
-        self._register_prompt_task(text=text)
+        await self._refresh_queued_display()
+        if model_preparation_is_pending:
+            await self._write_lifecycle_notice(
+                content="Model preparation required; use /auth or /model refresh.",
+                classes="tool-result",
+            )
 
-    def _register_prompt_task(self, *, text: str) -> bool:
-        """Commit prompt admission under the caller-owned submission lock.
+    async def _send_forced_slash_prompt(self, *, text: str) -> None:
+        """Enqueue one slash-command forced message (``/steer`` / ``/force``, 108.2).
 
-        No rendering, callback or suspension may separate the closing check from
-        task registration. Already registered runs retain their execution policy.
+        The row is sent like any forced send (``force=True``), so it joins the
+        current run at its next safe boundary, or runs at once when the agent
+        is idle. A channel-delivery failure shows a notice and keeps the text
+        in the prompt buffer.
 
         Args:
-            text (str): Accepted prompt text, never logged by this gate.
+            text (str): The forced message body from the slash command.
+        """
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Channel delivery unavailable; forced message not queued.",
+                        classes="tool-result",
+                    )
+                )
+            return
+        try:
+            await adapter.send_prompt(text=text, force=True)
+        except Exception as exc:  # noqa: BLE001 — a locked/corrupt DB must not lose the text
+            if self._input is not None:
+                await self._input.handle(command=ReplacePromptDAO(text=text))
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content=f"(channel send failed: {exc})",
+                        classes="tool-result",
+                    )
+                )
+
+    # ---- Channel delivery (108.1) ------------------------------------------
+
+    @property
+    def channel_adapter(self) -> Optional[TuiChannelAdapter]:
+        """Return the TUI channel adapter when channel delivery is active.
 
         Returns:
-            bool: Whether the app registered the task before shutdown.
+            Optional[TuiChannelAdapter]: The adapter started at mount, or
+                ``None`` when startup failed (the transcript shows a notice).
         """
-        if self._app_closing or self._session_transitioning:
-            return False
-        self._in_flight_task = asyncio.create_task(coro=self._run_prompt(text=text))
-        return True
+        return self._channel_adapter
 
-    async def _queue_prompt(self, *, text: str) -> None:
-        """Store the newest held text and mount or update its one visible block.
+    async def _start_channel_delivery(self) -> None:
+        """Open the gateway and start the TUI adapter (the session poller starts later).
 
-        WHAT: Applies one-deep latest-wins policy without creating a user turn.
-        WHO: ``_submit_or_queue_prompt`` calls it under the submission gate.
-        WHEN: An ordinary prompt arrives while an app-owned run task is active.
+        The session poller starts only after the session's exclusive lease is
+        held (``_start_owned_channel_poller`` from ``_finish_replacement_runtime``,
+        108.1 §6). Startup failure leaves the TUI usable with a notice instead
+        of killing the mount (mirrors the lease startup posture).
+        """
+        if self._channel_adapter is not None:
+            return
+        try:
+            if self._channel_gateway is None:
+                self._channel_gateway = ChannelGateway.at_default_path()
+            await self._channel_gateway.open()
+            adapter: TuiChannelAdapter = TuiChannelAdapter(app=self, gateway=self._channel_gateway)
+            await adapter.start()
+            self._channel_adapter = adapter
+            # Queued-list refresh: every poll tick while non-empty (108.1 §5.5).
+            self._queued_refresh_timer = self.set_interval(
+                interval=0.5, callback=self._refresh_queued_display
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not block the TUI
+            log_error(msg=f"channel delivery startup failed: {exc}")
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="Channel queue unavailable; prompts stay local.",
+                        classes="tool-result",
+                    )
+                )
+
+    async def _start_owned_channel_poller(self, *, session: SloAgentSession) -> None:
+        """Start the session's poller only while this app holds its exclusive lease (108.1 §6).
+
+        WHAT: A history-backed session (one another TUI could resume) runs its
+            queue only after ``_initialize_session_delivery`` acquired the
+            exclusive ``owner.json`` lease and published its heartbeat, so two
+            TUIs never run the same row; a session another live TUI owns starts
+            no poller. When the poller fails to start, the lease claim is
+            unwound (heartbeat stopped, lease released) so the scheduler stops
+            treating this window as the session's live queue owner.
+        WHO: ``_finish_replacement_runtime``, for the initial mount and every
+            replacement, after session delivery initialization.
 
         Args:
-            text (str): Newest ordinary prompt text.
+            session (SloAgentSession): Session whose queue the poller serves.
         """
-        if self._app_closing or self._session_transitioning:
+        if session.channel_poller is not None or not self._holds_session_ownership():
             return
-        self._queued_prompt_text = text
-        if self._queued_prompt_block is not None:
-            self._queued_prompt_block.replace_text(text=text)
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        try:
+            if self._channel_gateway is None:
+                self._channel_gateway = ChannelGateway.at_default_path()
+            await self._channel_gateway.open()
+            await session.start_channel_delivery(
+                gateway=self._channel_gateway,
+                runner=TuiTurnRunner(app=self),
+                operator_participant_id=(adapter.user_participant.id if adapter is not None else None),
+                display=TuiDisplaySink(
+                    transcript=self._chat_transcript, observer=self._advance_workflow_lifecycle
+                ),
+                durable_inbox=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken queue must not block the TUI
+            log_error(msg=f"channel delivery startup failed: {exc}")
+            if self._session_is_history_backed():
+                self._delivery_quiescing = True
+                self._stop_delivery_timers()
+                await self._release_replaced_session_lease(session=session)
+            await self._write_lifecycle_notice(
+                content="Channel queue unavailable; prompts stay local.", classes="tool-result"
+            )
+
+    def _holds_session_ownership(self) -> bool:
+        """Return whether this app may run the selected session's queue.
+
+        A session without durable history cannot be resumed by another TUI,
+        so it needs no lease. A history-backed one is owned only while this
+        app's lease heartbeat is published (acquired and revalidated by
+        ``_initialize_session_delivery``).
+
+        Returns:
+            bool: ``True`` when the poller may start for the selected session.
+        """
+        if not self._session_is_history_backed():
+            return True
+        return self._lease_timer is not None and not self._delivery_quiescing
+
+    async def _read_queue_snapshot(self) -> tuple[list[ChannelMessageDAO], bool]:
+        """Return the pending rows and paused flag from the live poller.
+
+        Returns:
+            tuple[list[ChannelMessageDAO], bool]: The pending rows and the
+                poller's paused state; empty and False without delivery.
+        """
+        poller = self._session.channel_poller
+        if poller is None:
+            return ([], False)
+        return (await poller.pending_prompts(), poller.paused is not None)
+
+    async def _refresh_queued_display(self) -> None:
+        """Push the current queue snapshot into the queued-messages component.
+
+        Called after every local send, on poller state change, and every poll
+        tick while non-empty (108.1 §5.5).
+        """
+        component = self._queued_messages
+        if component is None:
             return
-        await self._mount_queued_prompt_block(text=text)
+        try:
+            rows, paused = await self._queued_rows_snapshot()
+        except Exception as exc:  # noqa: BLE001 — a queue read must not crash a timer or mutation flow
+            log_error(msg=f"queued prompt refresh failed: {exc}")
+            if not self._queued_refresh_failure_reported:
+                self._queued_refresh_failure_reported = True
+                await self._write_lifecycle_notice(
+                    content="Queued prompts could not be refreshed; queue delivery may still have changed.",
+                    classes="tool-result",
+                )
+            return
+        self._queued_refresh_failure_reported = False
+        if not rows:
+            component.handle(command=ClearQueuedDAO())
+            return
+        component.handle(command=ShowQueuedDAO(rows=rows, paused=paused))
 
-    async def _mount_queued_prompt_block(self, *, text: str) -> None:
-        """Mount the visible held-prompt block directly above the prompt input.
-
-        WHAT: Anchors the block as a ``#chat-shell`` child immediately before
-        ``PromptInputComponent`` — outside the scroll region, so it stays visible while
-        the transcript scrolls and window eviction can never reach it.
-        WHO: ``_queue_prompt`` calls it only for an empty visual slot.
-        WHEN: The first ordinary busy submission fills the one-deep queue.
+    async def on_queued_messages_component_cancel_requested(
+        self, event: QueuedMessagesComponent.CancelRequested
+    ) -> None:
+        """Cancel one queued row on the operator's cancel affordance.
 
         Args:
-            text (str): Text to render in the new queued-prompt block.
+            event (QueuedMessagesComponent.CancelRequested): The cancel request
+                carrying the queued row's id.
         """
-        if self._chat_shell is None or self._input is None:
+        event.stop()
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
             return
-        block: QueuedPromptBlock = QueuedPromptBlock(text=text)
-        await self._chat_shell.mount(block, before=self._input)
-        self._queued_prompt_block = block
+        try:
+            await adapter.cancel(message_id=event.message_id)
+        except Exception as exc:  # noqa: BLE001 — a locked DB must not kill the TUI
+            log_error(msg=f"queued row cancel failed: {exc}")
+            await self._write_lifecycle_notice(
+                content="Queued prompt cancellation failed; the prompt may still be pending.",
+                classes="tool-result",
+            )
+        await self._refresh_queued_display()
 
-    async def _remove_queued_prompt_block(self) -> None:
-        """Remove the current queue block and release its tracked reference.
+    async def _announce_recovered_queue_pause(self) -> None:
+        """Show the recovery pause notice when the poller started paused.
 
-        WHAT: Keeps the block registered until its asynchronous Textual removal is
-        complete, then clears the tracked slot-block reference.
-        WHO: ``_start_queued_prompt_if_idle`` and the clear path call it under the
-        submission gate.
-        WHEN: Immediately before a held prompt becomes an echoed user turn, or when
-        ``/clear``/an allowed ``/new`` discards the held prompt.
+        Runs after the mount presentation refresh so the notice survives the
+        mount-time transcript hydration that resets recorded lines.
         """
-        block: Optional[QueuedPromptBlock] = self._queued_prompt_block
-        if block is None:
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        poller = self._session.channel_poller
+        if adapter is None or poller is None or poller.paused != "recovered":
             return
-        await block.remove()
-        self._queued_prompt_block = None
+        if self._chat_transcript is None:
+            return
+        pending_count: int = len([row for row in await adapter.queued() if row.message_type == "prompt"])
+        await self._chat_transcript.handle(
+            command=TranscriptNoticeDAO(
+                content=(
+                    f"(channel queue paused after restart — {pending_count} queued "
+                    "prompt(s) held; /queue resume to continue)"
+                ),
+                classes="tool-result",
+            )
+        )
+
+    async def _announce_recovered_channel_database(self) -> None:
+        """Tell the operator when startup preserved a corrupt channel database.
+
+        WHAT: Renders a fixed recovery notice naming the preserved database copy.
+        WHO: ``_initialize_mounted_delivery`` calls this after startup and queue recovery.
+        WHEN: Once the gateway opened a fresh queue in place of a corrupt database.
+        """
+        gateway: Optional[ChannelGateway] = self._channel_gateway
+        recovery_path: Optional[Path] = gateway.recovery_path if gateway is not None else None
+        if recovery_path is None:
+            return
+        await self._write_lifecycle_notice(
+            content=(
+                "The channel queue database was corrupt; a fresh queue is active. "
+                f"The preserved database is {recovery_path.name}."
+            ),
+            classes="tool-result",
+        )
+
+    async def _stop_channel_delivery(self, *, reason: str) -> None:
+        """Stop the session poller, the adapter, and close the shared gateway.
+
+        Args:
+            reason (str): Cancellation reason recorded on pending rows, e.g.
+                ``session_closed``.
+        """
+        await self._session.stop_channel_delivery(reason=reason)
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        self._channel_adapter = None
+        if adapter is not None:
+            await adapter.stop()
+        gateway: Optional[ChannelGateway] = self._channel_gateway
+        self._channel_gateway = None
+        if gateway is not None:
+            await gateway.close()
 
     # ---- Actions ----------------------------------------------------------
 
@@ -1998,6 +2058,22 @@ class SloTUI(App):
         WHO: Textual invokes it for the ``ctrl+c`` key binding.
         WHEN: Whenever the operator presses ``^C`` while the TUI is mounted.
         """
+        if self._channel_poller_busy():
+            self._session.abort()
+            poller = self._session.channel_poller
+            if poller is not None:
+                poller.pause(reason="aborted")
+            self._escalate_abort()
+            if self._app_closing:
+                return
+            if self._chat_transcript is not None:
+                await self._chat_transcript.handle(
+                    command=TranscriptNoticeDAO(
+                        content="(aborting… queued prompts held — /queue resume to continue)",
+                        classes="tool-result",
+                    )
+                )
+            return
         if self._in_flight_task is None:
             self.exit()
             return
@@ -2005,35 +2081,22 @@ class SloTUI(App):
         self._escalate_abort()
         if self._app_closing:
             return
-        await self._announce_queued_prompt_survival()
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(
                 command=TranscriptNoticeDAO(content="(aborting…)", classes="tool-result")
             )
 
-    async def _announce_queued_prompt_survival(self) -> None:
-        """Explain that an abort retains the held prompt when one exists.
+    def _channel_poller_busy(self) -> bool:
+        """Return whether the channel poller currently owns a run (108.1).
 
-        WHAT: Writes one operator-facing notice without changing queue/task state.
-        WHO: ``action_interrupt`` and ``_dispatch_slash_command`` call it after an
-        abort has been requested.
-        WHEN: Only while a user-held prompt remains queued behind the aborted run.
+        Returns:
+            bool: True while the session's channel poller is executing a run.
         """
-        if self._queued_prompt_text is None:
-            return
-        if self._chat_transcript is not None:
-            await self._chat_transcript.handle(
-                command=TranscriptNoticeDAO(
-                    content=(
-                        "(queued prompt held — it will run next; resubmit to replace it, "
-                        "/clear to drop it)"
-                    ),
-                    classes="tool-result",
-                )
-            )
+        poller = self._session.channel_poller
+        return poller is not None and poller.busy
 
     def _escalate_abort(self) -> None:
-        """Schedule a hard cancel of the in-flight task after the abort grace.
+        """Schedule a hard cancel of the in-flight run after the abort grace.
 
         ``session.abort()`` is cooperative — it is only observed between
         agent graph stream items, so a run wedged inside a single hung tool
@@ -2043,15 +2106,40 @@ class SloTUI(App):
 
         The exact task is captured now and bound into the timer callback, so
         a run that aborts cooperatively and is replaced by a fresh prompt
-        within the grace window is never cancelled by this escalation.
+        within the grace window is never cancelled by this escalation. A
+        channel-poller run is bound the same way (108.2 §6: an aborted run's
+        escalation must never kill a later run, e.g. one started by
+        ``/queue resume``).
         """
         task: Optional[asyncio.Task[None]] = self._in_flight_task
-        if task is None:
+        if task is not None:
+            self.set_timer(
+                _ABORT_HARD_CANCEL_GRACE_SECONDS,
+                lambda: self._hard_cancel_task(task=task),
+            )
+            return
+        poller = self._session.channel_poller
+        channel_run_task: Optional[asyncio.Task] = poller.current_run_task if poller is not None else None
+        if channel_run_task is None:
             return
         self.set_timer(
             _ABORT_HARD_CANCEL_GRACE_SECONDS,
-            lambda: self._hard_cancel_task(task=task),
+            lambda: self._hard_cancel_channel_run_task(task=channel_run_task),
         )
+
+    def _hard_cancel_channel_run_task(self, *, task: asyncio.Task) -> None:
+        """Hard-cancel the exact channel run captured at abort time (108.2 §6).
+
+        Fired by the abort-grace timer. Cancels only the task that was in
+        flight when the abort was requested; a run started later (for example
+        by ``/queue resume`` after a cooperative abort) is never cancelled.
+
+        Args:
+            task (asyncio.Task): The channel run task captured at abort time.
+        """
+        if task.done():
+            return
+        task.cancel()
 
     def _hard_cancel_task(self, *, task: asyncio.Task[None]) -> None:
         """Cancel a specific in-flight task when its cooperative abort did not land.
@@ -2165,12 +2253,11 @@ class SloTUI(App):
         return service.live_workflow_labels()
 
     async def action_clear(self) -> None:
-        """Clear transcript state and discard any held ordinary prompt.
+        """Clear transcript state.
 
         WHAT: Removes visible transcript children and clears their app-owned state.
         WHO: The Ctrl+L binding and slash-command result dispatch call it.
-        WHEN: It may run while an agent task remains active; that task continues, but
-        the held next prompt is intentionally discarded.
+        WHEN: It may run while an agent task remains active; that task continues.
         """
         async with self._prompt_submission_lock:
             await self._clear_transcript_and_prompt_queue()
@@ -2178,13 +2265,12 @@ class SloTUI(App):
     async def _clear_transcript_and_prompt_queue(self) -> None:
         """Perform clear mutations while the prompt-submission gate is held.
 
-        WHAT: Drops queued prompt state before removing all transcript children, then
-        executes the existing projector/window/reset behavior.
+        WHAT: Executes the projector/window/reset behavior. Channel-queued
+        prompts (108.1) live in the shared queue, not the transcript; they are
+        managed with ``/queue`` (108.1 M2), never by ``/clear``.
         WHO: ``action_clear`` and an allowed ``_start_new_session`` call it.
-        WHEN: Runs only under ``_prompt_submission_lock`` to avoid a drain/clear race.
+        WHEN: Runs only under ``_prompt_submission_lock``.
         """
-        self._queued_prompt_text = None
-        await self._remove_queued_prompt_block()
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(command=ClearTranscriptDAO())
 
@@ -2309,6 +2395,7 @@ class SloTUI(App):
         Args:
             line (str): The full input line including the leading slash.
         """
+        queue_edit_original_draft: Optional[str] = self._input.text if self._input is not None else None
         if self._input is not None:
             await self._input.handle(command=HideSuggestionsDAO())
         self._reset_escape_sequence()
@@ -2361,12 +2448,11 @@ class SloTUI(App):
             return
         if result.abort_run:
             self._escalate_abort()
-            await self._announce_queued_prompt_survival()
-        if result.steer_pending_message is not None:
-            assert self._chat_transcript is not None
-            await self._chat_transcript.handle(
-                command=ShowPendingSteeringDAO(message=result.steer_pending_message)
-            )
+        if result.forced_prompt_text is not None:
+            await self._send_forced_slash_prompt(text=result.forced_prompt_text)
+        queue_result: Optional[str] = await self._apply_queue_command_intent(
+            result=result, original_draft=queue_edit_original_draft
+        )
         if result.render_tree is not None:
             await self._mount_tree_viewer(tree=result.render_tree, tree_format=result.tree_format)
         git_diff_path: Optional[str] = result.git_diff_path if isinstance(result.git_diff_path, str) else None
@@ -2381,10 +2467,11 @@ class SloTUI(App):
         if tui_visibility is not None:
             await self._apply_workflow_list_visibility(request=tui_visibility)
             return
-        if result.rendered is not None:
+        rendered: Optional[str] = queue_result if queue_result is not None else result.rendered
+        if rendered is not None:
             if self._chat_transcript is not None:
                 await self._chat_transcript.handle(
-                    command=TranscriptNoticeDAO(content=result.rendered, classes="tool-result")
+                    command=TranscriptNoticeDAO(content=rendered, classes="tool-result")
                 )
         self._apply_workflow_command_result(result=result)
         if result.refresh_title:
@@ -2404,6 +2491,84 @@ class SloTUI(App):
             self._push_auth_modal()
         if result.should_exit:
             self.exit()
+
+    async def _apply_queue_command_intent(
+        self, *, result: SlashCommandResultDAO, original_draft: Optional[str]
+    ) -> Optional[str]:
+        """Cancel selected pending prompts or restore one in the editor.
+
+        WHAT: Applies queue command intent through the poller and TUI adapter,
+            retaining the original prompt row in channel history.
+        WHO: ``_dispatch_slash_command`` calls this for every slash outcome.
+        WHEN: After slash dispatch and before the command result is rendered.
+
+        Args:
+            result (SlashCommandResultDAO): The slash router's command outcome.
+
+        Returns:
+            Optional[str]: A queue result line, or ``None`` when no queue effect exists.
+        """
+        if (
+            result.queue_cancel_position is None
+            and not result.queue_cancel_all
+            and result.queue_edit_position is None
+        ):
+            return None
+        poller = self._session.channel_poller
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if poller is None or adapter is None:
+            return "channel queue is not running"
+        try:
+            pending: list[ChannelMessageDAO] = await poller.pending_prompts()
+            if result.queue_cancel_all:
+                cancelled_count: int = 0
+                for pending_message in pending:
+                    if await adapter.cancel(message_id=pending_message.id):
+                        cancelled_count += 1
+                await self._refresh_queued_display()
+                return f"(cancelled {cancelled_count} queued prompt(s))"
+            return await self._cancel_selected_queue_prompt(
+                result=result,
+                adapter=adapter,
+                pending=pending,
+                original_draft=original_draft,
+            )
+        except Exception as exc:  # noqa: BLE001 — queue mutation errors are operator-visible, not fatal
+            log_error(msg=f"queue command mutation failed: {exc}")
+            await self._refresh_queued_display()
+            return "Queue update failed; pending prompts may have changed. Check /queue before retrying."
+
+    async def _cancel_selected_queue_prompt(
+        self,
+        *,
+        result: SlashCommandResultDAO,
+        adapter: TuiChannelAdapter,
+        pending: list[ChannelMessageDAO],
+        original_draft: Optional[str],
+    ) -> str:
+        """Cancel one queued prompt and avoid overwriting a newer editor draft."""
+        position: Optional[int] = result.queue_edit_position
+        if position is None:
+            position = result.queue_cancel_position
+        if position is None:
+            raise RuntimeError("Queue mutation outcome has no row position.")
+        if position > len(pending):
+            return f"(row {position} is already running or no longer pending)"
+        queued_message: ChannelMessageDAO = pending[position - 1]
+        if not await adapter.cancel(message_id=queued_message.id):
+            return f"(row {position} is already running or no longer pending)"
+        if result.queue_edit_position is not None:
+            if self._input is not None and self._input.text == original_draft:
+                await self._input.handle(command=ReplacePromptDAO(text=queued_message.message_contents))
+            else:
+                await self._refresh_queued_display()
+                return (
+                    f"(row {position} cancelled; your draft changed, so its queued text was not restored)\n"
+                    f"Copy this text to recover it:\n{queued_message.message_contents}"
+                )
+        await self._refresh_queued_display()
+        action: str = "restored for editing" if result.queue_edit_position is not None else "cancelled"
+        return f"(row {position} {action})"
 
     def _schedule_editor_launch(self, *, argument: str) -> None:
         """Capture the session before background validation without blocking prompt input.
@@ -2621,7 +2786,8 @@ class SloTUI(App):
     async def _transfer_replacement_delivery(self, *, old_session: SloAgentSession) -> None:
         """Release the captured old binding before establishing any successor lease.
 
-        WHAT: Stops delivery timers and releases the old inbox lease. The old
+        WHAT: Stops the old session's channel delivery (108.1), stops delivery
+            timers and releases the old session lease. The old
             owner's workflow observation stays bound until predecessor retirement;
             ``_finish_replacement_commit`` closes it before adoption through the canonical
             coordinator → service → sink → panel teardown so no rows, caches
@@ -2632,17 +2798,21 @@ class SloTUI(App):
             old_session (SloAgentSession): Predecessor captured before adoption.
         """
         self._delivery_quiescing = True
+        try:
+            await old_session.stop_channel_delivery(reason="session_closed")
+        except Exception as exc:  # noqa: BLE001 — replacement must continue
+            log_error(msg=f"channel delivery stop on /new failed: {exc}")
         self._stop_delivery_timers()
         await self._release_replaced_session_lease(session=old_session)
         self._workflow_renderer = None
 
     def _stop_delivery_timers(self, *, timers: Optional[tuple[Timer, ...]] = None) -> None:
-        """Stop captured handles; omitted input selects normal teardown's current pair.
+        """Stop captured handles; omitted input selects normal teardown's current lease timer.
 
         Args:
             timers: Exact init-owned handles, or None for selected-owner teardown.
         """
-        selected = (self._lease_timer, self._inbox_timer) if timers is None else timers
+        selected = (self._lease_timer,) if timers is None else timers
         retained = self._failed_delivery_timers
         timers_to_stop = tuple(dict.fromkeys((*retained, *selected) if timers is None else selected))
         failed: list[Timer] = [timer for timer in retained if timer not in timers_to_stop]
@@ -2655,11 +2825,10 @@ class SloTUI(App):
                 self._replacement_delivery_safe = False
                 failed.append(timer)
             else:
-                for slot in ("_lease_timer", "_inbox_timer"):
-                    if getattr(self, slot) is timer:
-                        setattr(self, slot, None)
+                if self._lease_timer is timer:
+                    self._lease_timer = None
         # Failed startup permanently disables subsequent timer creation, bounding
-        # retained initialization resources to its two original handles.
+        # retained initialization resources to its original handle.
         self._failed_delivery_timers = tuple(failed)
 
     async def _release_replaced_session_lease(
@@ -2702,7 +2871,7 @@ class SloTUI(App):
         except Exception:
             self._replacement_delivery_safe = False
             await self._write_lifecycle_notice(
-                content="Previous inbox lease could not be released; new inbox disabled.",
+                content="Previous session lease could not be released; new session lease disabled.",
                 classes="tool-result",
             )
         if cancellation is not None:
@@ -2766,6 +2935,9 @@ class SloTUI(App):
             await self._initialize_session_delivery()
         except Exception:
             await self._rollback_session_delivery(session=session, owner_id=self._session_owner_id)
+        if not self._runtime_may_start(session=session):
+            return
+        await self._start_owned_channel_poller(session=session)
         if not self._runtime_may_start(session=session):
             return
         try:
@@ -2832,7 +3004,7 @@ class SloTUI(App):
             )
             if candidate.history_root != self._session.history_root:
                 raise ValueError("Replacement history root must remain unchanged")
-            self._attach_pool_to_session(session=candidate)
+            self._attach_pool_to_session(session=candidate, channel_gateway=self._channel_gateway)
             if requested_name is not None:
                 await candidate.rename_session(session_name=requested_name)
             return candidate
@@ -3074,6 +3246,31 @@ class SloTUI(App):
         """
         return self.push_screen(screen=screen, callback=on_closed)
 
+    def progress_composer_for(self, *, key: WorkflowSessionKeyDAO) -> Optional["AgentComposerComponent"]:
+        """Build the agent composer for one workflow session key (108.3 §5, 108.4).
+
+        The orchestrator's own row targets the orchestrator with normal sends
+        by default; a child row targets that child and sends forced by default,
+        because a child runs one task and takes no follow-up turns. Without
+        channel delivery there is nothing to send through.
+
+        Args:
+            key (WorkflowSessionKeyDAO): Session row being opened.
+
+        Returns:
+            Optional[AgentComposerComponent]: A composer bound to the running
+                TUI channel adapter targeting the row's agent, or ``None``.
+        """
+        adapter: Optional[TuiChannelAdapter] = self._channel_adapter
+        if adapter is None:
+            return None
+        return AgentComposerComponent(
+            target_agent_id=channel_participant_id_for_session(session_id=key.session_id),
+            target_label="orchestrator" if key.is_parent else f"child {key.session_id[:8]}",
+            adapter=adapter,
+            default_force=not key.is_parent,
+        )
+
     def present_confirmation(
         self, *, screen: AbortConfirmationScreen, on_closed: Callable[[Optional[bool]], None]
     ) -> None:
@@ -3159,7 +3356,7 @@ class SloTUI(App):
 
         if self._app_closing or self._session_transitioning:
             return
-        if self._delivery_quiescing and self._session_supports_inbox_delivery():
+        if self._delivery_quiescing and self._session_is_history_backed():
             return
         if not VisualizerLauncher._auto_visualize_enabled():
             return
@@ -3216,7 +3413,7 @@ class SloTUI(App):
         if (
             self._app_closing
             or self._session_transitioning
-            or (self._delivery_quiescing and self._session_supports_inbox_delivery())
+            or (self._delivery_quiescing and self._session_is_history_backed())
             or self._session is not session
         ):
             return
@@ -3233,7 +3430,7 @@ class SloTUI(App):
         if (
             self._app_closing
             or self._session_transitioning
-            or (self._delivery_quiescing and self._session_supports_inbox_delivery())
+            or (self._delivery_quiescing and self._session_is_history_backed())
             or self._session is not session
         ):
             return
@@ -3270,7 +3467,9 @@ class SloTUI(App):
     # ---- Session and pool management ---------------------------------------
 
     @staticmethod
-    def _attach_pool_to_session(*, session: SloAgentSession) -> None:
+    def _attach_pool_to_session(
+        *, session: SloAgentSession, channel_gateway: Optional[ChannelGateway] = None
+    ) -> None:
         """Promote ``session`` to orchestrator mode via the shared bootstrapper.
 
         Delegates to ``OrchestratorSessionBootstrap.attach`` — the single
@@ -3281,12 +3480,14 @@ class SloTUI(App):
 
         Args:
             session (SloAgentSession): Session to promote to orchestrator mode.
+            channel_gateway (Optional[ChannelGateway]): The app's shared queue
+                gateway (opened on mount); binds ``send_message`` (108.4).
         """
         from src.agents.slo_agent.orchestrator.bootstrap import (  # noqa: PLC0415
             OrchestratorSessionBootstrap,
         )
 
-        OrchestratorSessionBootstrap.attach(session=session)
+        OrchestratorSessionBootstrap.attach(session=session, channel_gateway=channel_gateway)
 
     @staticmethod
     def _build_replacement_session_config(*, old_session: SloAgentSession) -> SessionConfigDAO:
@@ -3312,15 +3513,17 @@ class SloTUI(App):
         )
 
     async def _run_prompt(self, *, text: str) -> None:
-        """Drain ``session.invoke`` to completion.
+        """Drain ``session.invoke`` to completion for an app-owned legacy run.
 
-        WHAT: Renders one run's stream events, surfaces failures inline, and
-        hands off to any held queued prompt from its ``finally``.
-        WHO: ``_start_accepted_prompt`` and ``_start_inbox_chat_turn`` schedule
-        it as the single app-owned run task.
-        WHEN: Once per accepted user turn or claimed inbox chat turn; success,
-        provider failure, cooperative abort, and hard cancellation all reach
-        the same terminal cleanup.
+        WHAT: Renders one run's stream events and surfaces failures inline.
+        Every production run goes through the channel poller and
+        ``TuiTurnRunner`` (108.1); 108.6 deleted the inbox ``chat_turn``
+        bridge, the last producer of this app-owned run path.
+        WHO: No production caller remains; direct callers are the rendering
+        regression tests that still drive this path (follow-up: move them to
+        ``TuiTurnRunner`` and delete it with ``_in_flight_task``).
+        WHEN: Success, provider failure, cooperative abort, and hard
+        cancellation all reach the same terminal cleanup.
 
         Args:
             text (str): The user prompt.
@@ -3362,52 +3565,20 @@ class SloTUI(App):
             await self._finish_prompt_run()
 
     async def _finish_prompt_run(self) -> None:
-        """Atomically hand off a completed run to its queued successor.
+        """Release the app run guard after a legacy app-owned run ends.
 
-        WHAT: Keeps the completed task as the app run guard until the queue is
-        consumed or the app becomes idle.
+        WHAT: Marks the app idle; the channel poller owns ordinary queued
+        prompts now, so there is no held-prompt handoff.
         WHO: ``_run_prompt`` calls it as its final cleanup step.
-        WHEN: Runs after successful, failed, aborted, or cancelled prompt runs.
+        WHEN: Runs after successful, failed, aborted, or cancelled legacy runs.
         """
         completed_task: Optional[asyncio.Task[None]] = self._in_flight_task
         if completed_task is None or completed_task is not asyncio.current_task():
             return
 
         async with self._prompt_submission_lock:
-            tracked_task: Optional[asyncio.Task[None]] = self._in_flight_task
-            if tracked_task is None or tracked_task is not completed_task:
-                return
-            await self._start_queued_prompt_if_idle(completed_task=tracked_task)
-
-    async def _start_queued_prompt_if_idle(
-        self,
-        *,
-        completed_task: asyncio.Task[None],
-    ) -> None:
-        """Consume the held prompt or mark the completed app run idle.
-
-        WHAT: Removes and starts the held prompt before releasing app task ownership.
-        WHO: ``_finish_prompt_run`` calls it while holding the submission gate.
-        WHEN: Immediately after the tracked run reaches its terminal cleanup.
-
-        Args:
-            completed_task (asyncio.Task[None]): The finished run task that must
-                still own the app run guard for the handoff to proceed.
-        """
-        if self._in_flight_task is not completed_task:
-            return
-        if self._app_closing or self._session_transitioning:
-            self._in_flight_task = None
-            return
-
-        text: Optional[str] = self._queued_prompt_text
-        if text is None:
-            self._in_flight_task = None
-            return
-
-        self._queued_prompt_text = None
-        await self._remove_queued_prompt_block()
-        await self._start_accepted_prompt(text=text)
+            if self._in_flight_task is completed_task:
+                self._in_flight_task = None
 
     async def _refresh_context_window_after_prompt(self) -> None:
         """Refresh durable Context Window Snapshot exactly once at prompt cleanup."""

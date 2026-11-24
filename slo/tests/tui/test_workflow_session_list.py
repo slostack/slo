@@ -24,6 +24,7 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
+from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.screen import ModalScreen
 from textual.theme import Theme
@@ -39,7 +40,6 @@ from src.tui.components.workflow_progress.adapters.workflow_progress import Work
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.slash_router import SlashCommandResultDAO
 from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
-from src.tui.widgets.queued_prompt_block import QueuedPromptBlock
 from src.tui.widgets.sub_agent_fleet_panel import FleetSessionList, SubAgentFleetPanel
 from src.tui.widgets.sub_agent_fleet_row import SubAgentFleetRow
 from src.tui.widgets.usage_status_bar import UsageStatusBar
@@ -803,70 +803,20 @@ class TestProgressSelection:
             await _settle(app=app, pilot=pilot)
 
             [screen] = _progress_screens(app=app)
+            box_content: Region = screen.query_one("#progress-box").content_region
             for button in screen.query(Button):
                 assert button.region.height >= 1
                 assert button.region.right <= width and button.region.bottom <= height
+                # Unclipped and topmost: a click at its centre reaches this button.
+                assert box_content.contains_region(button.region), button.id
+                center_x: int = button.region.x + button.region.width // 2
+                center_y: int = button.region.y + button.region.height // 2
+                assert screen.get_widget_at(center_x, center_y)[0] is button, button.id
             assert len(app.query(SubAgentFleetPanel)) == 1
             assert len(app.query(UsageStatusBar)) == 1
             await pilot.click("#minimize")
             await _settle(app=app, pilot=pilot)
             assert _progress_screens(app=app) == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
-    @pytest.mark.parametrize(
-        ("width", "height"), [(60, 20), (80, 24), (120, 40)], ids=["60x20", "80x24", "120x40"]
-    )
-    async def test_queue_stays_above_input_with_list_and_modal(
-        self, tmp_path: Path, theme: Theme, width: int, height: int
-    ) -> None:
-        """With the list showing, the queue sits above the input and survives a modal round trip."""
-        session: SloAgentSession = _build_session(workdir=tmp_path)
-        app: SloTUI = SloTUI(session=session)
-        invoke_log: list[str] = []
-        release: asyncio.Event = asyncio.Event()
-
-        with patch.object(
-            target=session, attribute="invoke", new=_recording_invoke(invoke_log=invoke_log, release=release)
-        ):
-            async with app.run_test(size=(width, height)) as pilot:
-                app.theme = theme.name
-                panel: SubAgentFleetPanel = await _populated_app(app=app, pilot=pilot, children=3)
-                await _submit_prompt(app=app, pilot=pilot, text="first")
-                await _submit_prompt(app=app, pilot=pilot, text="queued second")
-                await _settle(app=app, pilot=pilot)
-
-                assert app._input is not None
-                [queued] = list(app.query(QueuedPromptBlock))
-                usage: UsageStatusBar = app.query_one(UsageStatusBar)
-                assert invoke_log == ["first"]
-                assert len(app.query(SubAgentFleetPanel)) == 1
-                assert queued.region.height >= 1
-                assert queued.region.bottom <= app._input.region.y
-                assert panel.region.y >= app._input.region.bottom
-                assert usage.region.y >= panel.region.bottom
-                assert usage.region.height >= 1 and usage.region.bottom <= height
-
-                app.post_message(
-                    SubAgentFleetPanel.SessionSelected(
-                        key=_row_widget(app=app, session_id="child-00").row.key
-                    )
-                )
-                await _settle(app=app, pilot=pilot)
-                assert len(_progress_screens(app=app)) == 1
-                await pilot.press("escape")
-                await _settle(app=app, pilot=pilot)
-
-                assert _progress_screens(app=app) == []
-                assert list(app.query(QueuedPromptBlock)) == [queued]
-                assert app._queued_prompt_text == "queued second"
-                assert invoke_log == ["first"]
-                release.set()
-                await pump_until(
-                    pilot=pilot,
-                    predicate=lambda: app._in_flight_task is None and app._queued_prompt_text is None,
-                )
-                assert invoke_log == ["first", "queued second"]
 
 
 class TestProgressLifecycleEdges:

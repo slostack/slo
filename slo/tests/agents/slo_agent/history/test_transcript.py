@@ -62,6 +62,24 @@ class TestBuildEntries:
 
         assert entries == [TranscriptEntryDAO(kind="user", content="(steer) wait")]
 
+    def test_external_sender_steering_message_is_labelled(self) -> None:
+        """108.2: a forced row from an external sender is labelled on replay."""
+        events = [
+            _event(
+                kind="steering_message",
+                payload=SessionHistoryEventPayloadDAO(
+                    content="deploy to staging",
+                    metadata={"sender_name": "orchestrator wf-12"},
+                ),
+            ),
+        ]
+
+        entries = ReplayEntryProjector.build_entries(events=events)
+
+        assert entries == [
+            TranscriptEntryDAO(kind="user", content="(steer) [orchestrator wf-12] deploy to staging")
+        ]
+
     def test_lifecycle_only_events_produce_no_entries(self) -> None:
         events = [_event(kind="run_started"), _event(kind="run_completed")]
 

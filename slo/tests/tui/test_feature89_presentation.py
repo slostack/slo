@@ -480,7 +480,7 @@ async def test_admitted_jev_picker_keyboard_and_cropped_paint(
         await pilot.pause()
         assert session.active_model_name == ROUTE
         assert session._catalog_snapshot is not None
-        assert session._catalog_snapshot.entries[ROUTE].runtime_profile.max_tokens == 4096
+        assert session._catalog_snapshot.entries[ROUTE].runtime_profile.max_tokens == 8192
 
 
 @pytest.mark.parametrize("size", [(60, 20), (120, 40)])

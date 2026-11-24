@@ -124,13 +124,16 @@ async def test_new_prepare_retains_mounted_owner(tmp_path: Path, failure: str) -
             assert app._input._prompt_history is history
             assert tuple(app._chat_transcript._transcript_content.children)[: len(children)] == children
             assert await app._lease_store.read(session_id=old.session_id) == lease
-            assert old.sub_agent_pool is pool and not pool._sealed
+            assert old.sub_agent_pool is pool and old.sub_agent_pool.admission_state().name == "OPEN"
             assert not old._herdr_closing
             for candidate in built:
                 assert candidate.session_id != old.session_id
                 assert candidate._herdr_closing
                 assert candidate.sub_agent_pool is not pool
-                assert candidate.sub_agent_pool is not None and candidate.sub_agent_pool._sealed
+                assert (
+                    candidate.sub_agent_pool is not None
+                    and candidate.sub_agent_pool.admission_state().name == "CLOSED"
+                )
             async for _event in old.invoke(text="prove retained session"):
                 pass
             await pilot.pause()
@@ -207,7 +210,7 @@ async def test_new_prepared_policy_is_independent(
             assert app._session.session_name == requested_name
             assert app._render_event not in old._subscribers
             assert app._render_event in app._session._subscribers
-            assert old.sub_agent_pool is not None and not old.sub_agent_pool._sealed
+            assert old.sub_agent_pool is not None and old.sub_agent_pool.admission_state().name == "OPEN"
 
 
 @pytest.mark.parametrize("pool_present", [False, True])
@@ -257,7 +260,7 @@ async def test_candidate_cleanup_joins_repeated_cancellation(
 
         with (
             patch.object(app, "_attach_pool_to_session", side_effect=attach),
-            patch.object(SubAgentPool, "abort_and_drain", side_effect=drain),
+            patch.object(SubAgentPool, "close_and_drain", side_effect=drain),
             patch.object(NullHerdrReporter, "close", new=close),
             patch.object(app._chat_transcript, "handle", side_effect=RuntimeError("notice defect")),
         ):
@@ -276,7 +279,7 @@ async def test_candidate_cleanup_joins_repeated_cancellation(
                 await task
             await candidates[0].dispose_unmounted_session()
         assert drains == (["pool"] if pool_present else [])
-        assert not old_pool._sealed and not old._herdr_closing
+        assert old_pool.admission_state().name == "OPEN" and not old._herdr_closing
         assert app._candidate_cleanup_task is None
 
 

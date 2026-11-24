@@ -26,6 +26,7 @@ from src.agents.slo_agent.orchestrator.dao import (
     ChildAbortRequestDAO,
     ExecutionIndexDAO,
     OrchestratorResultDAO,
+    PoolAdmissionState,
     SubAgentResultDAO,
     SubAgentTaskDAO,
 )
@@ -519,23 +520,24 @@ class TestAbortChildRefusals:
         _assert_projections_agree(harness=harness, winner=winner)
 
     async def test_closing_pool_without_accepted_task_is_unavailable(self, tmp_path: Path) -> None:
-        """A sealed (closing) pool refuses new targeted work with unavailable."""
+        """A closed pool refuses new targeted work with unavailable."""
         harness = _PoolHarness(tmp_path=tmp_path)
         fleet = _ChildFleet()
         with patch("asyncio.create_subprocess_exec", new=fleet.spawn), patch(_REAP_SEAM, new=fleet.reap):
             dispatch = harness.dispatch(session_ids=["child-1"])
             await _until(_running(harness=harness, session_id="child-1"))
-            harness.pool._sealed = True
+            fleet.children[0].exit()
+            closing = asyncio.create_task(harness.pool.close_and_drain())
+            await _until(lambda: harness.pool.admission_state() is PoolAdmissionState.CLOSED)
 
             outcome = await _bounded(harness.pool.abort_child(request=_request(harness=harness)))
 
             assert outcome.outcome == "unavailable"
-            assert fleet.reaped_pids == []
-            fleet.children[0].exit()
-            await _bounded(dispatch)
+            await _bounded(asyncio.gather(closing, dispatch))
+        assert fleet.reaped_pids == []
 
-    def test_capability_reports_identity_and_accepting_until_sealed(self, tmp_path: Path) -> None:
-        """The typed capability accessor carries composed identity; sealing withdraws it."""
+    async def test_capability_reports_identity_and_accepting_until_closed(self, tmp_path: Path) -> None:
+        """The typed capability accessor carries composed identity; only a close withdraws it."""
         harness = _PoolHarness(tmp_path=tmp_path)
 
         capability = harness.pool.child_control_capability()
@@ -545,8 +547,39 @@ class TestAbortChildRefusals:
             _PARENT,
         )
         assert capability.accepting is True
-        harness.pool._sealed = True
+        await harness.pool.abort_dispatches()
+        assert harness.pool.child_control_capability().accepting is True  # a turn abort keeps it
+        await harness.pool.close_and_drain()
         assert harness.pool.child_control_capability().accepting is False
+
+    async def test_child_abort_accepted_while_an_episode_drains(self, tmp_path: Path) -> None:
+        """A targeted abort stays accepting during a turn abort's DRAINING episode."""
+        harness = _PoolHarness(tmp_path=tmp_path)
+        fleet = _ChildFleet()
+        gate = asyncio.Event()
+
+        async def gated_cancel() -> list[SubAgentProcess]:
+            await gate.wait()
+            return []
+
+        with (
+            patch("asyncio.create_subprocess_exec", new=fleet.spawn),
+            patch(_IDENTITY_SEAM, return_value="matching"),
+            patch(_REAP_SEAM, new=fleet.reap),
+            patch.object(harness.pool, "_cancel_snapshot", new=gated_cancel),
+        ):
+            dispatch = harness.dispatch(session_ids=["child-1"])
+            await _until(_running(harness=harness, session_id="child-1"))
+            aborting = asyncio.create_task(harness.pool.abort_dispatches())
+            await _until(lambda: harness.pool.admission_state() is PoolAdmissionState.DRAINING)
+
+            outcome = await _bounded(harness.pool.abort_child(request=_request(harness=harness)))
+
+            assert outcome.outcome == "aborted"
+            gate.set()
+            await _bounded(aborting)
+            await _bounded(dispatch)
+        assert harness.pool.admission_state() is PoolAdmissionState.OPEN
 
     def test_history_root_is_the_composed_root(self, tmp_path: Path) -> None:
         """The runner binds its child-control store to the pool's own history root."""
@@ -588,7 +621,7 @@ class TestAbortChildExecution:
         assert harness.terminal_kinds(session_id="child-1") == ["sub_agent_aborted"]
         assert fleet.reaped_pids == []
         assert sibling.results[0].status == "completed"
-        assert harness.pool._sealed is False
+        assert harness.pool.admission_state() is PoolAdmissionState.OPEN
 
     async def test_running_child_only(self, tmp_path: Path) -> None:
         """Exactly the target is reaped once; the sibling completes; pool stays dispatchable."""
@@ -626,7 +659,7 @@ class TestAbortChildExecution:
         assert results["child-2"].status == "completed"
         _assert_projections_agree(harness=harness, winner=results["child-1"])
         assert harness.terminal_kinds(session_id="child-1") == ["sub_agent_aborted"]
-        assert harness.pool._sealed is False
+        assert harness.pool.admission_state() is PoolAdmissionState.OPEN
         assert later.results[0].status == "completed"
 
     async def test_waiting_caller_cancellation_keeps_owned_cancellation(self, tmp_path: Path) -> None:
@@ -827,7 +860,7 @@ class TestAbortChildRaces:
             first, second = _request(harness=harness), _request(harness=harness)
             first_caller = asyncio.create_task(harness.pool.abort_child(request=first))
             second_caller = asyncio.create_task(harness.pool.abort_child(request=second))
-            whole_abort = asyncio.create_task(harness.pool.abort_and_drain())
+            whole_abort = asyncio.create_task(harness.pool.abort_dispatches())
             await _until(lambda: len(harness.pool._child_abort_tasks) == 1)
             for _ in range(3):
                 await asyncio.sleep(0)
@@ -841,11 +874,11 @@ class TestAbortChildRaces:
         assert (first_outcome.outcome, first_outcome.request_id) == ("aborted", first.request_id)
         assert (second_outcome.outcome, second_outcome.request_id) == ("aborted", second.request_id)
         assert harness.terminal_kinds(session_id="child-1") == ["sub_agent_aborted"]
-        assert harness.pool._sealed is True
+        assert harness.pool.admission_state() is PoolAdmissionState.OPEN
         _assert_projections_agree(harness=harness, winner=winner)
 
-    async def test_sealed_pool_joins_accepted_task_and_refuses_unaccepted(self, tmp_path: Path) -> None:
-        """After a whole abort seals the pool, a new request joins the accepted task; others are unavailable."""
+    async def test_closed_pool_joins_accepted_task_and_refuses_unaccepted(self, tmp_path: Path) -> None:
+        """After a close, a new request joins the accepted task; others are unavailable."""
         harness = _PoolHarness(tmp_path=tmp_path)
         fleet = _ChildFleet()
         release = asyncio.Event()
@@ -869,8 +902,8 @@ class TestAbortChildRaces:
             first_caller = asyncio.create_task(harness.pool.abort_child(request=first))
             await _until(lambda: len(harness.pool._child_abort_tasks) == 1)
             accepted_task = next(iter(harness.pool._child_abort_tasks.values()))
-            whole_abort = asyncio.create_task(harness.pool.abort_and_drain())
-            await _until(lambda: harness.pool._sealed)
+            whole_abort = asyncio.create_task(harness.pool.close_and_drain())
+            await _until(lambda: harness.pool.admission_state() is PoolAdmissionState.CLOSED)
 
             second = _request(harness=harness)
             second_caller = asyncio.create_task(harness.pool.abort_child(request=second))

@@ -28,7 +28,7 @@ def test_jev_unknown_output_and_reasoning_projection() -> None:
     assert entry.availability == "available"
     assert entry.visible_in_picker is True
     assert entry.runtime_profile.model_dump() == {
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "context_window": 1000000,
         "streaming": True,
         "requests_per_minute": 20,
@@ -159,10 +159,10 @@ def test_unknown_output_still_requires_other_evidence(changes: dict[str, object]
 @pytest.mark.parametrize(
     "context,ceiling,expected",
     [
-        (1000000, None, 4096),
+        (1000000, None, 8192),
         (1000000, 1, 1),
         (1000000, 2048, 2048),
-        (1000000, 8192, 4096),
+        (1000000, 8192, 8192),
         (2, None, 1),
         (1000, None, 500),
     ],
@@ -387,3 +387,80 @@ def test_convert_when_reasoning_control_evidence_is_incomplete_remains_conservat
     assert entry.reasoning_profile.default_level == expected_default
     assert entry.capabilities is not None
     assert entry.capabilities.reasoning_controls_available is controls_available
+
+
+@pytest.mark.parametrize(
+    ("reported_ceiling", "context_window", "expected"),
+    [
+        (131_072, 1_048_576, 64_000),
+        (393_216, 1_048_576, 64_000),
+        (64_000, 1_048_576, 64_000),
+        (64_001, 1_048_576, 64_000),
+        (63_999, 1_048_576, 63_999),
+        (8_192, 1_000_000, 8_192),
+        (300, 1_000_000, 300),
+        (1, 1_000_000, 1),
+        (131_072, 100_000, 50_000),
+        (131_072, 128_000, 64_000),
+        (1_000_001, 1_048_576, 64_000),
+        (100_000_000, 10_000_000, 64_000),
+        (None, 1_048_576, 8_192),
+        (None, 1_000, 500),
+        (None, 2, 1),
+        (None, 20_000, 8_192),
+        (4_096, 1_000, 500),
+    ],
+    ids=[
+        "glm-above-budget",
+        "deepseek-above-budget",
+        "exact-budget",
+        "one-above-budget",
+        "one-below-budget",
+        "small-reported",
+        "tiny-reported",
+        "minimal-reported",
+        "half-context-bound",
+        "budget-and-half-context-tie",
+        "ceiling-above-one-million",
+        "ceiling-far-above-one-million-wide-context",
+        "absent-ceiling",
+        "absent-narrow-context",
+        "absent-minimum-context",
+        "absent-at-fallback-context",
+        "reported-below-budget-half-context-wins",
+    ],
+)
+def test_default_output_budget_applies_reported_ceiling_agent_cap_and_half_context(
+    reported_ceiling: int | None, context_window: int, expected: int
+) -> None:
+    """The public budget rule trusts valid evidence up to the agent cap and half context."""
+    assert (
+        OpenRouterCatalogConverter.default_output_budget(
+            reported_ceiling=reported_ceiling,
+            context_window=context_window,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "reported_ceiling",
+    [True, False, 0, -1, 10.5, "64000"],
+    ids=["true", "false", "zero", "negative", "float", "string"],
+)
+def test_default_output_budget_when_ceiling_is_invalid_uses_unreported_fallback(
+    reported_ceiling: object,
+) -> None:
+    """Invalid evidence takes the same unreported fallback branch as an absent ceiling."""
+    budget = OpenRouterCatalogConverter.default_output_budget(
+        reported_ceiling=reported_ceiling,  # type: ignore[arg-type]
+        context_window=1_048_576,
+    )
+    assert budget == 8_192
+
+
+def test_default_output_budget_constant_is_public_and_fixed() -> None:
+    """The shared OpenRouter agent output budget is a fixed public constant."""
+    from src.agents.model_catalog.openrouter import OPENROUTER_AGENT_OUTPUT_BUDGET_TOKENS
+
+    assert OPENROUTER_AGENT_OUTPUT_BUDGET_TOKENS == 64_000

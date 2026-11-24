@@ -652,6 +652,10 @@ class HeadlessRunner:
     def _request_cooperative_abort(self, reason: str) -> None:
         """Request session abort once; watchdog and SIGTERM handler call this funnel.
 
+        WHAT: Schedules the terminal pool close before the session's turn abort,
+            so the pool never reopens once a stop order arrived. The close is
+            scheduled only when a pool is attached; a plain headless run has none.
+
         Args:
             reason (str): First canonical shutdown reason observed for this run.
         """
@@ -660,6 +664,8 @@ class HeadlessRunner:
         self._abort_reason = reason
         if self._abort_requested is not None:
             self._abort_requested.set()
+        if self._attached_pool() is not None:
+            asyncio.ensure_future(self._shutdown_pool_if_attached())
         if self._session is not None:
             self._session.abort()
 
@@ -797,16 +803,16 @@ class HeadlessRunner:
         signal.signal(signal.SIGTERM, previous)
 
     async def _shutdown_pool_if_attached(self) -> None:
-        """Drive the ordered pool abort when the cooperative funnel receives a stop order.
+        """Close the pool terminally when the cooperative funnel receives a stop order.
 
-        WHAT: Delegates the pool seal and child drain to its single owner.
+        WHAT: Delegates the terminal close and child drain to its single owner.
         WHO: Scheduled by _request_cooperative_abort for watchdog and SIGTERM requests.
         WHEN: Once after the first cooperative abort reason wins.
         """
         pool: Optional[SubAgentPool] = self._attached_pool()
         if pool is None:
             return
-        await pool.abort_and_drain()
+        await pool.close_and_drain()
 
     async def _write_terminal_status(self) -> None:
         """Write terminal workflow evidence only after a fully resolved fleet drain.
@@ -829,9 +835,9 @@ class HeadlessRunner:
         )
 
     async def _await_abort_pool_shutdown(self) -> None:
-        """Join pool abort cleanup before terminal fleet draining.
+        """Join pool close before terminal fleet draining.
 
-        WHAT: Waits for the shared ordered shutdown rather than racing its records.
+        WHAT: Waits for the shared terminal close rather than racing its records.
         WHO: Called by _write_terminal_status after a cooperative abort request.
         WHEN: Only when the runner accepted an abort reason.
         """
@@ -840,7 +846,7 @@ class HeadlessRunner:
         pool: Optional[SubAgentPool] = self._attached_pool()
         if pool is None:
             return
-        await pool.abort_and_drain()
+        await pool.close_and_drain()
 
     async def _start_child_control(self) -> None:
         """Publish child control for this run when an explicit launch owner exists.

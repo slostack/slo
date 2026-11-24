@@ -29,6 +29,7 @@ from src.agents.slo_agent.orchestrator.dao import (
     ChildDirectoryEntryDAO,
     DispatchIdentityDAO,
     OrchestratorResultDAO,
+    PoolAdmissionState,
     ResolvedDispatchTaskDAO,
     lifecycle_kind_for_status,
     SubAgentMode,
@@ -107,8 +108,11 @@ _SESSION_BUSY_ERROR: str = "child session already executing in this pool; no sub
 _UNSAFE_SESSION_ERROR: str = "unsafe child session id; no sub-agents were started"
 """Fixed refusal when a resolved session id is unsafe as a path component."""
 
-_SEALED_ERROR: str = "pool sealed by abort; no new sub-agents will be spawned"
-"""Fixed refusal for any dispatch reaching a sealed pool."""
+_POOL_CLOSED_ERROR: str = "sub-agent pool closed; no new sub-agents will be spawned"
+"""Fixed terminal refusal for any dispatch reaching a closed pool."""
+
+_DISPATCH_ABORTED_ERROR: str = "dispatch aborted by the operator before any child started; resubmit to retry"
+"""Fixed retryable refusal for a dispatch aborted before admission."""
 
 
 class _DispatchReservation:
@@ -248,9 +252,12 @@ class SubAgentPool:
         self._child_abort_events: dict[tuple[str, str], asyncio.Event] = {}
         self._child_abort_tasks: dict[tuple[str, str], asyncio.Task[ChildAbortOutcomeDAO]] = {}
         self._abort_requested_children: set[tuple[str, str]] = set()
-        self._sealed: bool = False
-        self._abort_and_drain_task: Optional[asyncio.Task[None]] = None
-        self._cancel_outcomes: dict[str, ReapOutcome] = {}
+        self._admission_state: PoolAdmissionState = PoolAdmissionState.OPEN
+        self._admission_generation: int = 0
+        self._episode_task: Optional[asyncio.Task[None]] = None
+        self._close_task: Optional[asyncio.Task[None]] = None
+        self._last_cancel_outcomes: dict[str, ReapOutcome] = {}
+        self._episode_cancel_outcomes: dict[str, ReapOutcome] = {}
         self._reserved_session_ids: set[str] = set()
 
     @property
@@ -314,7 +321,8 @@ class SubAgentPool:
         """Return this pool's typed child-control identity for attached callers.
 
         WHAT: Builds the capability from the composition root's immutable owner,
-            parent and run identity; accepting is withdrawn once the pool seals.
+            parent and run identity; accepting is withdrawn only once the pool
+            is closed, never for a turn abort's drain.
         WHO: Called by SloAgentSession.child_control_capability for the TUI.
         WHEN: On demand at confirmation and submission time; no side effects.
 
@@ -325,7 +333,27 @@ class SubAgentPool:
             run_id=self._run_id,
             owner_session_id=self._owner_session_id,
             orchestrator_session_id=self._orchestrator_session_id,
-            accepting=not self._sealed,
+            accepting=self._admission_state is not PoolAdmissionState.CLOSED,
+        )
+
+    def admission_state(self) -> PoolAdmissionState:
+        """Return the pool's current admission state for observers and tests.
+
+        Returns:
+            PoolAdmissionState: OPEN, DRAINING or CLOSED; read-only, no side effects.
+        """
+        return self._admission_state
+
+    def _is_admission_current(self, *, admission_generation: int) -> bool:
+        """Return whether a dispatch admitted under this generation may proceed.
+
+        True only while the pool is OPEN and no abort or close has started since
+        the dispatch's ticket was taken. The state read selects the refusal text;
+        the generation comparison is the fence against racing dispatches.
+        """
+        return (
+            self._admission_state is PoolAdmissionState.OPEN
+            and admission_generation == self._admission_generation
         )
 
     async def dispatch(
@@ -336,12 +364,13 @@ class SubAgentPool:
     ) -> OrchestratorResultDAO:
         """Admit one batch explicitly, then run it under the requested mode.
 
-        WHAT: Refuses sealed or oversized batches, resolves every task's session
-            once, then (with no await) rechecks the seal and duplicate/reserved/live
-            sessions, reserves the batch and begins a new registry dispatch. The
-            stream-only ``sub_agent_dispatch_started`` event precedes every child
-            lifecycle event. Rejected batches begin nothing; an empty valid batch
-            still replaces the displayed group.
+        WHAT: Refuses closed or oversized batches, takes an admission ticket
+            (joining any draining episode first), resolves every task's session
+            once, then (with no await) rechecks the ticket and duplicate/reserved/
+            live sessions, reserves the batch and begins a new registry dispatch.
+            The stream-only ``sub_agent_dispatch_started`` event precedes every
+            child lifecycle event. Rejected batches begin nothing; an empty valid
+            batch still replaces the displayed group.
         WHO: Called by the ``spawn_sub_agents`` tool for the orchestrator.
         WHEN: Once per tool call; concurrent calls are admitted in the order their
             preparation completes, not the order they were invoked.
@@ -356,17 +385,20 @@ class SubAgentPool:
         intake_refusal: Optional[OrchestratorResultDAO] = self._intake_refusal(mode=mode, tasks=tasks)
         if intake_refusal is not None:
             return intake_refusal
+        ticket: Optional[int] = await self._take_admission_ticket()
+        if ticket is None:
+            return self._refusal(mode=mode, tasks=tasks, error=_POOL_CLOSED_ERROR)
         resolved: Optional[tuple[ResolvedDispatchTaskDAO, ...]] = await self._resolve_dispatch_tasks(
             tasks=tasks
         )
         if resolved is None:
             return self._refusal(mode=mode, tasks=tasks, error=_UNSAFE_SESSION_ERROR)
         admission_refusal: Optional[OrchestratorResultDAO] = self._admission_refusal(
-            mode=mode, tasks=tasks, resolved=resolved
+            mode=mode, tasks=tasks, resolved=resolved, ticket=ticket
         )
         if admission_refusal is not None:
             return admission_refusal
-        dispatch, reservation = self._admit(resolved=resolved)
+        dispatch, reservation = self._admit(resolved=resolved, ticket=ticket)
         try:
             results: list[SubAgentResultDAO] = await self._run_admitted_batch(
                 mode=mode, resolved=resolved, dispatch=dispatch, reservation=reservation
@@ -386,10 +418,10 @@ class SubAgentPool:
             tasks (list[SubAgentTaskDAO]): Requested tasks.
 
         Returns:
-            Optional[OrchestratorResultDAO]: Sealed or oversize refusal, else None.
+            Optional[OrchestratorResultDAO]: Closed or oversize refusal, else None.
         """
-        if self._sealed:
-            return self._refusal(mode=mode, tasks=tasks, error=_SEALED_ERROR)
+        if self._admission_state is PoolAdmissionState.CLOSED:
+            return self._refusal(mode=mode, tasks=tasks, error=_POOL_CLOSED_ERROR)
         if len(tasks) > MAX_PARALLEL_TASKS:
             return OrchestratorResultDAO(
                 mode=mode,
@@ -424,27 +456,56 @@ class SubAgentPool:
         except ValidationError:
             return None
 
+    async def _take_admission_ticket(self) -> Optional[int]:
+        """Return the generation a new dispatch is admitted under, or None when closed.
+
+        WHAT: While the pool is DRAINING, joins the running episode (shielded, so
+            a cancelled caller never stops it) and re-checks; a fresh abort can
+            start after the first episode ends, so this is a loop. Holds no lock:
+            the event loop is the only synchronisation, and no await separates the
+            final OPEN read from the ticket itself.
+        WHO: Called by ``dispatch`` before any session resolution.
+        WHEN: Once per dispatch attempt.
+
+        Returns:
+            Optional[int]: Admission generation for this dispatch, or None when the
+                pool is CLOSED.
+        """
+        while self._admission_state is PoolAdmissionState.DRAINING and self._episode_task is not None:
+            await asyncio.shield(self._episode_task)
+        if self._admission_state is PoolAdmissionState.CLOSED:
+            return None
+        return self._admission_generation
+
     def _admission_refusal(
         self,
         *,
         mode: SubAgentMode,
         tasks: list[SubAgentTaskDAO],
         resolved: tuple[ResolvedDispatchTaskDAO, ...],
+        ticket: int,
     ) -> Optional[OrchestratorResultDAO]:
-        """Recheck seal and session identities after preparation, without awaiting.
+        """Recheck the admission ticket and session identities after preparation.
+
+        Runs with no await, so a current ticket reserves its sessions in the same
+        step as this check (the admission critical section).
 
         Args:
             mode (SubAgentMode): Requested dispatch mode.
             tasks (list[SubAgentTaskDAO]): Requested tasks, for refusal ids.
             resolved (tuple[ResolvedDispatchTaskDAO, ...]): Prepared batch.
+            ticket (int): Generation the dispatch was admitted under.
 
         Returns:
-            Optional[OrchestratorResultDAO]: Refusal for a sealed pool, a duplicate
-                session or a busy session; None when the batch may be admitted.
+            Optional[OrchestratorResultDAO]: Refusal for a closed pool, a stale
+                (aborted) ticket, a duplicate session or a busy session; None when
+                the batch may be admitted.
         """
         session_ids: list[str] = [item.session_id for item in resolved]
-        if self._sealed:
-            return self._refusal(mode=mode, tasks=tasks, error=_SEALED_ERROR)
+        if self._admission_state is PoolAdmissionState.CLOSED:
+            return self._refusal(mode=mode, tasks=tasks, error=_POOL_CLOSED_ERROR)
+        if not self._is_admission_current(admission_generation=ticket):
+            return self._refusal(mode=mode, tasks=tasks, error=_DISPATCH_ABORTED_ERROR)
         if len(set(session_ids)) != len(session_ids):
             return self._refusal(mode=mode, tasks=tasks, error=_DUPLICATE_SESSION_ERROR)
         if any(not self._session_admissible(session_id=session_id) for session_id in session_ids):
@@ -458,23 +519,30 @@ class SubAgentPool:
         return self._registry.accepts_new_execution(session_id=session_id)
 
     def _admit(
-        self, *, resolved: tuple[ResolvedDispatchTaskDAO, ...]
+        self, *, resolved: tuple[ResolvedDispatchTaskDAO, ...], ticket: int
     ) -> tuple[DispatchIdentityDAO, _DispatchReservation]:
         """Reserve the batch and begin its registry dispatch in one synchronous step.
 
         Args:
             resolved (tuple[ResolvedDispatchTaskDAO, ...]): Admitted batch.
+            ticket (int): Generation this batch was admitted under.
 
         Returns:
-            tuple[DispatchIdentityDAO, _DispatchReservation]: Captured identity and
-                the reservation that dispatch teardown must settle.
+            tuple[DispatchIdentityDAO, _DispatchReservation]: Captured identity,
+                carrying its admission generation, and the reservation that
+                dispatch teardown must settle.
         """
         reservation = _DispatchReservation(
             reserved=self._reserved_session_ids, session_ids=tuple(item.session_id for item in resolved)
         )
         dispatch_id: str = str(uuid4())
         sequence: int = self._registry.begin_dispatch(dispatch_id=dispatch_id)
-        return DispatchIdentityDAO(dispatch_id=dispatch_id, dispatch_sequence=sequence), reservation
+        return (
+            DispatchIdentityDAO(
+                dispatch_id=dispatch_id, dispatch_sequence=sequence, admission_generation=ticket
+            ),
+            reservation,
+        )
 
     async def _run_admitted_batch(
         self,
@@ -627,8 +695,8 @@ class SubAgentPool:
         """
         task: SubAgentTaskDAO = resolved.task
         session_id: str = resolved.session_id
-        if self._sealed:
-            return self._sealed_task_result(task=task, session_id=session_id)
+        if not self._is_admission_current(admission_generation=dispatch.admission_generation):
+            return self._aborted_task_result(task=task, session_id=session_id)
         execution_id: str = self._registry.register(
             dispatch_id=dispatch.dispatch_id, task_id=task.task_id, session_id=session_id, task=task
         )
@@ -654,7 +722,7 @@ class SubAgentPool:
                 metadata=dispatch.lifecycle_metadata(execution_id=execution_id),
                 prompt_preview=TaskPreview.encode_summary(task_summary=task.task_summary),
             )
-            winner = await self._run_with_slot(process=process, task=task)
+            winner = await self._run_with_slot(process=process, task=task, dispatch=dispatch)
             participant_close_started = True
             await self._join_abandoned_child_participant_close(session_id=session_id)
             await self._emit_lifecycle(
@@ -802,7 +870,9 @@ class SubAgentPool:
         if not completion.cancelled():
             completion.exception()
 
-    async def _run_with_slot(self, *, process: SubAgentProcess, task: SubAgentTaskDAO) -> SubAgentResultDAO:
+    async def _run_with_slot(
+        self, *, process: SubAgentProcess, task: SubAgentTaskDAO, dispatch: DispatchIdentityDAO
+    ) -> SubAgentResultDAO:
         """Acquire this incarnation's slot, run it, and release only a transferred permit.
 
         WHAT: A targeted abort that wins the slot race leaves no permit held and
@@ -814,6 +884,7 @@ class SubAgentPool:
         Args:
             process (SubAgentProcess): Registered wrapper for this incarnation.
             task (SubAgentTaskDAO): Task the wrapper executes.
+            dispatch (DispatchIdentityDAO): Batch identity captured at admission.
 
         Returns:
             SubAgentResultDAO: Registry winner for the incarnation.
@@ -822,7 +893,7 @@ class SubAgentPool:
             session_id=process.session_id, execution_id=process.execution_id
         )
         try:
-            return await self._run_admitted(process=process, task=task)
+            return await self._run_admitted(process=process, task=task, dispatch=dispatch)
         finally:
             if transferred:
                 self._semaphore.release()
@@ -913,26 +984,30 @@ class SubAgentPool:
         if interrupted:
             raise asyncio.CancelledError
 
-    async def _run_admitted(self, *, process: SubAgentProcess, task: SubAgentTaskDAO) -> SubAgentResultDAO:
-        """Run the admitted wrapper, or publish its sealed or targeted pending abort.
+    async def _run_admitted(
+        self, *, process: SubAgentProcess, task: SubAgentTaskDAO, dispatch: DispatchIdentityDAO
+    ) -> SubAgentResultDAO:
+        """Run the admitted wrapper, or publish its aborted pending result without spawning.
 
-        WHAT: With no await between these checks and run entry, a sealed pool or a
-            targeted abort reservation publishes the aborted pending candidate
-            through the wrapper's ``finish_without_spawn`` (never spawning);
-            otherwise the wrapper runs to its winner.
+        WHAT: With no await between these checks and run entry, a stale-generation
+            (aborted or closed) dispatch or a targeted abort reservation publishes
+            the aborted pending candidate through the wrapper's
+            ``finish_without_spawn`` (never spawning); otherwise the wrapper runs
+            to its winner.
         WHO: Called only by ``_run_with_slot``.
         WHEN: Immediately after the slot decision.
 
         Args:
             process (SubAgentProcess): Registered wrapper for this incarnation.
             task (SubAgentTaskDAO): Task the wrapper executes.
+            dispatch (DispatchIdentityDAO): Batch identity captured at admission.
 
         Returns:
             SubAgentResultDAO: Registry winner for the incarnation.
         """
-        if self._sealed:
+        if not self._is_admission_current(admission_generation=dispatch.admission_generation):
             return await process.finish_without_spawn(
-                result=self._sealed_task_result(task=task, session_id=process.session_id).model_copy(
+                result=self._aborted_task_result(task=task, session_id=process.session_id).model_copy(
                     update={"execution_id": process.execution_id}
                 ),
                 terminal_reason="operator_abort",
@@ -947,13 +1022,13 @@ class SubAgentPool:
         return await process.run()
 
     @staticmethod
-    def _sealed_task_result(*, task: SubAgentTaskDAO, session_id: str) -> SubAgentResultDAO:
-        """Build the terminal result for work blocked by the pool seal."""
+    def _aborted_task_result(*, task: SubAgentTaskDAO, session_id: str) -> SubAgentResultDAO:
+        """Build the terminal result for work an abort or close blocked before spawn."""
         return SubAgentResultDAO(
             task_id=task.task_id,
             session_id=session_id,
             status="aborted",
-            answer="pool sealed by abort before child spawn",
+            answer="aborted by operator before child spawn",
             exit_code=2,
         )
 
@@ -1019,73 +1094,163 @@ class SubAgentPool:
             previous_answer = result.answer
         return results
 
-    async def abort_and_drain(self) -> None:
-        """Seal the pool and await one shared ordered abort shutdown.
+    async def abort_dispatches(self) -> None:
+        """Abort this turn's dispatches, then reopen the pool for the next turn.
 
-        WHAT: Makes concurrent abort callers join the same seal, cancel, and record work.
-        WHO: Called by session abort and HeadlessRunner terminal cleanup paths.
-        WHEN: After the first cooperative abort request; later callers wait for completion.
+        WHAT: Joins the close when the pool is already closed; otherwise joins the
+            running episode or starts one (OPEN → DRAINING, generation +1, before
+            any await) and waits for its cancel-and-record work. A cancelled caller
+            never stops the episode; the pool returns to OPEN unless a close won.
+        WHO: Called by ``SloAgentSession.abort`` for an operator turn abort.
+        WHEN: After each cooperative turn-abort request; concurrent callers share
+            one episode per generation.
         """
-        if self._abort_and_drain_task is None:
-            if self._sealed:
-                return
-            self._abort_and_drain_task = asyncio.create_task(self._run_abort_and_drain())
-        await asyncio.shield(self._abort_and_drain_task)
+        if self._close_task is not None:
+            await asyncio.shield(self._close_task)
+            return
+        if self._episode_task is None:
+            self._admission_state = PoolAdmissionState.DRAINING
+            self._admission_generation += 1
+            self._episode_task = asyncio.create_task(self._run_episode())
+        await asyncio.shield(self._episode_task)
 
-    async def _run_abort_and_drain(self) -> None:
-        """Perform the pool-owned ordered abort sequence.
+    async def _run_episode(self) -> None:
+        """Run one abort episode's cancel-and-record work, then reopen unless closed.
 
-        WHAT: Seals new dispatches, cancels active children (confirmed reaps commit
-            canonical aborted winners inside each wrapper), then publishes pending
-            aborts for never-started wrappers and reports hard reaps.
-        WHO: Started exactly once by abort_and_drain.
-        WHEN: During the pool's first cooperative abort request.
+        The reopen re-reads the admission state inside ``finally``, synchronously:
+        a close requested during this episode has already set CLOSED and wins.
         """
-        self._sealed = True
-        await self.cancel_all()
-        await self._record_abort_outcomes()
+        try:
+            cancelled: list[SubAgentProcess] = await self._cancel_snapshot()
+            await self._record_outcomes(cancelled=cancelled)
+        finally:
+            self._episode_task = None
+            if self._admission_state is PoolAdmissionState.DRAINING:
+                self._admission_state = PoolAdmissionState.OPEN
 
-    async def cancel_all(self) -> None:
-        """Cancel every active child and retain its shared-reaper outcome.
+    async def close_and_drain(self) -> None:
+        """Close the pool terminally and drain every live wrapper exactly once.
+
+        WHAT: On the first call (before any await): → CLOSED and generation +1,
+            then one shared close task joins any running episode and performs the
+            final cancel-and-record. Every later caller joins that task; a
+            cancelled caller never stops it. CLOSED is never left.
+        WHO: Called by session disposal and HeadlessRunner shutdown.
+        WHEN: When the pool's owner is going away for good.
+        """
+        if self._close_task is None:
+            self._admission_state = PoolAdmissionState.CLOSED
+            self._admission_generation += 1
+            self._close_task = asyncio.create_task(self._run_close())
+        await asyncio.shield(self._close_task)
+
+    async def _run_close(self) -> None:
+        """Join a running episode, then cancel and record the remaining wrappers."""
+        if self._episode_task is not None:
+            await asyncio.shield(self._episode_task)
+        cancelled: list[SubAgentProcess] = await self._cancel_snapshot()
+        await self._record_outcomes(cancelled=cancelled)
+
+    async def _cancel_snapshot(self) -> list[SubAgentProcess]:
+        """Cancel every wrapper active right now and return that exact snapshot.
+
+        WHAT: Cancels the current wrappers and retains each one's shared-reaper
+            outcome keyed to this call; one failure never blocks peers. Wrappers
+            not in the snapshot belong to a later generation and are fenced by
+            their stale generation, never cancelled here.
+        WHO: Called by the episode and the close task.
+        WHEN: After the generation increase latched the admission fence.
+
+        Returns:
+            list[SubAgentProcess]: The wrappers this call cancelled, in order.
+        """
+        cancelled: list[SubAgentProcess] = await self.cancel_all()
+        self._episode_cancel_outcomes = self._outcomes_of(cancelled=cancelled)
+        return cancelled
+
+    def _outcomes_of(self, *, cancelled: list[SubAgentProcess]) -> dict[str, ReapOutcome]:
+        """Project the last ``cancel_all`` outcome record onto one episode's snapshot.
+
+        Args:
+            cancelled (list[SubAgentProcess]): The wrappers one episode cancelled.
+
+        Returns:
+            dict[str, ReapOutcome]: Cancel outcome by child session, for exactly
+                the given wrappers.
+        """
+        return {
+            process.session_id: outcome
+            for process in cancelled
+            if (outcome := self._last_cancel_outcomes.get(process.session_id)) is not None
+        }
+
+    async def cancel_all(self) -> list[SubAgentProcess]:
+        """Cancel every active child, retain each shared-reaper outcome, return the snapshot.
 
         WHAT: Delegates each wrapper cancellation without allowing one failure to block peers.
-        WHO: Called by abort_and_drain during the ordered pool shutdown.
-        WHEN: After the pool is sealed and before terminal fleet records are written.
+        WHO: Called by the episode and the close task during ordered abort work.
+        WHEN: After the admission fence latched and before outcomes are recorded.
+
+        Returns:
+            list[SubAgentProcess]: The wrappers this call cancelled, in order.
         """
         processes: list[SubAgentProcess] = list(self._active_by_session_id.values())
         outcomes: list[object] = await asyncio.gather(
             *[process.cancel() for process in processes],
             return_exceptions=True,
         )
+        self._last_cancel_outcomes = {}
         for process, outcome in zip(processes, outcomes):
             if isinstance(outcome, BaseException):
-                self._cancel_outcomes[process.session_id] = "unresolved"
+                self._last_cancel_outcomes[process.session_id] = "unresolved"
                 continue
             if outcome in {"graceful", "killed", "already_dead", "recycled_pid", "unresolved"}:
-                self._cancel_outcomes[process.session_id] = outcome  # type: ignore[assignment]
+                self._last_cancel_outcomes[process.session_id] = outcome  # type: ignore[assignment]
+        return processes
 
-    async def _record_abort_outcomes(self) -> None:
-        """Publish sealed pending aborts and report hard reaps without writing terminal state.
+    async def _record_outcomes(self, *, cancelled: list[SubAgentProcess]) -> None:
+        """Publish pending aborts and hard reaps for exactly this episode's wrappers.
 
-        WHAT: Never-started wrappers latched by cancel_all publish their pending
-            abort through the wrapper gateway, so the fleet shows them aborted at
-            drain time; their ``_run_one`` later returns that same winner and emits
-            the single lifecycle. Killed children get a ``sub_agent_reaped`` event.
-            Running, unresolved or wrapper-less entries are never terminalized here.
-        WHO: Called by abort_and_drain after child cancellation returns.
-        WHEN: Once after a pool has completed its ordered shutdown.
+        WHAT: Never-started wrappers latched by the episode's cancel publish their
+            pending abort through the wrapper gateway, so the fleet shows them
+            aborted at drain time; their ``_run_one`` later returns that same winner
+            and emits the single lifecycle. Killed children get a
+            ``sub_agent_reaped`` event. Wrappers an earlier episode cancelled are
+            never reported again.
+        WHO: Called by the episode and the close task after their cancel step.
+        WHEN: Once per episode, scoped to that episode's own snapshot.
+
+        Args:
+            cancelled (list[SubAgentProcess]): The wrappers this episode cancelled.
         """
-        for process in list(self._active_by_session_id.values()):
+        await self._record_abort_outcomes(cancelled=cancelled, outcomes=self._episode_cancel_outcomes)
+
+    async def _record_abort_outcomes(
+        self, *, cancelled: list[SubAgentProcess], outcomes: dict[str, ReapOutcome]
+    ) -> None:
+        """Publish pending aborts and report hard reaps for one episode's wrappers.
+
+        WHAT: Never-started wrappers in the cancelled snapshot publish their
+            pending abort; killed ones get a ``sub_agent_reaped`` event. Running,
+            unresolved or wrapper-less registry entries are never terminalized here.
+        WHO: Called by ``_record_outcomes`` with this episode's exact snapshot.
+        WHEN: Once after the episode's cancel step completed.
+
+        Args:
+            cancelled (list[SubAgentProcess]): Wrappers this episode cancelled.
+            outcomes (dict[str, ReapOutcome]): Their cancel outcomes by session id.
+        """
+        for process in cancelled:
             if process.awaiting_pending_abort:
                 await process.finish_without_spawn(
-                    result=self._sealed_task_result(
+                    result=self._aborted_task_result(
                         task=process.task, session_id=process.session_id
                     ).model_copy(update={"execution_id": process.execution_id}),
                     terminal_reason="operator_abort",
                     terminated_by="abort",
                 )
         for entry in self._registry.snapshot():
-            if self._cancel_outcomes.get(entry.session_id) != "killed":
+            if outcomes.get(entry.session_id) != "killed":
                 continue
             await self._emit_lifecycle(
                 kind="sub_agent_reaped",
@@ -1151,7 +1316,7 @@ class SubAgentPool:
             return ChildAbortOutcomeDAO.for_request(
                 request=request, outcome="already_terminal", terminal_status=terminal.status
             )
-        if self._sealed or identity not in self._child_abort_events:
+        if self._close_task is not None or identity not in self._child_abort_events:
             return ChildAbortOutcomeDAO.for_request(request=request, outcome="unavailable")
         return None
 

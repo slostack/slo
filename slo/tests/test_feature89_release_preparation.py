@@ -18,6 +18,10 @@ def test_release_candidate_version_and_notes_agree() -> None:
         assert identity in notes
     assert "subscription OAuth" in notes
     assert "not live entitlement" in notes
+    current = notes.split(f"## [{version}] — ", 1)[1].split("\n## [", 1)[0]
+    assert "OpenRouter" in current
+    assert "64,000" in current
+    assert "8,192" in current
 
 
 def test_v0330_release_metadata_preserves_packaging_owned_launchers() -> None:

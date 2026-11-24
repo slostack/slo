@@ -17,6 +17,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
+from src.agents.model_catalog.openrouter import OPENROUTER_UNREPORTED_OUTPUT_BUDGET_TOKENS
 from src.auth.credential_dao import ProviderName
 from config.ai_model_config import defaults_for_model
 from src.agents.slo_agent.compaction.constants import (
@@ -596,6 +597,8 @@ class Compacter:
 
         Returns:
             int: The generic reserve or the lower prepared OpenRouter ceiling.
+                Unreported OpenRouter routes use the OpenRouter 8,192 fallback,
+                still bounded by half the context window.
         """
         if snapshot is None:
             return RESERVED_TOKEN_LIMIT
@@ -604,5 +607,7 @@ class Compacter:
             return RESERVED_TOKEN_LIMIT
         capabilities = entry.capabilities
         reported_ceiling = capabilities.reported_output_ceiling if capabilities is not None else None
-        ceiling = reported_ceiling if reported_ceiling is not None else 4096
+        ceiling = (
+            reported_ceiling if reported_ceiling is not None else OPENROUTER_UNREPORTED_OUTPUT_BUDGET_TOKENS
+        )
         return min(RESERVED_TOKEN_LIMIT, ceiling, entry.runtime_profile.context_window // 2)

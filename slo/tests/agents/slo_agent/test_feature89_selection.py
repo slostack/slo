@@ -125,7 +125,7 @@ async def test_cold_gateway_selection_admits_before_entry_lookup(
     assert session.active_reasoning_level == "off"
     assert session._config is not None and session._config.model_pool_dao is None
     assert session.catalog_snapshot is not None
-    assert session.catalog_snapshot.entries[ROUTE].runtime_profile.max_tokens == 4096
+    assert session.catalog_snapshot.entries[ROUTE].runtime_profile.max_tokens == 8192
     assert UserPreferencesStore.load().default_model_name == ROUTE
     assert [request.url.path for request in jev_transport] == ["/api/v1/key", "/api/v1/models/user"]
 

@@ -89,7 +89,7 @@ async def test_pending_session_snapshot_is_not_effective_claim(
     assert session._config is not None and session._config.extra_tools is not None
     assert any(tool is launch for tool in session._config.extra_tools)
     assert session._sub_agent_pool is not None
-    await session._sub_agent_pool.abort_and_drain()
+    await session._sub_agent_pool.close_and_drain()
 
 
 async def test_reasoning_snapshot_survives_session_switches(
@@ -139,7 +139,7 @@ async def test_reasoning_snapshot_survives_session_switches(
     assert session._config is not None and session._config.extra_tools is not None
     assert any(tool is launch for tool in session._config.extra_tools)
     assert session._sub_agent_pool is not None
-    await session._sub_agent_pool.abort_and_drain()
+    await session._sub_agent_pool.close_and_drain()
 
 
 async def test_replacement_session_binds_new_reasoning_snapshot(
@@ -170,8 +170,8 @@ async def test_replacement_session_binds_new_reasoning_snapshot(
     assert invoke.call_args.kwargs["owner_session_id"] == new.session_id
     assert invoke.call_args.kwargs["reasoning_level"] == new.active_reasoning_level == "high"
     assert old._sub_agent_pool is not None and new._sub_agent_pool is not None
-    await old._sub_agent_pool.abort_and_drain()
-    await new._sub_agent_pool.abort_and_drain()
+    await old._sub_agent_pool.close_and_drain()
+    await new._sub_agent_pool.close_and_drain()
 
 
 class TestOrchestratorSessionBootstrapAttach:

@@ -748,7 +748,7 @@ class TestChildAbortAndCancellationClosesItsParticipant:
                 pool.dispatch(mode="single", tasks=[_task(task_id="review-1", session_id=child_session_id)])
             )
             await spawn.wait_for_spawn()
-            await asyncio.wait_for(pool.abort_and_drain(), timeout=20.0)
+            await asyncio.wait_for(pool.abort_dispatches(), timeout=20.0)
             result: OrchestratorResultDAO = await asyncio.wait_for(dispatch, timeout=20.0)
 
             assert result.all_completed is False

@@ -197,6 +197,7 @@ async def test_fatal_mcp_callback_wakes_runtime_without_result_or_fallback(
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-haiku-5-5",
+            native_model_id="claude-haiku-5-5",
             working_directory=tmp_path,
             instructions="test",
             tools=(

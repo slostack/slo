@@ -9,6 +9,7 @@ Sub-spec 01-sub-agents 01.b.
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -43,6 +44,7 @@ __all__ = [
     "ChildAbortOutcomeDAO",
     "ChildControlCapabilityDAO",
     "DispatchIdentityDAO",
+    "PoolAdmissionState",
     "ResolvedDispatchTaskDAO",
     "AttachedDispatchSnapshotDAO",
     "TERMINAL_STATUSES",
@@ -1117,6 +1119,19 @@ class ChildControlCapabilityDAO(_ChildControlIdentity):
     accepting: bool
 
 
+class PoolAdmissionState(StrEnum):
+    """Admission state of one ``SubAgentPool`` (bug 109).
+
+    ``OPEN`` admits and spawns; ``DRAINING`` is one turn abort's cancel-and-record
+    episode in progress (intake joins the episode, then is admitted); ``CLOSED``
+    is the terminal shutdown state no transition leaves.
+    """
+
+    OPEN = "open"
+    DRAINING = "draining"
+    CLOSED = "closed"
+
+
 class DispatchIdentityDAO(BaseModel):
     """Identity of one admitted ``SubAgentPool.dispatch`` batch.
 
@@ -1128,12 +1143,17 @@ class DispatchIdentityDAO(BaseModel):
         dispatch_id (str): Pool-generated canonical UUID of the batch.
         dispatch_sequence (int): Monotonic admitted-start sequence within one
             pool, starting at 1; observers use it to ignore older event delivery.
+        admission_generation (int): Pool admission generation this batch was
+            admitted under (bug 109); in memory only, never persisted. The pool
+            sets it on its own dispatch copies; registry-built identities (used
+            for dispatch metadata only) keep the default.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     dispatch_id: str
     dispatch_sequence: int = Field(ge=1)
+    admission_generation: int = Field(default=0, ge=0)
 
     @field_validator("dispatch_id")
     @classmethod

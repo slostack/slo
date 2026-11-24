@@ -48,6 +48,7 @@ async def test_explicit_close_retries_raised_sdk_cleanup_without_query_replay(tm
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-sonnet-4-6",
+            native_model_id="claude-sonnet-4-6",
             working_directory=tmp_path,
             instructions="host",
         )
@@ -73,6 +74,7 @@ async def test_cancel_joins_sdk_when_content_delivery_is_saturated(tmp_path: Pat
         session_options=ClaudeSessionOptionsDAO(
             session_id="host",
             model_id="claude-bridge:claude-sonnet-4-6",
+            native_model_id="claude-sonnet-4-6",
             working_directory=tmp_path,
             instructions="host",
         )

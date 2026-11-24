@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from src.agents.model_catalog.dao import (
+    ModelCapabilitiesDAO,
     ModelCatalogCacheDAO,
     ModelCatalogEntryDAO,
     ProviderCatalogCacheDAO,
@@ -28,7 +29,8 @@ def _cache_with_entry(*, api_model_name: str, max_tokens: int) -> ModelCatalogCa
 
     Args:
         api_model_name (str): Exact synthetic remote model identity.
-        max_tokens (int): Distinguishable prepared local output cap.
+        max_tokens (int): Distinguishable reported output ceiling; the offline read
+            merge re-derives the in-memory budget from this stored evidence (bug 112).
 
     Returns:
         ModelCatalogCacheDAO: One schema-two cache containing the requested route.
@@ -40,6 +42,7 @@ def _cache_with_entry(*, api_model_name: str, max_tokens: int) -> ModelCatalogCa
             "api_model_name": api_model_name,
             "provider": ProviderName.OPENROUTER,
             "runtime_profile": seed_entry.runtime_profile.model_copy(update={"max_tokens": max_tokens}),
+            "capabilities": ModelCapabilitiesDAO(reported_output_ceiling=max_tokens),
         }
     )
     return ModelCatalogCacheDAO(

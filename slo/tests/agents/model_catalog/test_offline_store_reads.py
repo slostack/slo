@@ -195,6 +195,12 @@ async def test_cold_load_inside_running_loop_uses_matching_lifecycle_provenance_
         patch.object(httpx.AsyncClient, "send", side_effect=AssertionError("async network")),
     ):
         snapshot = ModelCatalogService.load()
-        assert ModelCatalogService.entry_for_model(model_name=entry.model_name) == entry
+        # Bug 112: reads re-derive only the OpenRouter budget in memory (no stored
+        # capabilities here, so the 8,192 OpenRouter unreported fallback applies);
+        # every other field of the cached row is preserved verbatim and the file is
+        # untouched.
+        loaded = snapshot.entries[entry.model_name]
+        assert loaded.runtime_profile.max_tokens == 8192
+        assert loaded.model_copy(update={"runtime_profile": entry.runtime_profile}) == entry
+        assert ModelCatalogService.entry_for_model(model_name=entry.model_name) == loaded
         assert entry.model_name in ModelCatalogService.supported_models_by_provider()[ProviderName.OPENROUTER]
-        assert snapshot.entries[entry.model_name] == entry

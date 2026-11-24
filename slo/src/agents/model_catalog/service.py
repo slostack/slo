@@ -434,7 +434,7 @@ class ModelCatalogService:
             return snapshot
         if cache is None:
             return snapshot
-        current_slice = cls._openrouter_slice(cache=cache)
+        current_slice = cls._effective_openrouter_slice(cache=cache)
         snapshot_slice = cls._openrouter_slice(
             cache=ModelCatalogCacheDAO(
                 provider_slices=[
@@ -551,6 +551,37 @@ class ModelCatalogService:
             cache=current_cache,
             fingerprint=fingerprint,
         )
+
+    @classmethod
+    def _effective_openrouter_slice(
+        cls, *, cache: Optional[ModelCatalogCacheDAO]
+    ) -> Optional[ProviderCatalogCacheDAO]:
+        """Re-derive the raw OpenRouter slice budgets admission compares against.
+
+        WHAT: Re-derives each OpenRouter entry's default output budget from the
+            entry's own persisted capability evidence and context window, exactly
+            as the read merge does. The comparison slice is a pure in-memory
+            projection; the cache is never rewritten on read, and other
+            providers' raw entries pass through unchanged.
+        WHO: ``_adopt_current_openrouter_slice`` calls this so a cache persisted
+            before the budget policy changed compares equal to the normalized
+            in-memory snapshot it already produces.
+        WHEN: Only at the admission comparison seam; all other readers keep the
+            raw durable entries.
+
+        Args:
+            cache (Optional[ModelCatalogCacheDAO]): Fresh durable provider cache.
+
+        Returns:
+            Optional[ProviderCatalogCacheDAO]: Effective OpenRouter slice, or None.
+        """
+        raw_slice: Optional[ProviderCatalogCacheDAO] = cls._openrouter_slice(cache=cache)
+        if raw_slice is None:
+            return None
+        effective_entries: dict[str, ModelCatalogEntryDAO] = {}
+        for entry in raw_slice.entries:
+            cls._merge_provider_cache_entry(entries=effective_entries, entry=entry)
+        return raw_slice.model_copy(update={"entries": list(effective_entries.values())})
 
     @staticmethod
     def _provider_slices_match(
@@ -1984,6 +2015,22 @@ class ModelCatalogService:
         entry: ModelCatalogEntryDAO,
     ) -> None:
         """Merge one raw entry while keeping direct seed identity authoritative."""
+        if entry.provider is ProviderName.OPENROUTER:
+            from src.agents.model_catalog.openrouter import OpenRouterCatalogConverter
+
+            capabilities = entry.capabilities
+            reported_ceiling: Optional[int] = (
+                capabilities.reported_output_ceiling if capabilities is not None else None
+            )
+            runtime_profile = entry.runtime_profile.model_copy(
+                update={
+                    "max_tokens": OpenRouterCatalogConverter.default_output_budget(
+                        reported_ceiling=reported_ceiling,
+                        context_window=entry.runtime_profile.context_window,
+                    )
+                }
+            )
+            entry = entry.model_copy(update={"runtime_profile": runtime_profile})
         seed_entry: Optional[ModelCatalogEntryDAO] = entries.get(entry.model_name)
         if seed_entry is None:
             entries[entry.model_name] = entry

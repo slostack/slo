@@ -361,13 +361,15 @@ For headless use an explicit qualified route, for example:
 SLO_CLAUDE_BRIDGE_ENABLED=1 slo run --model claude-bridge:claude-haiku-5-5 -p 'Hello'
 ```
 
-Exact local route families are `claude-bridge:claude-{haiku,sonnet,opus,fable}-<version>`.
+Exact local route families are `claude-bridge:claude-{haiku,sonnet,opus}-<version>`.
 The inclusive requested range is interpreted as `4-8`, `4-9`, `5-0`, `5-1`, `5-2`,
 `5-3`, `5-4`, `5-5`, not every imaginable decimal version. For example,
 `claude-bridge:claude-opus-4-8` and `claude-bridge:claude-haiku-5-5` are selectable.
-Existing catalog identifiers `claude-bridge:claude-sonnet-4-6`,
-`claude-bridge:claude-haiku-4-5`, `claude-bridge:claude-fable` and
-`claude-bridge:claude-fable-5` are retained. These are **local routes**, not a claim
+Existing catalog identifiers `claude-bridge:claude-sonnet-4-6` and
+`claude-bridge:claude-haiku-4-5` are retained. Fable has only three explicit routes:
+`claude-bridge:claude-fable` (family route, Fable 5.1), `claude-bridge:claude-fable-5-1`
+(Fable 5.1) and `claude-bridge:claude-fable-5` (Fable 5). Other Fable versions are
+rejected before any native work. These are **local routes**, not a claim
 that each name exists upstream or is available to your native account. Existing
 names come from Slo's committed catalog; the family/version expansion is explicit
 operator-requested routing. No discovery or entitlement inference is performed.
@@ -375,12 +377,14 @@ Upstream rejection remains a failure (safe native subtype/HTTP status when suppl
 with no silent fallback. Unqualified `claude-*` names still use normal Anthropic.
 
 All route IDs remain qualified through configuration, picker, factory and portable
-session options; only the native SDK model argument removes `claude-bridge:`.
+session options. The route table maps each route to its native model id
+(`ClaudeBridgeRoute.native_model_id`); the SDK receives that native id, never the route text.
 The existing catalog shape requires numeric host planning values: 200K context,
 4096 output and 60 local RPM, no host retries or known TPM.
 Slo's `/reasoning` controls native effort: `minimal` maps to `low`;
 `low`, `medium`, `high`, `xhigh`, and `max` pass through to SDK `effort`
-with adaptive thinking. `off` disables extended thinking and omits effort.
+with adaptive thinking. `off` disables extended thinking and omits effort, except on Fable
+routes, which reject disabled thinking: there `off` sends effort `low` with adaptive thinking.
 The default reasoning level is `high`; the native model may reject unsupported effort values.
 These are Slo planning policy, **not measured provider capacity, reasoning support,
 entitlement, availability, rate limits or billing guarantees**. Unknown native

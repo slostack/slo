@@ -100,7 +100,7 @@ async def test_jev_stale_listing_requires_fresh_same_key_verification(
     ]
     assert cache.read_bytes() == before
     assert retained.entries[ROUTE] == admitted.entries[ROUTE]
-    assert retained.entries[ROUTE].runtime_profile.max_tokens == 4096
+    assert retained.entries[ROUTE].runtime_profile.max_tokens == 8192
 
 
 async def test_jev_router_unknown_controls_use_provider_default(
@@ -136,7 +136,7 @@ async def test_jev_authenticated_admission(
     """Admission obtains real authenticated metadata and publishes the conservative cap."""
     snapshot = await ModelCatalogService.prepare_models(model_names=(ROUTE,), now=NOW)
     entry = snapshot.entries[ROUTE]
-    assert entry.runtime_profile.max_tokens == 4096
+    assert entry.runtime_profile.max_tokens == 8192
     assert entry.capabilities is not None
     assert entry.capabilities.reported_output_ceiling is None
     assert entry.capabilities.reasoning_controls_available is False
@@ -163,7 +163,7 @@ async def test_jev_new_admission_rejects_changed_credentials(
         await ModelCatalogService.prepare_models(model_names=(ROUTE,), now=NOW)
     assert cache.read_bytes() == before
     assert admitted.entries[ROUTE].availability == "available"
-    assert admitted.entries[ROUTE].runtime_profile.max_tokens == 4096
+    assert admitted.entries[ROUTE].runtime_profile.max_tokens == 8192
     assert len(jev_transport) == (2 if change == "removal" else 3)
     assert "fixture-jev" not in admitted.model_dump_json()
 
@@ -183,7 +183,7 @@ async def test_jev_listing_refresh_preserves_admission_boundaries(
         assert refreshed.status == "failed"
         assert cache.read_bytes() == before
         retained = await ModelCatalogService.prepare_models(model_names=(ROUTE,), now=NOW)
-        assert retained.entries[ROUTE].runtime_profile.max_tokens == 4096
+        assert retained.entries[ROUTE].runtime_profile.max_tokens == 8192
     else:
         assert refreshed.status == "refreshed"
         assert cache.read_bytes() != before

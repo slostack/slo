@@ -18,6 +18,7 @@ from src.agents.providers.faux import FauxChatModel
 from src.agents.reasoning_capabilities import ReasoningLevel
 from src.agents.model_catalog.dao import ModelCatalogSnapshotDAO
 from src.agents.slo_agent.orchestrator.bootstrap import OrchestratorSessionBootstrap
+from src.agents.slo_agent.orchestrator.dao import PoolAdmissionState
 from src.agents.slo_agent.orchestrator.launch_tool import LaunchWorkflowTool
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleStore, WorkflowHandleDAO
 from src.agents.slo_agent.sessions.dao import SessionConfigDAO
@@ -260,7 +261,7 @@ async def test_managed_typed_factory_preserves_lazy_owner(
         assert journey.factories == [(owner.session_id, "gpt-5.4", "low")]
     finally:
         assert owner._sub_agent_pool is not None
-        await owner._sub_agent_pool.abort_and_drain()
+        await owner._sub_agent_pool.close_and_drain()
 
 
 @pytest.fixture
@@ -318,7 +319,7 @@ async def launch_from_owner(journey: ManagedJourney, *, arguments: dict[str, obj
         return owner
     finally:
         assert owner._sub_agent_pool is not None
-        await owner._sub_agent_pool.abort_and_drain()
+        await owner._sub_agent_pool.close_and_drain()
 
 
 async def test_managed_owner_records_reserved_identity_and_capture(managed_journey: ManagedJourney) -> None:
@@ -370,7 +371,7 @@ async def run_recorded_child(
     async def shutdown(runner: HeadlessRunner) -> None:
         """Drain retained pools on their owning child loop before catalog shutdown."""
         if runner._session is not None and runner._session._sub_agent_pool is not None:
-            await runner._session._sub_agent_pool.abort_and_drain()
+            await runner._session._sub_agent_pool.close_and_drain()
         await original_shutdown(runner)
 
     def invoke() -> Result:
@@ -390,7 +391,7 @@ async def run_recorded_child(
                 assert runners[0]._session.active_reasoning_level == expected_active_reasoning
             if runners[0]._session is not None:
                 assert runners[0]._session._sub_agent_pool is not None
-                assert runners[0]._session._sub_agent_pool._sealed
+                assert runners[0]._session._sub_agent_pool.admission_state() is PoolAdmissionState.CLOSED
             return result
 
     notify_target: str = journey.argv[journey.argv.index("--notify-session") + 1]

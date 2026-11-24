@@ -93,6 +93,23 @@ class ParticipantDAO(BaseModel):
         """
         return self.kind == "user"
 
+    def conversation_session_id(self, *, sender: "ParticipantDAO") -> UUID:
+        """Choose the agent conversation for a message from ``sender``.
+
+        An agent recipient owns inbound and agent-to-agent conversations. When
+        there is no agent recipient, the sending agent owns outbound replies;
+        user-to-user messages remain attached to the recipient.
+
+        Args:
+            sender (ParticipantDAO): Participant sending the message.
+
+        Returns:
+            UUID: The session id whose message index orders this conversation.
+        """
+        if self.kind == "agent" or sender.kind != "agent":
+            return self.id
+        return sender.id
+
     def admits_message_from(self, *, sender: "ParticipantDAO") -> bool:
         """Return whether this recipient admits a new row from ``sender`` now.
 

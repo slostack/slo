@@ -44,6 +44,123 @@ class TestSchemaBootstrap:
         finally:
             await repository.close()
 
+    async def test_open_preserves_permissions_on_existing_parent_directory(self, tmp_path: Path) -> None:
+        """Opening a repository never changes permissions on its caller-owned parent."""
+        import os
+
+        database_parent: Path = tmp_path / "caller-owned"
+        database_parent.mkdir(mode=0o755)
+        os.chmod(path=database_parent, mode=0o755)
+        repository: ChannelRepository = ChannelRepository(db_path=database_parent / "channels.db")
+        try:
+            await repository.open()
+            assert database_parent.stat().st_mode & 0o777 == 0o755
+        finally:
+            await repository.close()
+
+    async def test_open_prunes_only_unreferenced_settled_rows_across_reply_chains(self, tmp_path: Path) -> None:
+        """Retain every ancestor of a pending reply and prune an unrelated settled row."""
+        import sqlite3
+
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            old_prompt: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="old prompt",
+                    channel_id=channel.id,
+                )
+            )
+            accepted_reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="recent reply",
+                    message_type="reply",
+                    in_reply_to_id=old_prompt.id,
+                    channel_id=channel.id,
+                )
+            )
+            pending_reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="old pending follow-up",
+                    message_type="reply",
+                    in_reply_to_id=accepted_reply.id,
+                    channel_id=channel.id,
+                )
+            )
+            old_prompt_to_pending_reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="old prompt with pending reply",
+                    channel_id=channel.id,
+                )
+            )
+            pending_direct_reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="old pending reply",
+                    message_type="reply",
+                    in_reply_to_id=old_prompt_to_pending_reply.id,
+                    channel_id=channel.id,
+                )
+            )
+            old_unreferenced_message: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="old settled row without replies",
+                    channel_id=channel.id,
+                )
+            )
+            for message in (old_prompt, accepted_reply, old_prompt_to_pending_reply, old_unreferenced_message):
+                assert await gateway.accept(message_id=message.id) is True
+            await gateway.close()
+
+            old_stamp: str = datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
+            connection: sqlite3.Connection = sqlite3.connect(database=str(tmp_path / "channels.db"))
+            try:
+                for message in (
+                    old_prompt,
+                    pending_reply,
+                    old_prompt_to_pending_reply,
+                    pending_direct_reply,
+                    old_unreferenced_message,
+                ):
+                    connection.execute(
+                        "UPDATE messages SET created_at = ? WHERE id = ?",
+                        (old_stamp, str(message.id)),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+
+            repository: ChannelRepository = ChannelRepository(db_path=tmp_path / "channels.db")
+            await repository.open()
+            try:
+                for message in (old_prompt, accepted_reply, pending_reply, old_prompt_to_pending_reply):
+                    assert await repository.get(message_id=message.id) is not None
+                assert await repository.get(message_id=pending_direct_reply.id) is not None
+                assert await repository.get(message_id=old_unreferenced_message.id) is None
+                assert [row.id for row in await repository.pending_inbound(recipient_id=agent.id)] == [
+                    pending_reply.id
+                ]
+                assert [row.id for row in await repository.pending_outbound(recipient_ids=[user.id])] == [
+                    pending_direct_reply.id
+                ]
+            finally:
+                await repository.close()
+        finally:
+            await gateway.close()
+
     async def test_v1_database_is_upgraded_to_v2_with_the_coalesce_column(self, tmp_path: Path) -> None:
         """A database left at schema v1 gains the ``coalesce_key`` column and index (108.3 §4)."""
         import sqlite3
@@ -68,6 +185,141 @@ class TestSchemaBootstrap:
             assert "coalesce_pending" in indexes
         finally:
             await repository.close()
+
+
+class TestRepositoryCloseLifecycle:
+    async def test_close_is_idempotent_and_explicit_open_reopens_repository(self, tmp_path: Path) -> None:
+        """Closed repositories reject work until explicitly reopened, then remain usable."""
+        repository: ChannelRepository = await _open_repository(tmp_path=tmp_path)
+        await repository.close()
+        await repository.close()
+        with pytest.raises(RuntimeError, match="not open"):
+            await repository.count_participants()
+
+        await repository.open()
+        try:
+            assert await repository.count_participants() == 0
+        finally:
+            await repository.close()
+
+    async def test_concurrent_open_waits_for_close_and_admitted_queries_get_closed_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Close drains admitted SQLite work before a waiting open publishes a fresh connection."""
+        import asyncio
+        import sqlite3
+
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            message: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="accept before close",
+                    channel_id=channel.id,
+                )
+            )
+            blocker: sqlite3.Connection = sqlite3.connect(
+                database=str(tmp_path / "channels.db"), isolation_level=None
+            )
+            blocker.execute("BEGIN IMMEDIATE")
+            repository: ChannelRepository = gateway.repository
+            accept_task: asyncio.Task[bool] = asyncio.create_task(repository.accept(message_id=message.id))
+            await asyncio.sleep(0.05)
+            close_task: asyncio.Task[None] = asyncio.create_task(repository.close())
+            await asyncio.sleep(0.05)
+            query_after_close_task: asyncio.Task[int] = asyncio.create_task(repository.count_participants())
+            reopen_task: asyncio.Task[None] = asyncio.create_task(repository.open())
+            try:
+                await asyncio.sleep(0.08)
+                assert not accept_task.done()
+                assert not close_task.done()
+                assert not reopen_task.done()
+                blocker.execute("COMMIT")
+                assert await accept_task is True
+                await close_task
+                with pytest.raises(RuntimeError, match="not open"):
+                    await query_after_close_task
+                await reopen_task
+                assert await repository.count_participants() == 2
+            finally:
+                if blocker.in_transaction:
+                    blocker.execute("ROLLBACK")
+                blocker.close()
+        finally:
+            await gateway.close()
+
+    async def test_cancelled_close_joins_blocked_sqlite_work_before_reopening(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancelled close waits for a real SQLite write and retires its connection safely."""
+        import asyncio
+        import sqlite3
+        import threading
+
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            message: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="accept while closing",
+                    channel_id=channel.id,
+                )
+            )
+            connection: sqlite3.Connection = sqlite3.connect(
+                database=str(tmp_path / "channels.db"), isolation_level=None
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            repository: ChannelRepository = gateway.repository
+            accept_task: asyncio.Task[bool] = asyncio.create_task(repository.accept(message_id=message.id))
+            await asyncio.sleep(0.05)
+            close_task: asyncio.Task[None] = asyncio.create_task(repository.close())
+            await asyncio.sleep(0.05)
+            heartbeat_count: int = 0
+            heartbeat_stopped: asyncio.Event = asyncio.Event()
+
+            async def record_heartbeats() -> None:
+                """Count event-loop progress while repository close waits for SQLite."""
+                nonlocal heartbeat_count
+                while not heartbeat_stopped.is_set():
+                    heartbeat_count += 1
+                    await asyncio.sleep(0.01)
+
+            heartbeat_task: asyncio.Task[None] = asyncio.create_task(record_heartbeats())
+            try:
+                await asyncio.sleep(0.08)
+                assert heartbeat_count >= 5
+                close_task.cancel()
+                connection.execute("COMMIT")
+                with pytest.raises(asyncio.CancelledError):
+                    await close_task
+                assert await accept_task is True
+                with pytest.raises(RuntimeError, match="not open"):
+                    await repository.count_participants()
+            finally:
+                heartbeat_stopped.set()
+                await heartbeat_task
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                connection.close()
+
+            worker_threads_after: list[threading.Thread] = [
+                thread
+                for thread in threading.enumerate()
+                if thread.name.startswith("channel-repository_")
+            ]
+            assert worker_threads_after == []
+            await repository.open()
+            assert await repository.get(message_id=message.id) is not None
+        finally:
+            await gateway.close()
 
 
 class TestRegisterParticipants:
@@ -521,7 +773,7 @@ class TestPendingReads:
         finally:
             await gateway.close()
 
-    async def test_two_processes_share_one_database_without_index_gaps(self, tmp_path: Path) -> None:
+    async def test_two_connections_share_one_database_without_index_gaps(self, tmp_path: Path) -> None:
         db_path: Path = tmp_path / "channels.db"
         first: ChannelGateway = ChannelGateway(repository=ChannelRepository(db_path=db_path))
         await first.repository.open()
@@ -819,6 +1071,11 @@ class TestSentMessagesAndReplies:
             )
             found: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
             assert found is not None and found.id == reply.id
+            assert found.accepted_at is None and found.cancelled_at is None
+            assert await gateway.cancel(message_id=reply.id, reason="recipient_closed") is True
+            cancelled_reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+            assert cancelled_reply is not None and cancelled_reply.id == reply.id
+            assert cancelled_reply.cancelled_at is not None
             assert await gateway.reply_for(message_id=reply.id) is None
         finally:
             await gateway.close()

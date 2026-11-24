@@ -538,7 +538,10 @@ class ChannelGateway:
         )
 
     async def reply_for(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
-        """Return the accepted reply row answering one message, or ``None``.
+        """Return the earliest reply row answering one message, pending or accepted.
+
+        Pending replies are available for delivery; the caller accepts them
+        only after that delivery succeeds.
 
         Args:
             message_id (UUID): The message the reply must answer.
@@ -558,7 +561,7 @@ class ChannelGateway:
         """Return composer rows for what one participant sent to another (108.3 §4).
 
         State derives from ``accepted_at`` / ``cancelled_at``; the reply
-        preview comes from the first accepted reply row.
+        preview comes from the earliest reply row, including while pending.
 
         Args:
             sender_id (UUID): The sending participant (the channel's user).

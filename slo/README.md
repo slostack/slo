@@ -1064,51 +1064,28 @@ TextArea's default Enter handling would also fire and add a newline.
 
 ### 4.3 `SloTUI` Routes the Submitted Text
 
-`PromptInput.Submitted` bubbles up the DOM. `SloTUI` is its first
-ancestor with a matching handler:
+`PromptInput.Submitted` bubbles up to `SloTUI`. Slash commands go to the
+router; ordinary text goes through `_submit_or_queue_prompt` in
+`src/tui/app.py` and `TuiChannelAdapter.send_prompt` in
+`src/tui/channel/adapter.py`.
 
-`src/tui/app.py` (the on_prompt_input_submitted method):
+Enter now **enqueues**, rather than directly starting a model run. Every
+ordinary submission becomes a durable SQLite message, including submissions
+made while busy; a newer prompt does not replace an older one. The session's
+`ChannelPoller` selects pending prompts, forced first and otherwise FIFO,
+and starts an asynchronous `TuiTurnRunner` task when the session is ready.
+The runner calls `_run_prompt` for streaming and presentation. Acceptance is
+stamped on the first session event, not on enqueue or completion.
 
-```python
-async def on_prompt_input_submitted(
-    self, event: PromptInput.Submitted
-) -> None:
-    text: str = (event.text or "").strip()
-    if self._input is not None:
-        self._input.load_text("")            # clear the input
-    if not text:
-        return                                # bare Enter on empty buffer → no-op
-    if self._in_flight_task is not None:
-        await self._queue_prompt(text=text)   # already running → visible one-deep queue
-        return
-    if text.startswith("/"):
-        await self._dispatch_slash_command(line=text)
-        return
-    self._echo_user_line(text=text)
-    self._in_flight_task = asyncio.create_task(self._run_prompt(text=text))
-```
-
-Read it top-to-bottom. Each line is one decision:
-
-1. Strip and capture the text.
-2. Clear the input box.
-3. Empty? No-op.
-4. Already running? Hold the prompt in the visible one-deep queue
-   (`⏳ Queued: …`); it auto-submits when the current run ends. A second
-   mid-run submission *replaces* the held one. `/abort` keeps the held
-   prompt (with a notice); `/clear` drops it.
-5. Slash command? Dispatch to the router (covered in 4.10).
-6. Echo `> <text>` into the transcript with class `user-line`.
-7. Spawn the prompt as a background asyncio task.
-
-That last step is key. `_run_prompt` is a coroutine. We don't `await`
-it — we wrap it in `asyncio.create_task` and keep going. The event loop
-returns to the UI, the spinner mounts, and the prompt runs concurrently.
+Ctrl+Enter (or `/force`) marks a prompt for the active run's next safe
+boundary; when idle, it can start a turn. See [§9.8](#98-channels--the-shared-message-queue)
+for routing, recovery and delivery ownership.
 
 ### 4.4 `_run_prompt` and the Fixed Status Spinner
 
-`_run_prompt` is the task spawned in §4.3. It is small but its shape
-encodes the spinner-placement fix:
+`_run_prompt` is reached through `TuiTurnRunner` in §4.3. The historical
+streaming sketch below illustrates the spinner-placement fix; queue admission
+and task ownership now belong to the channel poller:
 
 ```python
 async def _run_prompt(self, *, text: str) -> None:
@@ -1804,21 +1781,15 @@ fixed above the footer, updated via `session.usage_snapshot` whenever
 quantities (`6.0k`, `12k`, `1.0M`) for token values only — rpm, cooldown
 seconds and context percent keep their raw units.
 
-**Queued prompt (spec 72.a.4, input-adjacent anchoring).** An ordinary
-(non-slash) prompt submitted while a run is active is held in a one-deep,
-latest-wins app-owned slot (`_queued_prompt_text` plus its mounted
-`QueuedPromptBlock`, rendered as `⏳ Queued: <text>`); a newer busy
-submission replaces the held text in place. The block mounts into
-`#chat-shell` directly before `PromptInput` — outside the scroll region — so
-it stays visible while the transcript scrolls; it is never a transcript
-child, so window eviction cannot reach it and `_is_block_live` has no
-`QueuedPromptBlock` branch. There is still exactly one `session.invoke()`
-task at a time: `_prompt_submission_lock` serializes acceptance with the
-run-completion handoff (`_finish_prompt_run` → `_start_queued_prompt_if_idle`),
-which removes the anchored block before echoing and starting the held turn.
-`/abort` (and Ctrl+C) preserve the held prompt and write one survival notice;
-`/clear` and an allowed `/new` discard it. Slash commands and inbox
-`chat_turn` items never enter the user queue.
+**Queued prompts (channels, superseding spec 72.a.4's one-deep slot).**
+The composer shows pending channel rows outside the scrolling transcript;
+the database, not a widget, owns them. `/queue` controls pending prompts,
+including resume, force and cancellation. Abort pauses new runs without
+removing queued rows; `/clear` clears presentation without deleting the queue.
+Session replacement closes the old participant under the durable-inbox rules
+in [§9.8](#98-channels--the-shared-message-queue), rather than transferring its
+prompts to the new session. The poller reserves one prompt at a time and
+excludes that reservation from queue cancellation even before acceptance.
 
 **Copy and output padding (specs 72.a.3 and 81).** No transcript block has a
 card-local copy control. Copy runs through `SloTUI` only: the focus chord
@@ -3281,12 +3252,13 @@ self-reported evidence advances it to `running`.
 delegation chain for headless-orchestrator lifecycle data:
 
 ```
-SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed HandleAdvanceOutcomeDAO ──> SloTUI
-                                     │                                                    │
-                                     │ durable handle advance + live-state cache           ▼
-                                     │                                          DetachedWorkflowRenderer
-                                     │                                          (apply_effects only)
-                                     └──────── typed DetachedWorkflowUiEffectDAO ─────────┘
+SloTUI ── channel observation / launch result ──> DetachedWorkflowAppService
+                                                        │
+                                     durable handle advance + live-state cache
+                                                        │
+                                     typed DetachedWorkflowUiEffectDAO
+                                                        ▼
+SloTUI ── apply returned effects ──> DetachedWorkflowRenderer (apply_effects)
 ```
 
 - `dao.py` owns the only parsing/validation seams
@@ -3304,10 +3276,12 @@ SloTUI ── raw kind/payload ──> DetachedWorkflowAppService ── typed H
   launch results or calls a window launcher. Typed `reset_launch_guard`
   resets request deduplication, not the session-owned Herdr one-shot attempt
   ledger.
-- **Strict app boundary:** `SloTUI` passes the raw inbox kind/payload (or the
-  raw `launch_workflow` tool-result text) to the service exactly once, then
-  only executes the typed effects returned. The app never parses workflow
-  payloads or branches on terminal fields itself.
+- **Strict app boundary:** the channel receive path now calls
+  `advance_from_reconciliation` when another participant's note/notice is
+  displayed or its prompt is about to run. The service reads durable workflow
+  evidence; the app does not parse message text to infer lifecycle state.
+  Raw `launch_workflow` tool-result parsing remains service-owned. In both
+  paths, the app applies only the returned typed effects.
 
 **Session list, progress modal and child abort (feature 94).** Spec family:
 `specifications/94-slo-tui-redesign/tui/`; runtime notes: KB
@@ -3437,6 +3411,138 @@ manual recovery replaces automatic focus/query/retry/close. Platform work admitt
 before cutoff may still spawn while its owned thread is joined. `submitted` is not
 paint/liveness evidence. Herdr 0.9.2+ remains a target, **UNPROVEN live**; T6 acceptance,
 independent review and all-green static gates are separate from T1–T5 author readiness.
+
+---
+
+### 9.8 Channels — the Shared Message Queue
+
+Channels connect human interfaces, agent sessions and system senders through
+one SQLite queue at `$SLO_HOME/channels/channels.db`. This is separate from
+session history: the queue owns routing and acceptance; history owns model
+context and replay. The following describes the implementation on this branch,
+including the repository lifecycle and retention hardening present as of
+version `0.33.0`.
+
+```text
+TUI / CLI / external adapter / scheduler / workflow notifier / send_message
+                              │
+                       ChannelGateway
+                              │
+                       ChannelRepository ── SQLite (WAL)
+                              │
+                 ┌────────────┴─────────────┐
+          agent recipient             user recipient
+          ChannelPoller               adapter outbound loop
+          boundary inbox              deliver, then accept
+          turn runner → ReplyWriter ─────────┘
+```
+
+**Owners and identities.** `src/channels/gateway.py` is the shared application
+API; `repository.py` owns SQL and transactions, `schema.py` migrations, and
+`dao.py` the typed channel, participant and message contracts. A channel is a
+platform connection; a participant is a `user`, `agent` or `system`. Agent
+identity is its session UUID (legacy non-UUID session IDs map deterministically).
+Users and systems retain identity through a channel's `external_ref` slot.
+The TUI persists its channel identity in `channels/tui.json`; external adapter
+IDs derive from kind and name. Scheduler sends use system participants, not
+human operators.
+
+Messages address participants, not windows. The recipient agent owns the
+conversation index; an agent's outbound reply to a user belongs to the sending
+agent's conversation. `BEGIN IMMEDIATE` serializes index allocation and admission
+against closure. Reusing a message ID returns the stored row; it does not create
+a second message. Local wake events reduce latency within a process; polling
+finds writes from other processes.
+
+| Message | Current handling |
+|---|---|
+| `prompt` | Starts a turn when ready; forced prompts enter an active run at a safe boundary. |
+| `note` | Displayed and added to model context when idle or at a run boundary; never starts or revives a run. |
+| `notice` | Display-only, then accepted; never enters model context. |
+| `reply` | Answers the original sender, with `in_reply_to_id` linking the request. |
+
+`src/agents/slo_agent/channel_delivery/` owns the poller, boundary inbox,
+turn-runner contract and reply writer. A started ordinary turn is accepted on
+its first event; completion writes a deterministic-ID reply. Forced input consumed at an active
+run boundary is acknowledged by acceptance, not a separate reply. `MessagingPolicy` restricts
+the agent-facing `send_message` tool to session → launched workflow,
+orchestrator → own child, and child → parent. Human channel users may address
+any open agent; this tool policy is not a database-wide authorization layer.
+
+**TUI and external adapters.** `SloTUI` owns gateway lifetime and starts the
+session poller only after acquiring session ownership. `TuiChannelAdapter`
+queues input and runs its own outbound loop; it accepts replies to local
+prompts without re-rendering the already streamed answer. `TuiDisplaySink`
+renders notes/notices and tells the workflow service to reconcile durable
+state. The composer exposes queued and sent rows, not a one-deep memory slot.
+
+External adapters implement `ChannelAdapter` (`src/channels/protocol.py`).
+`AdapterHost` registers the channel, owns start/stop and heartbeat, handles
+user attachment through its context, and delivers pending user-bound rows
+before accepting them. `slo channel` exposes adapter running, agent discovery,
+send and follow operations; Telegram is the implemented external adapter in
+`src/channels/adapters/telegram/`. The TUI conforms to the protocol but runs
+in-process, not under `AdapterHost`.
+
+**Workflow and scheduler delivery.** `WorkflowNotifier` sends started/phase
+updates as notes, coalesced fleet updates as notices, and terminal
+completed/failed/aborted reports as ordinary prompts to the owning session.
+The TUI reconciles workflow handles from durable orchestrator state rather
+than interpreting those reports as lifecycle authority. In channel-enabled
+headless execution, `HeadlessRunner` retains run ownership (`auto_run=False`);
+its poller services boundary input and notes/notices. After a successful,
+un-aborted main run, the runner drains normal follow-up prompts up to its cap,
+then closes the participant. Children do not run follow-up turns.
+`ScheduleChannelSender` also writes through the gateway. `InboxImporter`
+idempotently imports the retired session file inbox on startup; it is a
+migration bridge, not a second live delivery transport.
+
+**Closure and restart.** Interactive agents register `durable_inbox=True`.
+Closing one atomically marks it closed and cancels pending operator-origin
+rows, while retaining rows from agents and systems. Those non-operator senders
+may also enqueue while it is closed; delivery waits for the session to reopen.
+Closed workflow/child agents have no durable inbox: closure cancels all pending
+inbound rows and subsequent sends are refused. A heartbeat is activity evidence,
+not a guarantee that a recipient is currently running.
+
+On restart, the poller accepts pending rows whose `channel_message_id` already
+appears in session history. Remaining operator rows pause automatic runs until
+`/queue resume`; agent/system rows alone do not trigger that recovery pause.
+Legacy inbox import happens afterward. This prevents replay of known input;
+it is not reconstruction of an answer lost after acceptance.
+
+**Repository lifecycle, recovery and retention.** Each repository owns one
+connection and a dedicated single-worker executor, keeping SQLite work off the
+event loop. A lifecycle lock orders open, operation admission and close; close
+drains admitted work and retires the worker before cancellation escapes.
+Operations after close fail until an explicit reopen. Cancelling an awaiting
+caller does not cancel already submitted SQLite work: a write may still commit.
+
+Startup checks integrity, migrates and prunes before publishing the connection.
+A cross-process recovery lock serializes startup recovery. Confirmed corruption
+(or a non-SQLite header) preserves the database and existing SQLite sidecars
+under a unique `.corrupt-…` stem before creating a fresh queue. Other database
+errors propagate instead of being treated as corruption. Unsafe non-regular
+queue/recovery paths are rejected. `ChannelGateway.recovery_path` exposes the
+preserved copy, and the TUI announces it; this does **not** restore its messages
+into the fresh database.
+
+Startup retention deletes accepted or cancelled rows older than 30 days by
+`created_at`, only when no row references them through `in_reply_to_id`.
+Repeated leaf deletion removes eligible reply chains without a depth limit.
+Pending rows, ancestors still referenced by retained rows, and reference cycles
+remain. Retention is therefore reference-safe, not a hard age or size bound.
+
+**Failure handling: implemented versus proposed.** There is limited retry
+behavior today: external adapter delivery leaves a failed row pending and uses
+in-memory per-user backoff; the live poller retains a finished run while retrying
+reply settlement without rerunning the model. Notes can retry display/recording.
+These are not a durable delivery-failure ledger. Workflow notifier send errors
+are logged and swallowed, and an accepted request can remain without a reply
+if settlement cannot complete before shutdown. The proposed delivery-failures
+retry design is **not implemented** here; do not infer durable retry jobs,
+restart recovery of failed reply writes, or exactly-once platform delivery from
+message-ID deduplication.
 
 ---
 
@@ -4048,6 +4154,7 @@ slo/
 │   │   │   │   ├── launch_tool.py      # launch_workflow — detached orchestrator spawn
 │   │   │   │   ├── relaunch.py         # WorkflowRelauncher — resume a dead detached workflow
 │   │   │   │   └── workflow_registry.py # WorkflowHandleStore and workflow commands
+│   │   │   ├── channel_delivery/       # Poller, boundary inbox, reply writer, messaging policy/tool
 │   │   │   ├── tool_execution/
 │   │   │   │   ├── service.py         # plan_tool_batch — parallel vs sequential planning
 │   │   │   │   ├── dao.py             # ToolExecutionPlanDAO
@@ -4081,13 +4188,22 @@ slo/
 │   │   └── providers/
 │   │       ├── anthropic_provider.py
 │   │       └── openai_codex_provider.py
+│   ├── channels/                      # Shared SQLite message queue (§9.8)
+│   │   ├── dao.py / schema.py / repository.py # Typed rows, migrations, serialized DB lifecycle
+│   │   ├── gateway.py                 # ChannelGateway — registration, routing and queue API
+│   │   ├── protocol.py / host.py       # ChannelAdapter contract and external adapter lifecycle
+│   │   ├── inbox_import.py            # Idempotent retired file-inbox import
+│   │   └── adapters/telegram/         # Telegram external adapter
 │   ├── cli/
+│   │   ├── channel_commands.py / channel_dispatch.py # `slo channel` operator surface
+│   │   ├── headless_channel.py        # Headless channel turn runner
 │   │   ├── app.py                     # Typer app — bare `slo` opens TUI; `--resume` accepts session id or name
 │   │   ├── typer_dispatch.py          # TyperDispatch — routes CLI subcommands + resolves session references
 │   │   ├── plugin.py                  # `slo plugin install|list|uninstall|upgrade` parse surface
 │   │   ├── update.py                  # `slo update` self-updater + installer launcher finalization + ShellEnvironmentDefaults
 │   │   └── __main__.py
 │   ├── tui/
+│   │   ├── channel/                   # TUI channel adapter, display sink and turn runner
 │   │   ├── app.py                     # SloTUI (Textual App) + PromptInput + /new,/rename + prompt-history recall
 │   │   ├── theme.py                   # Theme.variables — the seven Pi-derived semantic tokens
 │   │   ├── prompt_history.py          # PromptHistoryNavigator — in-process Up/Down prompt recall
@@ -4120,7 +4236,6 @@ slo/
 │   │       ├── assistant_stream_block.py # AssistantStreamBlock — one assistant answer turn (answer-only)
 │   │       ├── assistant_stream_thinking_block.py # AssistantStreamThinkingBlock — one thinking segment per normalized block_id
 │   │       ├── tool_execution_block.py   # ToolExecutionBlock — one tool call+result with panel surface styling
-│   │       ├── queued_prompt_block.py    # QueuedPromptBlock — one visible latest-wins held ordinary prompt
 │   │       ├── markdown_content_compiler.py # MarkdownContentCompiler — markdown-it AST → visible text + spans
 │   │       ├── usage_status_bar.py       # UsageStatusBar — token/rate display
 │   │       ├── sub_agent_fleet_panel.py  # SubAgentFleetPanel + FleetSessionList — "Ongoing workflow tasks" list below PromptInput

@@ -58,7 +58,9 @@ class TestSchemaBootstrap:
         finally:
             await repository.close()
 
-    async def test_open_prunes_only_unreferenced_settled_rows_across_reply_chains(self, tmp_path: Path) -> None:
+    async def test_open_prunes_only_unreferenced_settled_rows_across_reply_chains(
+        self, tmp_path: Path
+    ) -> None:
         """Retain every ancestor of a pending reply and prune an unrelated settled row."""
         import sqlite3
 
@@ -121,8 +123,44 @@ class TestSchemaBootstrap:
                     channel_id=channel.id,
                 )
             )
-            for message in (old_prompt, accepted_reply, old_prompt_to_pending_reply, old_unreferenced_message):
+            expired_chain_root: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="expired settled chain root",
+                    channel_id=channel.id,
+                )
+            )
+            expired_chain_accepted_reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=agent.id,
+                    recipient_id=user.id,
+                    message_contents="expired accepted reply",
+                    message_type="reply",
+                    in_reply_to_id=expired_chain_root.id,
+                    channel_id=channel.id,
+                )
+            )
+            expired_chain_cancelled_reply: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="expired cancelled reply",
+                    message_type="reply",
+                    in_reply_to_id=expired_chain_accepted_reply.id,
+                    channel_id=channel.id,
+                )
+            )
+            for message in (
+                old_prompt,
+                accepted_reply,
+                old_prompt_to_pending_reply,
+                old_unreferenced_message,
+                expired_chain_root,
+                expired_chain_accepted_reply,
+            ):
                 assert await gateway.accept(message_id=message.id) is True
+            assert await gateway.cancel(message_id=expired_chain_cancelled_reply.id, reason="expired") is True
             await gateway.close()
 
             old_stamp: str = datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
@@ -134,6 +172,9 @@ class TestSchemaBootstrap:
                     old_prompt_to_pending_reply,
                     pending_direct_reply,
                     old_unreferenced_message,
+                    expired_chain_root,
+                    expired_chain_accepted_reply,
+                    expired_chain_cancelled_reply,
                 ):
                     connection.execute(
                         "UPDATE messages SET created_at = ? WHERE id = ?",
@@ -150,6 +191,9 @@ class TestSchemaBootstrap:
                     assert await repository.get(message_id=message.id) is not None
                 assert await repository.get(message_id=pending_direct_reply.id) is not None
                 assert await repository.get(message_id=old_unreferenced_message.id) is None
+                assert await repository.get(message_id=expired_chain_root.id) is None
+                assert await repository.get(message_id=expired_chain_accepted_reply.id) is None
+                assert await repository.get(message_id=expired_chain_cancelled_reply.id) is None
                 assert [row.id for row in await repository.pending_inbound(recipient_id=agent.id)] == [
                     pending_reply.id
                 ]
@@ -252,9 +296,7 @@ class TestRepositoryCloseLifecycle:
         finally:
             await gateway.close()
 
-    async def test_cancelled_close_joins_blocked_sqlite_work_before_reopening(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_cancelled_close_joins_blocked_sqlite_work_before_reopening(self, tmp_path: Path) -> None:
         """Cancelled close waits for a real SQLite write and retires its connection safely."""
         import asyncio
         import sqlite3
@@ -311,9 +353,7 @@ class TestRepositoryCloseLifecycle:
                 connection.close()
 
             worker_threads_after: list[threading.Thread] = [
-                thread
-                for thread in threading.enumerate()
-                if thread.name.startswith("channel-repository_")
+                thread for thread in threading.enumerate() if thread.name.startswith("channel-repository_")
             ]
             assert worker_threads_after == []
             await repository.open()

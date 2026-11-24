@@ -1,5 +1,90 @@
 # Changelog
 
+## [0.33.0] — 2026-11-24
+
+First tagged release since v0.31.4. Includes the OpenRouter output-budget and
+Fable Claude-route changes prepared in 0.32.0, plus the channel feature and
+repository fixes below.
+
+### Added
+
+- **A shared channel queue** connects interactive sessions, CLI senders,
+  orchestrators and child agents through SQLite. Prompts, forced steering, notes
+  and correlated replies use participant identities and per-conversation ordering.
+- **External adapter hosting and Telegram transport**, with adapter registration,
+  attachment handling, user-to-agent attachment and outbound delivery retries.
+  Delivery failures leave rows pending with per-user backoff; platform delivery
+  is not an exactly-once guarantee.
+- **Scheduled channel sending and legacy inbox import.** Readable pending and
+  claimed file-inbox items are imported under their original message IDs. The
+  importer preserves unreadable items rather than silently discarding them.
+- **TUI queue controls and agent messaging**, including queued prompt editing,
+  cancellation, forcing and visible send/recovery notices.
+
+### Fixed
+
+- **OpenRouter routes get a usable default output budget.** Routes with a
+  reported output ceiling default to `min(reported, context // 2, 64,000)`;
+  routes without one default to `min(8,192, context // 2)`. The factory
+  enforcement ceiling and compaction summary cap use the same fallback, so
+  these budgets are not rejected before the request leaves.
+- **Existing cached catalogs heal without a refresh.** Old cached budgets are
+  re-derived in memory from stored capability evidence without rewriting the
+  cache or republishing an unchanged catalog snapshot. Operator overrides still
+  win, malformed metadata fails closed, and non-OpenRouter providers are
+  unchanged. OpenRouter may reject a budget an account cannot cover with HTTP
+  402; an operator can lower `max_tokens`.
+- **Fable bridge routes use native model IDs.** `claude-fable` maps to
+  `claude-fable-5-1`; versioned routes use their own IDs. Invented Fable
+  versions are rejected before a native process starts, and supported Fable
+  routes keep adaptive thinking enabled.
+- **Sub-agent cancellation is scoped to the current turn.** Aborting a child
+  dispatch no longer permanently seals the session-owned pool; subsequent turns
+  can dispatch children again while abort and teardown still join owned work.
+- **Queued prompt controls coordinate with admission.** Cancellation and editing
+  serialize against poller admission. A newer editor draft is preserved, uncertain
+  mutations are reported, and a successful insertion is distinguished from later
+  refresh or model-readiness failures.
+- **Corrupt channel stores are preserved before replacement.** Startup checks
+  SQLite integrity before migration, retains the corrupt database and sidecars,
+  and reports the recovery path in the TUI. Recovery uses a bounded inter-process
+  lock; ordinary lock/access errors are not treated as corruption.
+- **Retention preserves reply references.** On open, settled rows older than
+  30 days by creation time are removed only when no message references them.
+  Repeated leaf deletion can drain expired acyclic chains. Pending rows, ancestors
+  of retained rows and cyclic references remain; retention is not a hard size cap.
+- **Repository shutdown joins owned work.** Open, close and operation admission
+  share a lifecycle lock. Close drains admitted SQLite operations and retires its
+  worker off the event loop before propagating cancellation. Explicit reopening
+  creates a fresh worker. Cancelling a submitted operation does not undo a write
+  that subsequently commits.
+- **Existing parent-directory permissions are preserved.** Newly created database
+  parents request mode `0700`; the database file uses `0600`.
+
+### Ownership and compatibility
+
+- `ParticipantDAO` owns conversation selection and the closed-inbox admission
+  rule. Interactive durable inboxes retain non-operator agent/system messages
+  while closed; closed workflow/child agents refuse new messages. Operator means
+  any `user` participant, not just the local TUI user.
+- Repository mapping uses named SQLite rows and explicit types; insertion helpers
+  keep transaction ownership in the repository. These are internal changes, not
+  new gateway APIs or serialized message fields. No schema migration was added;
+  the channel feature's existing migrations reach schema version 3.
+- Reply lookup returns the earliest correlated reply regardless of whether it is
+  pending, accepted or cancelled. Lookup alone is not delivery authorization or
+  acknowledgement.
+
+### Verification and compatibility
+
+- Real-SQLite repository tests cover expired accepted/cancelled reply chains
+  across repeated pruning passes, while preserving pending rows and referenced
+  ancestors. Lifecycle tests cover concurrent open/close and cancellation while
+  SQLite work is blocked.
+- The release keeps the existing channel schema at version 3; no database
+  migration or serialized session-history change is required. External
+  native-client and live-provider compatibility remain outside these tests.
+
 ## [0.31.4] — 2026-11-12
 
 Changes since v0.31.3. Includes the Claude quota/session recovery fix from MR !165,

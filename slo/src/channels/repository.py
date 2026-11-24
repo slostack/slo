@@ -366,7 +366,8 @@ class ChannelRepository:
             raise ValueError("A system participant needs both channel_id and external_ref.")
 
         def _write(connection: sqlite3.Connection) -> ParticipantDAO:
-            row = connection.execute(
+            # SQLite returns one participant row for a successful upsert.
+            participant_row: sqlite3.Row = connection.execute(
                 """
                 INSERT INTO participants(
                     id, kind, name, channel_id, external_ref, status, last_seen_at, created_at,
@@ -392,7 +393,7 @@ class ChannelRepository:
                 ),
             ).fetchone()
             connection.commit()
-            return _participant_from_row(row=row)
+            return _participant_from_row(row=participant_row)
 
         return await self._run(_write)
 
@@ -538,9 +539,7 @@ class ChannelRepository:
         )
 
     @staticmethod
-    def _insert_message_row(
-        *, connection: sqlite3.Connection, channel_message: ChannelMessageDAO
-    ) -> None:
+    def _insert_message_row(*, connection: sqlite3.Connection, channel_message: ChannelMessageDAO) -> None:
         """Insert one fully resolved channel message into SQLite."""
         connection.execute(
             """
@@ -803,7 +802,9 @@ class ChannelRepository:
                 pending_cancellations: list[tuple[str, str, str]] = [
                     (cancellation_stamp, reason, str(sender_row["message_id"]))
                     for sender_row in sender_rows
-                    if not closed_participant.admits_message_from(sender=_participant_from_row(row=sender_row))
+                    if not closed_participant.admits_message_from(
+                        sender=_participant_from_row(row=sender_row)
+                    )
                 ]
                 connection.executemany(
                     """
@@ -828,7 +829,9 @@ class ChannelRepository:
         """
 
         def _query(connection: sqlite3.Connection) -> int:
-            count_row: sqlite3.Row = connection.execute("SELECT COUNT(*) AS participant_count FROM participants").fetchone()
+            count_row: sqlite3.Row = connection.execute(
+                "SELECT COUNT(*) AS participant_count FROM participants"
+            ).fetchone()
             return int(count_row["participant_count"])
 
         return await self._run(_query)
@@ -974,6 +977,9 @@ class ChannelRepository:
 
         Returns:
             list[tuple[str, str]]: Column name and declared type pairs.
+
+        Raises:
+            ValueError: The table is not ``channels``, ``participants`` or ``messages``.
         """
 
         if table not in _VALID_TABLE_NAMES:
@@ -1094,9 +1100,14 @@ class ChannelRepository:
     def _prune(connection: sqlite3.Connection) -> None:
         """Delete expired settled leaves while preserving references and pending rows.
 
-        Repeating the leaf delete drains any acyclic or cyclic reply dependencies
-        without assuming a maximum chain depth. A retained pending row is never
-        removed, nor is any ancestor it still references.
+        Called on open after migration. Repeated leaf deletion removes expired
+        settled acyclic chains only when no retained row references them, without
+        assuming a maximum chain depth. Pending rows and their ancestors remain.
+        Cycles (including self-references) have no removable leaf and remain;
+        this operation does not collect cyclic dependencies.
+
+        Args:
+            connection (sqlite3.Connection): Open connection used during startup.
         """
         cutoff: datetime = datetime.now(timezone.utc) - timedelta(days=_RETENTION_DAYS)
         while True:
@@ -1380,9 +1391,7 @@ class ChannelRepository:
             worker: Optional[ThreadPoolExecutor] = self._worker
             if self._connection is None or worker is None:
                 raise RuntimeError("ChannelRepository is not open.")
-            operation_future: asyncio.Future[_T] = loop.run_in_executor(
-                worker, self._run_locked, operation
-            )
+            operation_future: asyncio.Future[_T] = loop.run_in_executor(worker, self._run_locked, operation)
         return await operation_future
 
     def _run_locked(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:

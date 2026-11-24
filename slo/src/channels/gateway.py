@@ -362,8 +362,9 @@ class ChannelGateway:
         """Wait until a ``reply`` row answers one message, and return it.
 
         WHAT: Re-reads the queue every 200 ms (the reply is usually written by
-        another process). The reply is returned still pending: the caller
-        delivers it to its user and then accepts it.
+        another process). Returns the earliest correlated reply in its stored
+        state, which may be pending, accepted or cancelled. Callers should
+        deliver only pending replies and accept one only after delivery.
         WHO: ``slo channel send --wait``.
 
         Args:
@@ -538,10 +539,12 @@ class ChannelGateway:
         )
 
     async def reply_for(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
-        """Return the earliest reply row answering one message, pending or accepted.
+        """Return the earliest reply row answering one message, regardless of delivery state.
 
-        Pending replies are available for delivery; the caller accepts them
-        only after that delivery succeeds.
+        Lookup includes pending, accepted and cancelled replies; it neither
+        filters for deliverability nor changes the row's state. Callers decide
+        whether to deliver a pending reply and accept it only after delivery
+        succeeds.
 
         Args:
             message_id (UUID): The message the reply must answer.

@@ -231,7 +231,7 @@ async def _owner_channel_rows(*, session_id: str) -> list:
 
     gateway: ChannelGateway = await ChannelGateway.default()
     try:
-        return await gateway.pending_inbound(
+        return await gateway.list_pending_inbound_messages(
             recipient_id=channel_participant_id_for_session(session_id=session_id)
         )
     finally:

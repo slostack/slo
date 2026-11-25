@@ -1320,7 +1320,9 @@ class HeadlessRunner:
             if self._abort_reason is not None:
                 return
             try:
-                rows: list["ChannelMessageDAO"] = await gateway.pending_inbound(recipient_id=participant_id)
+                rows: list["ChannelMessageDAO"] = await gateway.list_pending_inbound_messages(
+                    recipient_id=participant_id
+                )
                 prompts: list["ChannelMessageDAO"] = [
                     row for row in rows if row.message_type == "prompt" and row.forced_at is None
                 ]

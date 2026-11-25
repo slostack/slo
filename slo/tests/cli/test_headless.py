@@ -1031,13 +1031,13 @@ class TestHeadlessNotifyEndToEnd:
             ):
                 exit_code: int = await runner.invoke(prompt="run the workflow")
 
-            pending = await gateway.pending_inbound(recipient_id=target_id)
+            pending = await gateway.list_pending_inbound_messages(recipient_id=target_id)
             assert exit_code == 0
             assert [row.message_type for row in pending] == ["note", "note", "prompt"]
             assert all("[workflow wf-3f2a]" in row.message_contents for row in pending[:2])
             assert "workflow synthesis" in pending[-1].message_contents
             # The runner closed its own participant; pending rows for the TUI survive.
-            closed = await gateway.get_participant(
+            closed = await gateway.find_participant(
                 participant_id=channel_participant_id_for_session(session_id="orch-1")
             )
             assert closed is not None

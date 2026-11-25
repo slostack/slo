@@ -318,7 +318,7 @@ class TestPollerForcedRows:
             assert [row.id for row in pending] == [first.id, second.id]
             forced: bool = await poller.force(message_id=second.id)
             assert forced is True
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=second.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=second.id)
             assert stored is not None and stored.forced_at is not None
             pending_after: list[ChannelMessageDAO] = await poller.pending_prompts()
             assert pending_after[0].id == second.id
@@ -359,9 +359,11 @@ class TestPollerRunsRowsInOrder:
 
             async def _all_accepted_and_answered() -> bool:
                 stored_rows: list[Optional[ChannelMessageDAO]] = [
-                    await gateway.get(message_id=row.id) for row in rows
+                    await gateway.find_message(message_id=row.id) for row in rows
                 ]
-                replies: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+                replies: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                    recipient_ids=[user.id]
+                )
                 return (
                     all(stored is not None and stored.accepted_at is not None for stored in stored_rows)
                     and len(replies) == 3
@@ -373,10 +375,12 @@ class TestPollerRunsRowsInOrder:
                     raise AssertionError("rows were not all accepted and answered in time")
                 await asyncio.sleep(0.02)
 
-            replies: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            replies: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert {reply.in_reply_to_id for reply in replies} == {row.id for row in rows}
             for row in rows:
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
                 assert stored is not None and stored.accepted_at is not None
         finally:
             await poller.stop(reason="test_done")
@@ -400,7 +404,9 @@ class TestPollerRunsRowsInOrder:
                 request=request,
                 outcome=TurnOutcomeDAO(status="completed", final_text="all green"),
             )
-            outbound: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            outbound: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert len(outbound) == 1
             reply: ChannelMessageDAO = outbound[0]
             assert reply.message_type == "reply"
@@ -439,11 +445,11 @@ class TestPollerSessionJourney:
             )
 
             async def _request_accepted() -> bool:
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=request.id)
                 return stored is not None and stored.accepted_at is not None
 
             async def _reply_present() -> bool:
-                return bool(await gateway.pending_outbound(recipient_ids=[user.id]))
+                return bool(await gateway.list_pending_outbound_messages(recipient_ids=[user.id]))
 
             async def _done() -> bool:
                 return await _request_accepted() and await _reply_present()
@@ -454,7 +460,7 @@ class TestPollerSessionJourney:
                     raise AssertionError("poller did not accept and answer the row in time")
                 await asyncio.sleep(0.02)
 
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=request.id)
             assert stored is not None and stored.accepted_at is not None
 
             assert session._history_store is not None
@@ -463,7 +469,9 @@ class TestPollerSessionJourney:
             assert [event.payload.content for event in user_events] == ["hello"]
             assert user_events[0].payload.metadata.get("channel_message_id") == str(request.id)
 
-            outbound: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            outbound: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert len(outbound) == 1
             reply: ChannelMessageDAO = outbound[0]
             assert reply.message_type == "reply"
@@ -519,7 +527,7 @@ class TestPollerNotesAndNotices:
 
             async with asyncio.timeout(10.0):
                 while True:
-                    stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
+                    stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=note.id)
                     if stored is not None and stored.accepted_at is not None:
                         break
                     await asyncio.sleep(0.02)
@@ -574,7 +582,7 @@ class TestPollerNotesAndNotices:
             await _wait_until(predicate=lambda: len(display.shown) == 1)
             await asyncio.sleep(0.1)
             assert len(display.shown) == 1
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=note.id)
             assert stored is not None and stored.accepted_at is None and stored.cancelled_at is None
             assert runner.ran == [runner.ran[0]]  # the note never started a run
             assert session._history_store is not None
@@ -613,7 +621,7 @@ class TestPollerNotesAndNotices:
 
             async with asyncio.timeout(10.0):
                 while True:
-                    stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=notice.id)
+                    stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=notice.id)
                     if stored is not None and stored.accepted_at is not None:
                         break
                     await asyncio.sleep(0.02)
@@ -757,16 +765,18 @@ class TestPollerDefersToARunItDoesNotOwn:
                 )
             )
             await asyncio.sleep(0.2)
-            while_busy: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            while_busy: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=request.id)
             busy_poller: bool = poller.busy
 
             release_direct_run.set()
             await asyncio.wait_for(direct_run, timeout=10)
             async with asyncio.timeout(15.0):
-                while not await gateway.pending_outbound(recipient_ids=[user.id]):
+                while not await gateway.list_pending_outbound_messages(recipient_ids=[user.id]):
                     await asyncio.sleep(0.02)
-            answered: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
-            replies: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            answered: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=request.id)
+            replies: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
         finally:
             release_direct_run.set()
             await poller.stop(reason="test_done")
@@ -837,7 +847,9 @@ class TestPollerQueuedCancellation:
             assert poller.busy is True
 
             cancellation_result: bool = await poller.cancel_queued(message_id=request.id)
-            stored_before_first_event: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            stored_before_first_event: Optional[ChannelMessageDAO] = await gateway.find_message(
+                message_id=request.id
+            )
             assert cancellation_result is False
             assert stored_before_first_event is not None
             assert (stored_before_first_event.accepted_at, stored_before_first_event.cancelled_at) == (
@@ -847,9 +859,11 @@ class TestPollerQueuedCancellation:
 
             runner.release.set()
             async with asyncio.timeout(10.0):
-                while await gateway.reply_for(message_id=request.id) is None:
+                while await gateway.find_reply(message_id=request.id) is None:
                     await asyncio.sleep(0.02)
-            stored_after_completion: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            stored_after_completion: Optional[ChannelMessageDAO] = await gateway.find_message(
+                message_id=request.id
+            )
             replies: list[ChannelMessageDAO] = await _replies_to(
                 gateway=gateway,
                 user_id=user.id,
@@ -912,7 +926,7 @@ class RaisingAfterStartTurnRunner:
 
 async def _replies_to(*, gateway: ChannelGateway, user_id: UUID, request_id: UUID) -> list[ChannelMessageDAO]:
     """Return every reply row (pending outbound) that answers one request."""
-    outbound: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user_id])
+    outbound: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(recipient_ids=[user_id])
     return [row for row in outbound if row.in_reply_to_id == request_id]
 
 
@@ -1099,7 +1113,7 @@ class TestPollerReplyToClosedSender:
                 )
             )
             await gateway.close_agent(session_id=workflow.id, reason="recipient_closed")
-            closed_workflow: Optional[ParticipantDAO] = await gateway.get_participant(
+            closed_workflow: Optional[ParticipantDAO] = await gateway.find_participant(
                 participant_id=workflow.id
             )
             assert closed_workflow is not None and closed_workflow.status == "closed"
@@ -1119,11 +1133,11 @@ class TestPollerReplyToClosedSender:
                 gateway=gateway, user_id=user.id, request_id=follow_up.id
             )
             assert [reply.message_contents for reply in follow_up_replies] == ["unblocked"]
-            stored_request: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            stored_request: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=request.id)
             assert stored_request is not None
             assert stored_request.accepted_at is not None and stored_request.cancelled_at is None
-            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
-            assert await gateway.pending_outbound(recipient_ids=[workflow.id]) == []
+            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.list_pending_outbound_messages(recipient_ids=[workflow.id]) == []
             history: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(root=tmp_path / "history")
             events: list[SessionHistoryEventDAO] = await history.load_events(session_id=str(session_id))
             assert [
@@ -1207,7 +1221,7 @@ class TestPollerReplyToClosedSender:
 
             assert failing_handler.raised == 1
             assert runner.ran == [request.id, follow_up.id]
-            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
             assert poller.busy is False and poller.paused is None
             # Read-only: the inbox has no public reservation reader (see the first journey).
             assert request.id not in boundary_inbox._reserved_ids
@@ -1267,13 +1281,13 @@ class TestPollerReplyToClosedSender:
             await _wait_until(predicate=lambda: poller.current_run_task is None)
 
             assert poller.paused == "aborted" and poller.busy is False
-            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
-            assert await gateway.pending_outbound(recipient_ids=[workflow.id]) == []
+            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.list_pending_outbound_messages(recipient_ids=[workflow.id]) == []
             assert request.id not in boundary_inbox._reserved_ids
             # The aborted pause holds Q across several poll intervals.
             await asyncio.sleep(0.2)
             assert runner.ran == [request.id]
-            queued_follow_up: Optional[ChannelMessageDAO] = await gateway.get(message_id=follow_up.id)
+            queued_follow_up: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=follow_up.id)
             assert queued_follow_up is not None and queued_follow_up.accepted_at is None
             assert poller.paused == "aborted"
 
@@ -1346,9 +1360,9 @@ class TestPollerReplyToClosedSender:
             assert runner.ran == [request.id]
             assert poller.current_run_task is None and poller.busy is False
             assert request.id not in boundary_inbox._reserved_ids
-            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
-            assert await gateway.pending_outbound(recipient_ids=[workflow.id]) == []
-            closed_session: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=agent.id)
+            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.list_pending_outbound_messages(recipient_ids=[workflow.id]) == []
+            closed_session: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=agent.id)
             assert closed_session is not None and closed_session.status == "closed"
             refused_diagnostics: list[logging.LogRecord] = [
                 record

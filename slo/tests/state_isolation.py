@@ -38,8 +38,21 @@ INHERITED_STATE_OVERRIDES: tuple[str, ...] = (
     "SLO_TOOL_BASE_DIR",
     "SLO_SESSION_ID",
     "SLO_HERDR_METADATA_PROFILE",
+    "SLO_PARENT_PID",
+    "SLO_CHANNEL_PARENT_ID",
+    "SLO_CHANNEL_PARTICIPANT_NAME",
+    "SLO_HEADLESS_FOLLOWUP_TURNS",
+    "SLO_CLAUDE_BRIDGE_ENABLED",
 )
-"""State and content overrides that must not escape the test-owned home."""
+"""State and content overrides that must not escape the test-owned home.
+
+The final five entries name orchestrator child-process variables
+(``src/agents/slo_agent/orchestrator/process.py``) and the host Claude-bridge
+switch. A run started inside a Slo pool child inherits them; without removal
+they silently convert plain headless runs into channel-registered children,
+disable follow-up turns, and switch the default tool bundle from extended to
+local. Tests opt back in through their own ``monkeypatch.setenv``.
+"""
 
 
 def inherited_herdr_names() -> tuple[str, ...]:

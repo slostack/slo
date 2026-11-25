@@ -222,7 +222,7 @@ async def test_child_note_is_visible_during_the_dispatch_and_in_context_after_it
         applied: list[AgentStreamEventDAO] = [event for event in events if event.kind == "steering_applied"]
         assert [event.content for event in applied] == [_CHILD_QUESTION]
         note_id: UUID = UUID(str(spawn.send_results[0]["message_id"]))
-        stored: Optional[ChannelMessageDAO] = await channel_gateway.get(message_id=note_id)
+        stored: Optional[ChannelMessageDAO] = await channel_gateway.find_message(message_id=note_id)
         assert stored is not None and stored.accepted_at is not None
     finally:
         await session.stop_channel_delivery(reason="test_done")
@@ -268,7 +268,7 @@ async def test_orchestrator_send_message_by_task_id_reaches_the_running_child(
             ("only review src/tui", "forced_prompt")
         ]
         await child_inbox.confirm(deliveries=deliveries)
-        stored: Optional[ChannelMessageDAO] = await channel_gateway.get(
+        stored: Optional[ChannelMessageDAO] = await channel_gateway.find_message(
             message_id=UUID(str(result["message_id"]))
         )
         assert stored is not None and stored.accepted_at is not None and stored.forced_at is not None

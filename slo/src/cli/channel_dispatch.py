@@ -308,7 +308,7 @@ class ChannelDispatch:
             return EXIT_UNKNOWN
         cursor: int = max(0, await gateway.last_message_index(agent_session_id=agent.id) - max(0, history))
         while True:
-            rows: list[ChannelMessageDAO] = await gateway.conversation(
+            rows: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
                 agent_session_id=agent.id, after_index=cursor
             )
             for row in rows:
@@ -316,7 +316,7 @@ class ChannelDispatch:
                 cursor = row.message_index
             if rows:
                 continue
-            current: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=agent.id)
+            current: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=agent.id)
             if current is None or current.status != "open":
                 typer.echo(f"— {agent.name} finished —")
                 return EXIT_OK

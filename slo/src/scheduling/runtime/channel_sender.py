@@ -147,7 +147,9 @@ class ScheduleChannelSender:
         """
         if new.coalesce_key is None:
             return False
-        pending: list[ChannelMessageDAO] = await self._gateway.pending_inbound(recipient_id=new.recipient_id)
+        pending: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
+            recipient_id=new.recipient_id
+        )
         return any(
             row.sender_id == new.sender_id and row.coalesce_key == new.coalesce_key and row.id != new.id
             for row in pending

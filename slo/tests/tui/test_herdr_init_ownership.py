@@ -122,7 +122,7 @@ async def test_rollback_preserves_successor_after_release(tmp_path: Path) -> Non
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
     app = SloTUI(session=session)
-    app._build_session_delivery(session=session)
+    app._create_session_ownership_lease_store_if_missing(session=session)
     app._ensure_workflow_renderer()
     store = app._lease_store
     assert store is not None
@@ -189,7 +189,7 @@ async def test_captured_absent_store_does_not_release_successor(tmp_path: Path) 
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
     app = SloTUI(session=session)
-    app._build_session_delivery(session=session)
+    app._create_session_ownership_lease_store_if_missing(session=session)
     service = app._build_workflow_service()
     app._lease_store = None
     successor = SessionOwnershipLeaseStore(history_root=tmp_path / "successor")
@@ -202,7 +202,7 @@ async def test_captured_absent_store_does_not_release_successor(tmp_path: Path) 
         app._lease_store = successor
 
     with (
-        patch.object(app, "_build_session_delivery"),
+        patch.object(app, "_create_session_ownership_lease_store_if_missing"),
         patch.object(app, "_build_workflow_service", return_value=service),
         patch.object(service, "reconcile_snapshot", side_effect=reconcile),
     ):
@@ -328,7 +328,7 @@ async def test_initialization_revalidates_captured_binding(tmp_path: Path, phase
         config=SessionConfigDAO(workdir=tmp_path, history_root=tmp_path / "history")
     )
     app = SloTUI(session=session)
-    app._build_session_delivery(session=session)
+    app._create_session_ownership_lease_store_if_missing(session=session)
     app._ensure_workflow_renderer()
     store = app._lease_store
     assert store is not None
@@ -494,7 +494,7 @@ async def test_initialization_fault_is_contained(tmp_path: Path, failure: str) -
     target, method = {
         "reconcile": (DetachedWorkflowAppService, "reconcile_snapshot"),
         "acquire": (SessionOwnershipLeaseStore, "acquire"),
-        "build": (app, "_build_session_delivery"),
+        "build": (app, "_create_session_ownership_lease_store_if_missing"),
     }[failure]
     with patch.object(target, method, side_effect=RuntimeError("private init defect")):
         async with app.run_test() as pilot:

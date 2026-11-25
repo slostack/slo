@@ -147,14 +147,14 @@ async def test_cancelled_cached_forced_row_with_pending_note_makes_no_extra_prov
         assert "run_completed" in first_kinds
         assert "steering_applied" not in first_kinds
         assert len(model.recorded_contexts) == 1
-        pending_note: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
+        pending_note: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=note.id)
         assert pending_note is not None and pending_note.accepted_at is None
 
         # The next naturally continuing call carries the note exactly once.
         await asyncio.wait_for(_drain(session=session, text="next"), timeout=10.0)
         assert len(model.recorded_contexts) == 2
         assert model.recorded_contexts[1].count("fyi note") == 1
-        accepted_note: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
+        accepted_note: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=note.id)
         assert accepted_note is not None and accepted_note.accepted_at is not None
     finally:
         await gateway.close()
@@ -203,7 +203,7 @@ async def test_genuine_forced_prompt_still_revives_a_stopping_run(tmp_path: Path
         assert revived_context.count("also do X") == 1
         assert revived_context.index("ride-along note") < revived_context.index("also do X")
         for row_id in (note.id, forced.id):
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row_id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row_id)
             assert stored is not None and stored.accepted_at is not None
     finally:
         await gateway.close()
@@ -445,7 +445,7 @@ async def _run_tool_turn_with_note(
             await _wait_until_shown(display=display, expected=[note.id])
         world.model.first_call_release.set()
         await asyncio.wait_for(run, timeout=20.0)
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=note.id)
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=note.id)
     finally:
         await world.close()
     return display.shown, events, world.model.recorded_contexts, stored, note.id
@@ -492,7 +492,7 @@ async def test_a_display_in_flight_neither_blocks_the_boundary_nor_repeats_the_n
         # The released tick must not record the (now accepted) note into history again.
         await world.complete_one_poller_tick()
         await asyncio.wait_for(world.start_turn(text="next", events=[]), timeout=20.0)
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=note.id)
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=note.id)
     finally:
         display.release.set()
         await world.close()
@@ -522,7 +522,7 @@ async def test_a_failed_boundary_display_is_retried_by_the_poller_without_repeat
         world.model.first_call_release.set()
         await asyncio.wait_for(run, timeout=20.0)
         assert display.offered == [note.id] and display.shown == []
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=note.id)
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=note.id)
         assert stored is not None and stored.accepted_at is not None
         await world.complete_one_poller_tick()
         await _wait_until_shown(display=display, expected=[note.id])
@@ -623,10 +623,10 @@ async def test_a_run_cancelled_during_the_boundary_display_keeps_the_note_for_th
         await asyncio.gather(run, return_exceptions=True)
         display.release.set()
         await _wait_until_shown(display=display, expected=[note.id])
-        pending: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=note.id)
+        pending: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=note.id)
         assert pending is not None and pending.accepted_at is None and pending.cancelled_at is None
         await asyncio.wait_for(world.start_turn(text="next", events=next_events), timeout=20.0)
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=note.id)
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=note.id)
     finally:
         display.release.set()
         await world.close()

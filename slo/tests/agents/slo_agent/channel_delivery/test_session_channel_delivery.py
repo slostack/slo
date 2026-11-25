@@ -212,7 +212,7 @@ class TestForcedRowRecovery:
             )
             try:
                 await asyncio.sleep(0.15)
-                stored: ChannelMessageDAO | None = await gateway.get(message_id=forced_row.id)
+                stored: ChannelMessageDAO | None = await gateway.find_message(message_id=forced_row.id)
                 assert stored is not None and stored.accepted_at is not None
                 assert runner.ran == []
                 assert poller.paused is None
@@ -246,7 +246,7 @@ class TestForcedRowRecovery:
             try:
                 await asyncio.sleep(0.15)
                 assert poller.paused == "recovered"
-                stored: ChannelMessageDAO | None = await gateway.get(message_id=forced_row.id)
+                stored: ChannelMessageDAO | None = await gateway.find_message(message_id=forced_row.id)
                 assert stored is not None and stored.accepted_at is None
                 assert runner.ran == []
 
@@ -256,7 +256,7 @@ class TestForcedRowRecovery:
                     timeout=5.0,
                 )
                 assert runner.ran == [forced_row.id]
-                stored_after: ChannelMessageDAO | None = await gateway.get(message_id=forced_row.id)
+                stored_after: ChannelMessageDAO | None = await gateway.find_message(message_id=forced_row.id)
                 assert stored_after is not None and stored_after.accepted_at is not None
             finally:
                 await session.stop_channel_delivery(reason="test_done")

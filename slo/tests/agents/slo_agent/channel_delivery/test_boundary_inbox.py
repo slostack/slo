@@ -182,7 +182,9 @@ class TestTakeAndConfirm:
             )
             deliveries = await inbox.take(iteration=1)
             assert [delivery.message_id for delivery in deliveries] == [note_row.id, forced_row.id]
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             # The taken-but-not-yet confirmed note and forced prompt, and the
             # normal prompt, remain pending until they are confirmed.
             assert {row.message_contents for row in pending} == {"note", "forced", "normal"}
@@ -199,9 +201,9 @@ class TestTakeAndConfirm:
             )
             deliveries = await inbox.take(iteration=1)
             await inbox.confirm(deliveries=deliveries)
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
             assert stored is not None and stored.accepted_at is not None
-            assert await gateway.pending_inbound(recipient_id=agent.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=agent.id) == []
         finally:
             await gateway.close()
 
@@ -215,7 +217,7 @@ class TestTakeAndConfirm:
             )
             deliveries = await inbox.take(iteration=1)
             assert deliveries
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
             assert stored is not None and stored.accepted_at is None
             assert stored.forced_at is not None
         finally:
@@ -312,8 +314,8 @@ class TestNotesAtTheBoundary:
             assert deliveries[0].text == "note while busy"
             assert deliveries[0].sender_name == "tester (tui)"
             await inbox.confirm(deliveries=deliveries)
-            stored_note: Optional[ChannelMessageDAO] = await gateway.get(message_id=note.id)
-            stored_forced: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced.id)
+            stored_note: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=note.id)
+            stored_forced: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced.id)
             assert stored_note is not None and stored_note.accepted_at is not None
             assert stored_forced is not None and stored_forced.accepted_at is not None
         finally:

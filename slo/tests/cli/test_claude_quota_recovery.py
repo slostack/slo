@@ -163,7 +163,7 @@ async def test_child_and_parent_quota_failures_remain_actionable(tmp_path: Path)
         workflow_id="wf-synthetic-quota",
     )
     await notifier.failed(error=result.results[0].answer)
-    quota_rows = await quota_gateway.pending_inbound(
+    quota_rows = await quota_gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id="quota-parent")
     )
     assert [row.message_type for row in quota_rows] == ["prompt"]

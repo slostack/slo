@@ -39,11 +39,11 @@ class ControlledQueueGateway(ChannelGateway):
         self.lookup_blocked: asyncio.Event = asyncio.Event()
         self.release_lookup: asyncio.Event = asyncio.Event()
 
-    async def pending_inbound(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
+    async def list_pending_inbound_messages(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
         """Raise an injected database-read failure or query the real repository."""
         if self.fail_queue_reads:
             raise OSError("queue read unavailable")
-        return await super().pending_inbound(recipient_id=recipient_id)
+        return await super().list_pending_inbound_messages(recipient_id=recipient_id)
 
     async def cancel(self, *, message_id: UUID, by: Optional[UUID] = None, reason: str = "operator") -> bool:
         """Inject a cancellation failure before or after a real SQLite commit."""
@@ -55,13 +55,13 @@ class ControlledQueueGateway(ChannelGateway):
             raise OSError("queue cancellation result unknown")
         return cancelled
 
-    async def get(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
-        """Hold one row lookup so a Pilot can change the draft during `/queue edit`."""
+    async def find_message(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+        """Hold one message lookup so a Pilot can change the draft during `/queue edit`."""
         if self.blocked_message_id == message_id and self.block_next_lookup:
             self.block_next_lookup = False
             self.lookup_blocked.set()
             await self.release_lookup.wait()
-        return await super().get(message_id=message_id)
+        return await super().find_message(message_id=message_id)
 
 
 class QueueTuiScenario:
@@ -176,7 +176,9 @@ class TestQueueOperatorRegressionJourneys:
                     prompt_input=scenario.app.query_one(PromptInputComponent),
                     text="/queue cancel 1",
                 )
-                stored: Optional[ChannelMessageDAO] = await scenario.gateway.get(message_id=prompt.id)
+                stored: Optional[ChannelMessageDAO] = await scenario.gateway.find_message(
+                    message_id=prompt.id
+                )
                 assert stored is not None
                 assert (stored.cancel_reason, stored.accepted_at) == ("operator", None)
                 assert all("remote prompt" not in call for call in scenario.model.provider_calls)
@@ -197,8 +199,10 @@ class TestQueueOperatorRegressionJourneys:
                 prompt_input: PromptInputComponent = scenario.app.query_one(PromptInputComponent)
                 await _submit(pilot=pilot, prompt_input=prompt_input, text="cancel once")
                 await _wait_until(predicate=lambda: _one_pending_prompt(scenario=scenario))
-                prompt_rows: list[ChannelMessageDAO] = await scenario.gateway.repository.conversation(
-                    agent_session_id=poller.participant_id
+                prompt_rows: list[ChannelMessageDAO] = (
+                    await scenario.gateway.repository.list_conversation_messages(
+                        agent_session_id=poller.participant_id
+                    )
                 )
                 prompt: ChannelMessageDAO = next(
                     message for message in prompt_rows if message.message_contents == "cancel once"
@@ -212,7 +216,9 @@ class TestQueueOperatorRegressionJourneys:
                         for content, _classes in _transcript_lines(app=scenario.app)
                     ),
                 )
-                stored: Optional[ChannelMessageDAO] = await scenario.gateway.get(message_id=prompt.id)
+                stored: Optional[ChannelMessageDAO] = await scenario.gateway.find_message(
+                    message_id=prompt.id
+                )
                 assert stored is not None and stored.cancel_reason == "operator"
                 assert await poller.pending_prompts() == []
                 assert any(
@@ -243,7 +249,7 @@ class TestQueueOperatorRegressionJourneys:
                         for content, _classes in _transcript_lines(app=scenario.app)
                     ),
                 )
-                rows: list[ChannelMessageDAO] = await scenario.gateway.repository.conversation(
+                rows: list[ChannelMessageDAO] = await scenario.gateway.repository.list_conversation_messages(
                     agent_session_id=poller.participant_id
                 )
                 prompts: list[ChannelMessageDAO] = [
@@ -277,8 +283,10 @@ class TestQueueOperatorRegressionJourneys:
                     return [message.message_contents for message in pending] == ["one", "two"]
 
                 await _wait_until(predicate=_both_prompts_pending)
-                queue_rows: list[ChannelMessageDAO] = await scenario.gateway.repository.conversation(
-                    agent_session_id=poller.participant_id
+                queue_rows: list[ChannelMessageDAO] = (
+                    await scenario.gateway.repository.list_conversation_messages(
+                        agent_session_id=poller.participant_id
+                    )
                 )
                 queued_prompt: ChannelMessageDAO = next(
                     message for message in queue_rows if message.message_contents == "two"
@@ -302,7 +310,9 @@ class TestQueueOperatorRegressionJourneys:
                         )
                     ),
                 )
-                stored: Optional[ChannelMessageDAO] = await scenario.gateway.get(message_id=queued_prompt.id)
+                stored: Optional[ChannelMessageDAO] = await scenario.gateway.find_message(
+                    message_id=queued_prompt.id
+                )
                 assert prompt_input.text == "newer draft"
                 assert stored is not None and stored.cancel_reason == "operator"
         finally:

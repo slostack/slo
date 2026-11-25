@@ -108,7 +108,9 @@ async def test_workflow_report_to_a_closed_session_runs_once_when_it_reopens(tmp
             workflow_id="wf-closed-s",
         )
         await notifier.completed(synthesis="all phases done", result_json="{}", cleanup_summary="")
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(session_id))
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+            recipient_id=UUID(session_id)
+        )
         assert len(pending) == 1 and pending[0].message_type == "prompt"
         workflow_row: ChannelMessageDAO = pending[0]
         # The closed session's durable inbox is for agents and systems only:
@@ -119,9 +121,9 @@ async def test_workflow_report_to_a_closed_session_runs_once_when_it_reopens(tmp
                     sender_id=operator.id, recipient_id=UUID(session_id), message_contents="late"
                 )
             )
-        assert [row.id for row in await gateway.pending_inbound(recipient_id=UUID(session_id))] == [
-            workflow_row.id
-        ]
+        assert [
+            row.id for row in await gateway.list_pending_inbound_messages(recipient_id=UUID(session_id))
+        ] == [workflow_row.id]
 
         reopened_session: SloAgentSession = _build_session(
             tmp_path=tmp_path, session_id=session_id, responses=[AIMessage(content="noted the workflow")]
@@ -134,7 +136,7 @@ async def test_workflow_report_to_a_closed_session_runs_once_when_it_reopens(tmp
             assert poller.paused is None
 
             async def _accepted() -> bool:
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=workflow_row.id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=workflow_row.id)
                 return stored is not None and stored.accepted_at is not None
 
             await _wait_until(predicate=_accepted)
@@ -143,7 +145,7 @@ async def test_workflow_report_to_a_closed_session_runs_once_when_it_reopens(tmp
             assert reopened_runner.ran == [workflow_row.id]
             assert first_runner.ran == []
             # The reply goes back to W, so it belongs to W's conversation (§2.4).
-            replies: list[ChannelMessageDAO] = await gateway.conversation(
+            replies: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
                 agent_session_id=UUID(workflow_session_id)
             )
             assert [row.message_contents for row in replies if row.in_reply_to_id == workflow_row.id] == [

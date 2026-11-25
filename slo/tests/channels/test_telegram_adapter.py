@@ -180,7 +180,7 @@ async def _reply(*, gateway: ChannelGateway, request: ChannelMessageDAO, text: s
 
 async def _first_pending(*, gateway: ChannelGateway, agent: ParticipantDAO) -> ChannelMessageDAO:
     async with asyncio.timeout(10.0):
-        while not (pending := await gateway.pending_inbound(recipient_id=agent.id)):
+        while not (pending := await gateway.list_pending_inbound_messages(recipient_id=agent.id)):
             await asyncio.sleep(0.02)
     return pending[0]
 
@@ -200,7 +200,7 @@ class TestX2TelegramJourney:
                 await _reply(gateway=gateway, request=request, text="Today: 3 commits on worktree/channels")
 
                 async def _accepted() -> bool:
-                    reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                    reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                     return reply is not None and reply.accepted_at is not None
 
                 await _eventually(predicate=_accepted)
@@ -209,7 +209,9 @@ class TestX2TelegramJourney:
             assert "Attached to slo refactor" in sent[0]
             assert sent[1:] == ["Today: 3 commits on worktree/channels"]
             assert request.message_contents == "status of the refactor?"
-            sender: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=request.sender_id)
+            sender: Optional[ParticipantDAO] = await gateway.find_participant(
+                participant_id=request.sender_id
+            )
             assert sender is not None
             assert (sender.external_ref, sender.name) == (
                 str(_ALLOWED_USER),
@@ -237,7 +239,9 @@ class TestX2TelegramJourney:
                 await _eventually(predicate=lambda: fake.offsets.count(None) >= 2 and len(fake.offsets) > 4)
                 await asyncio.sleep(0.2)
 
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert [row.message_contents for row in pending] == ["only once"]
             assert running.adapter.kind == "telegram"
         finally:
@@ -260,7 +264,7 @@ class TestX3AllowList:
                 await _eventually(predicate=lambda: bool(fake.texts_sent_to(chat_id=_ALLOWED_USER)))
 
             assert fake.texts_sent_to(chat_id=_STRANGER) == []
-            assert await gateway.pending_inbound(recipient_id=agent.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=agent.id) == []
             channel_id = ChannelGateway.stable_channel_id(kind="telegram", name="telegram")
             users: list[ParticipantDAO] = await gateway.channel_users(channel_id=channel_id)
             assert [user.external_ref for user in users] == [str(_ALLOWED_USER)]
@@ -302,11 +306,11 @@ class TestDeliveryFailures:
                 )
                 await _reply(gateway=gateway, request=request, text="recovered")
                 await _eventually(predicate=lambda: not fake.send_failures)
-                pending_reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                pending_reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                 assert pending_reply is not None and pending_reply.accepted_at is None
 
                 async def _accepted() -> bool:
-                    reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                    reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                     return reply is not None and reply.accepted_at is not None
 
                 await _eventually(predicate=_accepted)
@@ -394,7 +398,7 @@ class TestDeliveryFailures:
                 await _reply(gateway=gateway, request=request, text="a" * 10 + "b" * 10 + "c" * 5)
 
                 async def _accepted() -> bool:
-                    reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                    reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                     return reply is not None and reply.accepted_at is not None
 
                 await _eventually(predicate=_accepted)

@@ -170,14 +170,16 @@ class TestInboundCommands:
             assert sent.message_contents == "status of the refactor?"
             assert sent.forced_at is None
             assert sent.channel_id == running.ctx.channel.id
-            sender: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=sent.sender_id)
+            sender: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=sent.sender_id)
             assert sender is not None
             assert (sender.kind, sender.external_ref, sender.name) == ("user", "42", "user42 (scripted)")
             assert isinstance(forced, ChannelMessageDAO)
             assert forced.message_contents == "stop and summarise"
             assert forced.forced_at is not None
             assert isinstance(flagged, ChannelMessageDAO) and flagged.forced_at is not None
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert len(pending) == 3
         finally:
             await gateway.close()
@@ -200,7 +202,7 @@ class TestInboundCommands:
             assert "slo done" not in listing
             assert isinstance(detached, str) and "Detached" in detached
             assert after == NOT_ATTACHED_TEXT
-            assert await gateway.pending_inbound(recipient_id=live.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=live.id) == []
         finally:
             await gateway.close()
 
@@ -261,7 +263,7 @@ class TestInboundCommands:
 
             assert finished == AGENT_FINISHED_TEXT
             assert afterwards == NOT_ATTACHED_TEXT
-            assert await gateway.pending_inbound(recipient_id=agent.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=agent.id) == []
         finally:
             await gateway.close()
 
@@ -297,7 +299,7 @@ class TestInboundCommands:
 
             assert isinstance(first, ChannelMessageDAO) and isinstance(again, ChannelMessageDAO)
             assert first.id == again.id
-            assert len(await gateway.pending_inbound(recipient_id=agent.id)) == 1
+            assert len(await gateway.list_pending_inbound_messages(recipient_id=agent.id)) == 1
         finally:
             await gateway.close()
 
@@ -311,7 +313,7 @@ class TestInboundCommands:
                 refused: ChannelMessageDAO | str = await running.ctx.inbound(item=_text("x" * 70_000))
 
             assert isinstance(refused, str) and "too long" in refused
-            assert await gateway.pending_inbound(recipient_id=agent.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=agent.id) == []
         finally:
             await gateway.close()
 
@@ -329,7 +331,7 @@ class TestOutboundDelivery:
                 await _reply(gateway=gateway, request=request, text="all green")
 
                 async def _accepted() -> bool:
-                    reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                    reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                     return reply is not None and reply.accepted_at is not None
 
                 await _eventually(predicate=_accepted)
@@ -360,11 +362,11 @@ class TestOutboundDelivery:
                 await _reply(gateway=gateway, request=request, text="eventually")
 
                 await _eventually(predicate=_async_true(lambda: len(adapter.attempts) >= 2))
-                still_pending: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                still_pending: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                 assert still_pending is not None and still_pending.accepted_at is None
 
                 async def _accepted() -> bool:
-                    reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                    reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                     return reply is not None and reply.accepted_at is not None
 
                 await _eventually(predicate=_accepted)
@@ -426,7 +428,7 @@ class TestOutboundDelivery:
             ):
 
                 async def _accepted() -> bool:
-                    reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+                    reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
                     return reply is not None and reply.accepted_at is not None
 
                 await _eventually(predicate=_accepted)
@@ -471,7 +473,7 @@ class TestHostLifecycle:
                 registered: ChannelDAO = running.ctx.channel
 
                 async def _seen_later() -> bool:
-                    stored: Optional[ChannelDAO] = await gateway.get_channel(channel_id=registered.id)
+                    stored: Optional[ChannelDAO] = await gateway.find_channel(channel_id=registered.id)
                     return stored is not None and stored.last_seen_at > registered.last_seen_at
 
                 await _eventually(predicate=_seen_later, timeout_s=5.0)

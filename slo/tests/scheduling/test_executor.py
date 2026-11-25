@@ -327,7 +327,7 @@ class TestScheduleExecutor:
 
         exit_code: int = await executor.execute(reference=definition.schedule_id)
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
         await gateway.close()
@@ -405,7 +405,7 @@ class TestScheduleExecutor:
 
         exit_code: int = await executor.execute(reference=definition.schedule_id)
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
         await gateway.close()
@@ -449,14 +449,14 @@ class TestScheduleExecutor:
         )
 
         first_exit: int = await executor.execute(reference=definition.schedule_id)
-        first_pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        first_pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
         second_exit: int = await executor.execute(reference=definition.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
-        superseded: Optional[ChannelMessageDAO] = await gateway.get(message_id=first_pending[0].id)
+        superseded: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=first_pending[0].id)
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
         await gateway.close()
 
@@ -492,7 +492,7 @@ class TestScheduleExecutor:
 
         await executor.execute(reference=definition.schedule_id)
         await executor.execute(reference=definition.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
@@ -524,10 +524,10 @@ class TestScheduleExecutor:
 
         await executor.execute(reference=first.schedule_id)
         await executor.execute(reference=second.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
-        senders = [await gateway.get_participant(participant_id=row.sender_id) for row in pending]
+        senders = [await gateway.find_participant(participant_id=row.sender_id) for row in pending]
         await gateway.close()
 
         assert len(pending) == 2
@@ -568,7 +568,7 @@ class TestScheduleExecutor:
 
         with pytest.raises(UnknownParticipantError):
             await executor.execute(reference=definition.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
         await gateway.close()
@@ -681,7 +681,7 @@ class TestScheduleExecutor:
 
         exit_code: int = await executor.execute(reference=definition.schedule_id)
         records: list[ScheduleRunRecordDAO] = _load_run_records(schedule_id=definition.schedule_id)
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
             recipient_id=UUID(_TARGET_SESSION_ID)
         )
         await gateway.close()

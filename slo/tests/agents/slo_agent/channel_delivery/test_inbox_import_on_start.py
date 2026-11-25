@@ -137,7 +137,7 @@ class TestPollerStartImportsLegacyInbox:
         )
         try:
             await poller.start()
-            imported_row = await gateway.get(message_id=UUID(message_id))
+            imported_row = await gateway.find_message(message_id=UUID(message_id))
             assert imported_row is not None
             assert imported_row.message_type == "prompt"
             assert imported_row.sender_name == "scheduler Nightly"
@@ -145,7 +145,7 @@ class TestPollerStartImportsLegacyInbox:
             assert len(list(session_dir.glob("inbox.migrated-*"))) == 1
             assert poller.paused is None
             await _wait_until(predicate=lambda: runner.ran == [UUID(message_id)])
-            accepted = await gateway.get(message_id=UUID(message_id))
+            accepted = await gateway.find_message(message_id=UUID(message_id))
             assert accepted is not None and accepted.accepted_at is not None
         finally:
             await poller.stop(reason="test_done")
@@ -176,7 +176,7 @@ class TestPollerStartImportsLegacyInbox:
         )
         try:
             await poller.start()
-            participant = await gateway.get_participant(participant_id=session_id)
+            participant = await gateway.find_participant(participant_id=session_id)
             assert participant is not None and participant.status == "open"
             assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
                 path.name for path in tmp_path.iterdir() if path.name.startswith("channels.db")
@@ -263,7 +263,7 @@ async def _replies_to(
     Returns:
         list[ChannelMessageDAO]: Reply rows in index order.
     """
-    rows: list[ChannelMessageDAO] = await gateway.conversation(agent_session_id=session_id)
+    rows: list[ChannelMessageDAO] = await gateway.list_conversation_messages(agent_session_id=session_id)
     return [row for row in rows if row.message_type == "reply" and str(row.in_reply_to_id) == message_id]
 
 
@@ -293,17 +293,19 @@ class TestImportedChatTurnDeliveredOnce:
             await first_poller.start()
             await _wait_until_replied(gateway=gateway, session_id=session_id, message_id=message_id)
             await first_poller.stop(reason="session_closed")
-            rows_after_run: list[ChannelMessageDAO] = await gateway.conversation(agent_session_id=session_id)
+            rows_after_run: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
+                agent_session_id=session_id
+            )
             shutil.copytree(src=crash_copy, dst=session_dir / "inbox")
 
             await second_poller.start()
             await asyncio.sleep(0.2)
-            rows_after_rerun: list[ChannelMessageDAO] = await gateway.conversation(
+            rows_after_rerun: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
                 agent_session_id=session_id
             )
-            imported: Optional[ChannelMessageDAO] = await gateway.get(message_id=UUID(message_id))
+            imported: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=UUID(message_id))
             assert imported is not None
-            sender: Optional[ParticipantDAO] = await gateway.get_participant(
+            sender: Optional[ParticipantDAO] = await gateway.find_participant(
                 participant_id=imported.sender_id
             )
             linked: list[SessionHistoryEventDAO] = await _linked_user_messages(

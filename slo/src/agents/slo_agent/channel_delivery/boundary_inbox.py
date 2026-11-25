@@ -68,7 +68,7 @@ class ChannelBoundaryInbox:
         flight) so a forced row sent mid-run becomes visible to the agent's
         stop decision within one poll interval.
         """
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._agent_id,
         )
         # Rows taken at a boundary but not yet confirmed stay pending in the
@@ -124,7 +124,7 @@ class ChannelBoundaryInbox:
             list[BoundaryDeliveryDAO]: The taken rows in delivery order — notes
                 before forced prompts.
         """
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._agent_id,
         )
         claimable: list[ChannelMessageDAO] = [

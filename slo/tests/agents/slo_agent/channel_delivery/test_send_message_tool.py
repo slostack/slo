@@ -130,7 +130,7 @@ class _World:
         Returns:
             list[ChannelMessageDAO]: Rows in index order.
         """
-        return await self.gateway.conversation(agent_session_id=recipient_id)
+        return await self.gateway.list_conversation_messages(agent_session_id=recipient_id)
 
 
 @pytest.fixture
@@ -208,7 +208,7 @@ class TestOrchestratorToChild:
             tool=world.orchestrator_tool(),
             arguments={"to": "review-1", "text": "after you finish", "force": False},
         )
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=result.message_id)  # type: ignore[arg-type]
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=result.message_id)  # type: ignore[arg-type]
         assert stored is not None
         assert stored.forced_at is None
         inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=world.gateway, agent_id=world.review_child)
@@ -312,7 +312,7 @@ class TestSenderIdentity:
                 "self_id": str(world.tui_session),
             },
         )
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=result.message_id)  # type: ignore[arg-type]
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=result.message_id)  # type: ignore[arg-type]
         assert stored is not None
         assert (stored.sender_id, stored.sender_name) == (world.review_child, "review-1 (child of wf-12)")
 
@@ -339,7 +339,7 @@ class TestNoteRateLimit:
         world.clock.advance(by=NOTE_RATE_LIMIT_INTERVAL)
         later: SendMessageResultDAO = await _call(tool=tool, arguments={"to": "parent", "text": "note two"})
         assert later.status == "sent"
-        pending: list[ChannelMessageDAO] = await world.gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await world.gateway.list_pending_inbound_messages(
             recipient_id=world.orchestrator
         )
         assert [row.message_contents for row in pending] == ["note one", "note two"]
@@ -400,7 +400,7 @@ class TestReplyLinkAndValidation:
             tool=world.orchestrator_tool(),
             arguments={"to": "review-1", "text": "yes", "in_reply_to_id": str(question.message_id)},
         )
-        stored: Optional[ChannelMessageDAO] = await world.gateway.get(message_id=answer.message_id)  # type: ignore[arg-type]
+        stored: Optional[ChannelMessageDAO] = await world.gateway.find_message(message_id=answer.message_id)  # type: ignore[arg-type]
         assert stored is not None
         assert stored.in_reply_to_id == question.message_id
 

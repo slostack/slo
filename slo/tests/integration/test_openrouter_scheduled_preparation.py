@@ -110,7 +110,7 @@ async def _wait_for_scheduled_turn(
 
     for _ in range(600):
         await pilot.pause(delay=0.05)
-        row = await gateway.get(message_id=UUID(str(message_id)))
+        row = await gateway.find_message(message_id=UUID(str(message_id)))
         poller = app._session.channel_poller
         if row is not None and row.accepted_at is not None and poller is not None and not poller.busy:
             if not app._session.is_running:

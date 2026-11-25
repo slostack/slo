@@ -351,7 +351,7 @@ async def test_c1_forced_modal_message_reaches_a_running_child_at_its_next_bound
         await child.start()
 
         async def _child_open() -> bool:
-            participant: Optional[ParticipantDAO] = await gateway.get_participant(
+            participant: Optional[ParticipantDAO] = await gateway.find_participant(
                 participant_id=UUID(child_session_id)
             )
             return (
@@ -385,7 +385,7 @@ async def test_c1_forced_modal_message_reaches_a_running_child_at_its_next_bound
             assert contexts[1].count("only review src/tui") == 1
             rows: list[SentMessageRowDAO] = await _rows(composer=composer, app=app)
             assert [(row.state, row.forced) for row in rows] == [("accepted", True)]
-            closed: Optional[ParticipantDAO] = await gateway.get_participant(
+            closed: Optional[ParticipantDAO] = await gateway.find_participant(
                 participant_id=UUID(child_session_id)
             )
             assert closed is not None and closed.status == "closed"

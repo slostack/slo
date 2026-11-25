@@ -171,14 +171,16 @@ class TestInboxImporter:
         report: InboxImportReportDAO = await InboxImporter(
             session_dir=session_dir, gateway=gateway, agent_id=UUID(_SESSION_ID)
         ).run()
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
-        done_row: Optional[ChannelMessageDAO] = await gateway.get(
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+            recipient_id=UUID(_SESSION_ID)
+        )
+        done_row: Optional[ChannelMessageDAO] = await gateway.find_message(
             message_id=UUID(str(already_done["message_id"]))
         )
-        orchestrator: Optional[ParticipantDAO] = await gateway.get_participant(
+        orchestrator: Optional[ParticipantDAO] = await gateway.find_participant(
             participant_id=channel_participant_id_for_session(session_id=_ORCHESTRATOR_SESSION_ID)
         )
-        schedule_sender: Optional[ParticipantDAO] = await gateway.get_participant(
+        schedule_sender: Optional[ParticipantDAO] = await gateway.find_participant(
             participant_id=next(
                 row.sender_id for row in pending if str(row.id) == str(scheduled_prompt["message_id"])
             )
@@ -258,7 +260,9 @@ class TestInboxImporter:
         first: InboxImportReportDAO = await importer.run()
         shutil.copytree(src=crash_copy, dst=session_dir / "inbox")
         second: InboxImportReportDAO = await importer.run()
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+            recipient_id=UUID(_SESSION_ID)
+        )
         await gateway.close()
 
         assert first == InboxImportReportDAO(imported=3, duplicates=0, unreadable=[])
@@ -283,7 +287,9 @@ class TestInboxImporter:
         assert await gateway.accept(message_id=UUID(str(item["message_id"]))) is True
         shutil.copytree(src=crash_copy, dst=session_dir / "inbox")
         rerun: InboxImportReportDAO = await importer.run()
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+            recipient_id=UUID(_SESSION_ID)
+        )
         await gateway.close()
 
         assert rerun.duplicates == 1 and rerun.imported == 0
@@ -303,7 +309,9 @@ class TestInboxImporter:
 
         first: InboxImportReportDAO = await importer.run()
         second: InboxImportReportDAO = await importer.run()
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+            recipient_id=UUID(_SESSION_ID)
+        )
         await gateway.close()
 
         assert first == InboxImportReportDAO(imported=1, duplicates=0, unreadable=[broken.name])
@@ -325,7 +333,9 @@ class TestInboxImporter:
         report: InboxImportReportDAO = await InboxImporter(
             session_dir=session_dir, gateway=gateway, agent_id=UUID(_SESSION_ID)
         ).run()
-        pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+        pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+            recipient_id=UUID(_SESSION_ID)
+        )
         await gateway.close()
 
         assert report == InboxImportReportDAO(imported=0, duplicates=0, unreadable=[])
@@ -351,8 +361,12 @@ class TestInboxImporter:
         report: InboxImportReportDAO = await InboxImporter(
             session_dir=session_dir, gateway=gateway, agent_id=UUID(_SESSION_ID)
         ).run()
-        row: Optional[ChannelMessageDAO] = await gateway.get(message_id=UUID(str(item["message_id"])))
-        orchestrator: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=orchestrator_id)
+        row: Optional[ChannelMessageDAO] = await gateway.find_message(
+            message_id=UUID(str(item["message_id"]))
+        )
+        orchestrator: Optional[ParticipantDAO] = await gateway.find_participant(
+            participant_id=orchestrator_id
+        )
         await gateway.close()
 
         assert report.imported == 1

@@ -487,10 +487,10 @@ class TestChildThatDiedWithoutClosingIsClosed:
 
         await pool.dispatch(mode="single", tasks=[_task(task_id="review-1", session_id=child_session_id)])
 
-        child_participant: Optional[ParticipantDAO] = await channel_gateway.get_participant(
+        child_participant: Optional[ParticipantDAO] = await channel_gateway.find_participant(
             participant_id=UUID(child_session_id)
         )
-        queued: Optional[ChannelMessageDAO] = await channel_gateway.get(
+        queued: Optional[ChannelMessageDAO] = await channel_gateway.find_message(
             message_id=spawn.queued_message_ids[0]
         )
         assert child_participant is not None and child_participant.status == "closed"
@@ -521,7 +521,7 @@ class TestChildThatDiedWithoutClosingIsClosed:
 
         await pool.dispatch(mode="single", tasks=[_task(task_id="review-1", session_id=str(uuid4()))])
 
-        queued: Optional[ChannelMessageDAO] = await channel_gateway.get(
+        queued: Optional[ChannelMessageDAO] = await channel_gateway.find_message(
             message_id=spawn.queued_message_ids[0]
         )
         assert queued is not None and queued.cancel_reason == "recipient_closed"
@@ -539,7 +539,7 @@ class TestChildThatDiedWithoutClosingIsClosed:
 
         await pool.dispatch(mode="single", tasks=[_task(task_id="review-1", session_id=child_session_id)])
 
-        assert await channel_gateway.get_participant(participant_id=UUID(child_session_id)) is None
+        assert await channel_gateway.find_participant(participant_id=UUID(child_session_id)) is None
 
     async def test_unreachable_channel_database_never_changes_the_child_result(self, tmp_path: Path) -> None:
         pool: SubAgentPool = _channel_pool(
@@ -573,7 +573,9 @@ class NoteSendingDispatcher:
         for text in ("question: is src/tui/widgets in scope?", "found a second issue"):
             await self._send(text=text, message_type="note")
         await self._send(text="please decide", message_type="prompt")
-        accepted: list[ChannelMessageDAO] = await self._gateway.pending_inbound(recipient_id=self._parent_id)
+        accepted: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
+            recipient_id=self._parent_id
+        )
         await self._gateway.accept(message_id=accepted[0].id)
         return OrchestratorResultDAO(mode=mode)
 
@@ -600,7 +602,7 @@ class FixedResultDispatcher:
 class UnreachableInbox:
     """Channel stub whose database is unreachable."""
 
-    async def pending_inbound(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
+    async def list_pending_inbound_messages(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
         """Fail like a broken shared database."""
         raise OSError("channels.db unreachable")
 
@@ -721,10 +723,10 @@ class TestChildAbortAndCancellationClosesItsParticipant:
         self, *, channel_gateway: ChannelGateway, child_session_id: str, queued_message_id: UUID
     ) -> None:
         """Assert the child participant is closed and its pending prompt cancelled."""
-        child_participant: Optional[ParticipantDAO] = await channel_gateway.get_participant(
+        child_participant: Optional[ParticipantDAO] = await channel_gateway.find_participant(
             participant_id=UUID(child_session_id)
         )
-        queued: Optional[ChannelMessageDAO] = await channel_gateway.get(message_id=queued_message_id)
+        queued: Optional[ChannelMessageDAO] = await channel_gateway.find_message(message_id=queued_message_id)
         assert child_participant is not None and child_participant.status == "closed"
         assert queued is not None and (queued.accepted_at, queued.cancel_reason) == (None, "aborted")
 
@@ -864,10 +866,10 @@ class TestCancellationDuringParticipantCloseIsJoined:
             await asyncio.wait_for(dispatch, timeout=10.0)
 
         assert held.dispatch_done_when_closed == [False]
-        child_participant: Optional[ParticipantDAO] = await channel_gateway.get_participant(
+        child_participant: Optional[ParticipantDAO] = await channel_gateway.find_participant(
             participant_id=UUID(child_session_id)
         )
-        queued: Optional[ChannelMessageDAO] = await channel_gateway.get(
+        queued: Optional[ChannelMessageDAO] = await channel_gateway.find_message(
             message_id=spawn.queued_message_ids[0]
         )
         assert child_participant is not None and child_participant.status == "closed"
@@ -909,10 +911,10 @@ class TestCancellationDuringParticipantCloseIsJoined:
                 await asyncio.wait_for(dispatch, timeout=20.0)
 
             assert held.dispatch_done_when_closed == [False]
-            child_participant: Optional[ParticipantDAO] = await channel_gateway.get_participant(
+            child_participant: Optional[ParticipantDAO] = await channel_gateway.find_participant(
                 participant_id=UUID(child_session_id)
             )
-            queued: Optional[ChannelMessageDAO] = await channel_gateway.get(
+            queued: Optional[ChannelMessageDAO] = await channel_gateway.find_message(
                 message_id=spawn.queued_message_ids[0]
             )
             assert child_participant is not None and child_participant.status == "closed"

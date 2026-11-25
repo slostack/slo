@@ -193,7 +193,7 @@ class ChannelGateway:
             ParticipantDAO: The stored participant.
         """
         if external_ref is not None:
-            existing: Optional[ParticipantDAO] = await self._repository.participant_by_external_ref(
+            existing: Optional[ParticipantDAO] = await self._repository.find_participant_by_external_ref(
                 channel_id=channel_id,
                 external_ref=external_ref,
             )
@@ -302,7 +302,9 @@ class ChannelGateway:
         Returns:
             int: Number of pending inbound rows cancelled.
         """
-        return await self._repository.close_agent_atomic(participant_id=session_id, reason=reason)
+        return await self._repository.close_agent_and_cancel_ineligible_pending_messages(
+            participant_id=session_id, reason=reason
+        )
 
     async def count_participants(self) -> int:
         """Count stored participants.
@@ -382,7 +384,7 @@ class ChannelGateway:
         """
 
         async def _reply_or_none() -> Optional[ChannelMessageDAO]:
-            reply: Optional[ChannelMessageDAO] = await self._repository.reply_for(message_id=message_id)
+            reply: Optional[ChannelMessageDAO] = await self._repository.find_reply(message_id=message_id)
             if reply is not None:
                 return reply
             await self._ensure_awaited_message_live(message_id=message_id, accepted_is_final=False)
@@ -426,8 +428,8 @@ class ChannelGateway:
         """
         return await self._repository.channel_users(channel_id=channel_id)
 
-    async def get_channel(self, *, channel_id: UUID) -> Optional[ChannelDAO]:
-        """Return one stored channel.
+    async def find_channel(self, *, channel_id: UUID) -> Optional[ChannelDAO]:
+        """Return one stored channel (Optional lookup).
 
         Args:
             channel_id (UUID): Channel to look up.
@@ -435,7 +437,7 @@ class ChannelGateway:
         Returns:
             Optional[ChannelDAO]: The stored channel, or ``None``.
         """
-        return await self._repository.get_channel(channel_id=channel_id)
+        return await self._repository.find_channel(channel_id=channel_id)
 
     async def last_message_index(self, *, agent_session_id: UUID) -> int:
         """Return the newest ``message_index`` of one conversation (``slo channel follow``).
@@ -474,13 +476,17 @@ class ChannelGateway:
             UnknownMessageError: The message is not in the queue.
             MessageCancelledError: The message was cancelled.
         """
-        stored: Optional[ChannelMessageDAO] = await self._repository.get(message_id=message_id)
-        if stored is None:
+        stored_message: Optional[ChannelMessageDAO] = await self._repository.find_message(
+            message_id=message_id
+        )
+        if stored_message is None:
             raise UnknownMessageError(message_id=message_id)
-        if stored.cancelled_at is not None:
-            raise MessageCancelledError(message_id=message_id, reason=stored.cancel_reason or "cancelled")
-        if accepted_is_final and stored.accepted_at is not None:
-            return stored
+        if stored_message.cancelled_at is not None:
+            raise MessageCancelledError(
+                message_id=message_id, reason=stored_message.cancel_reason or "cancelled"
+            )
+        if accepted_is_final and stored_message.accepted_at is not None:
+            return stored_message
         return None
 
     async def _poll_until(
@@ -515,7 +521,7 @@ class ChannelGateway:
                 raise ReplyTimeoutError(message_id=message_id, timeout=timeout)
             await asyncio.sleep(min(_WAIT_POLL_SECONDS, remaining))
 
-    async def recent_sent_messages(
+    async def list_recent_sent_messages(
         self,
         *,
         sender_id: UUID,
@@ -532,19 +538,17 @@ class ChannelGateway:
         Returns:
             list[ChannelMessageDAO]: Rows newest first.
         """
-        return await self._repository.recent_sent_messages(
+        return await self._repository.list_recent_sent_messages(
             sender_id=sender_id,
             recipient_id=recipient_id,
             limit=limit,
         )
 
-    async def reply_for(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+    async def find_reply(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
         """Return the earliest reply row answering one message, regardless of delivery state.
 
         Lookup includes pending, accepted and cancelled replies; it neither
-        filters for deliverability nor changes the row's state. Callers decide
-        whether to deliver a pending reply and accept it only after delivery
-        succeeds.
+        filters for deliverability nor changes the row's state.
 
         Args:
             message_id (UUID): The message the reply must answer.
@@ -552,7 +556,7 @@ class ChannelGateway:
         Returns:
             Optional[ChannelMessageDAO]: The reply row, or ``None``.
         """
-        return await self._repository.reply_for(message_id=message_id)
+        return await self._repository.find_reply(message_id=message_id)
 
     async def sent_rows(
         self,
@@ -574,34 +578,34 @@ class ChannelGateway:
         Returns:
             list[SentMessageRowDAO]: Composer rows, newest first.
         """
-        rows: list[ChannelMessageDAO] = await self._repository.recent_sent_messages(
+        sent_messages: list[ChannelMessageDAO] = await self._repository.list_recent_sent_messages(
             sender_id=sender_id,
             recipient_id=recipient_id,
             limit=limit,
         )
         result: list[SentMessageRowDAO] = []
-        for row in rows:
-            reply: Optional[ChannelMessageDAO] = await self._repository.reply_for(message_id=row.id)
+        for sent_message in sent_messages:
+            reply: Optional[ChannelMessageDAO] = await self._repository.find_reply(message_id=sent_message.id)
             state: Literal["queued", "accepted", "cancelled"]
-            if row.cancelled_at is not None:
+            if sent_message.cancelled_at is not None:
                 state = "cancelled"
-            elif row.accepted_at is not None:
+            elif sent_message.accepted_at is not None:
                 state = "accepted"
             else:
                 state = "queued"
             result.append(
                 SentMessageRowDAO(
-                    message_id=row.id,
-                    preview=row.message_contents[:80],
-                    forced=row.forced_at is not None,
+                    message_id=sent_message.id,
+                    preview=sent_message.message_contents[:80],
+                    forced=sent_message.forced_at is not None,
                     state=state,
                     reply_preview=reply.message_contents[:80] if reply is not None else None,
-                    cancel_reason=row.cancel_reason,
+                    cancel_reason=sent_message.cancel_reason,
                 )
             )
         return result
 
-    async def recent_notes_to(self, *, recipient_id: UUID, limit: int = 5) -> list[ChannelMessageDAO]:
+    async def list_recent_notes_to(self, *, recipient_id: UUID, limit: int = 5) -> list[ChannelMessageDAO]:
         """Return the newest notes addressed to one agent, newest first (108.4 C3).
 
         Args:
@@ -611,10 +615,10 @@ class ChannelGateway:
         Returns:
             list[ChannelMessageDAO]: Note rows newest first.
         """
-        return await self._repository.recent_notes_to(recipient_id=recipient_id, limit=limit)
+        return await self._repository.list_recent_notes_to(recipient_id=recipient_id, limit=limit)
 
-    async def get_participant(self, *, participant_id: UUID) -> Optional[ParticipantDAO]:
-        """Return one participant by id.
+    async def find_participant(self, *, participant_id: UUID) -> Optional[ParticipantDAO]:
+        """Return one participant by id (Optional lookup).
 
         Args:
             participant_id (UUID): Participant to look up.
@@ -622,7 +626,7 @@ class ChannelGateway:
         Returns:
             Optional[ParticipantDAO]: The stored participant, or ``None``.
         """
-        return await self._repository.get_participant(participant_id=participant_id)
+        return await self._repository.find_participant(participant_id=participant_id)
 
     async def send(self, *, new: NewMessageDAO) -> ChannelMessageDAO:
         """Insert one message and wake the in-process poller if there is one.
@@ -633,20 +637,20 @@ class ChannelGateway:
         Returns:
             ChannelMessageDAO: The stored row.
         """
-        stored: ChannelMessageDAO = await self._repository.insert_message(new=new)
-        wake: Optional[asyncio.Event] = self._wakes.get(stored.recipient_id)
+        stored_message: ChannelMessageDAO = await self._repository.queue_message(new_message=new)
+        wake: Optional[asyncio.Event] = self._wakes.get(stored_message.recipient_id)
         if wake is not None:
             wake.set()
-        return stored
+        return stored_message
 
-    async def conversation(
+    async def list_conversation_messages(
         self,
         *,
         agent_session_id: UUID,
         after_index: int = 0,
         limit: int = 200,
     ) -> list[ChannelMessageDAO]:
-        """Return one conversation's rows after an index, in order (test support).
+        """Return one conversation's rows after an index, in order.
 
         Args:
             agent_session_id (UUID): Conversation to read.
@@ -656,7 +660,7 @@ class ChannelGateway:
         Returns:
             list[ChannelMessageDAO]: Rows in ``message_index`` order.
         """
-        return await self._repository.conversation(
+        return await self._repository.list_conversation_messages(
             agent_session_id=agent_session_id,
             after_index=after_index,
             limit=limit,
@@ -678,10 +682,12 @@ class ChannelGateway:
         Returns:
             bool: ``True`` when the row was cancelled by this call.
         """
-        stored: Optional[ChannelMessageDAO] = await self._repository.get(message_id=message_id)
-        if stored is None:
+        stored_message: Optional[ChannelMessageDAO] = await self._repository.find_message(
+            message_id=message_id
+        )
+        if stored_message is None:
             return False
-        if by is not None and by not in (stored.sender_id, stored.recipient_id):
+        if by is not None and not stored_message.is_sender_or_recipient(participant_id=by):
             return False
         return await self._repository.cancel(message_id=message_id, reason=reason)
 
@@ -701,14 +707,16 @@ class ChannelGateway:
             bool: ``True`` when the row is now forced; ``False`` when it was
                 accepted, cancelled, unknown, or ``by`` is an outside actor.
         """
-        stored: Optional[ChannelMessageDAO] = await self._repository.get(message_id=message_id)
-        if stored is None:
+        stored_message: Optional[ChannelMessageDAO] = await self._repository.find_message(
+            message_id=message_id
+        )
+        if stored_message is None:
             return False
-        if by not in (stored.sender_id, stored.recipient_id):
+        if not stored_message.is_sender_or_recipient(participant_id=by):
             return False
         forced: bool = await self._repository.force(message_id=message_id)
         if forced:
-            wake: Optional[asyncio.Event] = self._wakes.get(stored.recipient_id)
+            wake: Optional[asyncio.Event] = self._wakes.get(stored_message.recipient_id)
             if wake is not None:
                 wake.set()
         return forced
@@ -724,29 +732,30 @@ class ChannelGateway:
         """
         return await self._repository.accept(message_id=message_id)
 
-    async def get(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
-        """Return one stored row.
+    async def find_message(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+        """Return one stored message (Optional lookup).
 
         Args:
-            message_id (UUID): Row to look up.
+            message_id (UUID): Message to look up.
 
         Returns:
-            Optional[ChannelMessageDAO]: The stored row, or ``None``.
+            Optional[ChannelMessageDAO]: The stored message, or ``None``.
         """
-        return await self._repository.get(message_id=message_id)
+        return await self._repository.find_message(message_id=message_id)
 
-    async def pending_inbound(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
-        """Return pending inbound rows for one recipient, FIFO.
+    async def list_pending_inbound_messages(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
+        """Return pending inbound rows for one recipient, forced rows first, FIFO within each class.
 
         Args:
             recipient_id (UUID): Recipient to check.
 
         Returns:
-            list[ChannelMessageDAO]: Pending rows in index order.
+            list[ChannelMessageDAO]: Pending rows ordered forced-first, then by
+                message index within the forced and the unforced classes.
         """
-        return await self._repository.pending_inbound(recipient_id=recipient_id)
+        return await self._repository.list_pending_inbound_messages(recipient_id=recipient_id)
 
-    async def pending_outbound(self, *, recipient_ids: list[UUID]) -> list[ChannelMessageDAO]:
+    async def list_pending_outbound_messages(self, *, recipient_ids: list[UUID]) -> list[ChannelMessageDAO]:
         """Return pending outbound rows addressed to any of the recipients.
 
         Args:
@@ -755,7 +764,7 @@ class ChannelGateway:
         Returns:
             list[ChannelMessageDAO]: Pending outbound rows.
         """
-        return await self._repository.pending_outbound(recipient_ids=recipient_ids)
+        return await self._repository.list_pending_outbound_messages(recipient_ids=recipient_ids)
 
     async def heartbeat(self, *, participant_id: UUID) -> None:
         """Refresh one participant's heartbeat.

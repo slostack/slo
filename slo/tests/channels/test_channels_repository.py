@@ -6,6 +6,7 @@ under tmp paths. No mocks for internal collaborators.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -188,18 +189,18 @@ class TestSchemaBootstrap:
             await repository.open()
             try:
                 for message in (old_prompt, accepted_reply, pending_reply, old_prompt_to_pending_reply):
-                    assert await repository.get(message_id=message.id) is not None
-                assert await repository.get(message_id=pending_direct_reply.id) is not None
-                assert await repository.get(message_id=old_unreferenced_message.id) is None
-                assert await repository.get(message_id=expired_chain_root.id) is None
-                assert await repository.get(message_id=expired_chain_accepted_reply.id) is None
-                assert await repository.get(message_id=expired_chain_cancelled_reply.id) is None
-                assert [row.id for row in await repository.pending_inbound(recipient_id=agent.id)] == [
-                    pending_reply.id
-                ]
-                assert [row.id for row in await repository.pending_outbound(recipient_ids=[user.id])] == [
-                    pending_direct_reply.id
-                ]
+                    assert await repository.find_message(message_id=message.id) is not None
+                assert await repository.find_message(message_id=pending_direct_reply.id) is not None
+                assert await repository.find_message(message_id=old_unreferenced_message.id) is None
+                assert await repository.find_message(message_id=expired_chain_root.id) is None
+                assert await repository.find_message(message_id=expired_chain_accepted_reply.id) is None
+                assert await repository.find_message(message_id=expired_chain_cancelled_reply.id) is None
+                assert [
+                    row.id for row in await repository.list_pending_inbound_messages(recipient_id=agent.id)
+                ] == [pending_reply.id]
+                assert [
+                    row.id for row in await repository.list_pending_outbound_messages(recipient_ids=[user.id])
+                ] == [pending_direct_reply.id]
             finally:
                 await repository.close()
         finally:
@@ -357,9 +358,41 @@ class TestRepositoryCloseLifecycle:
             ]
             assert worker_threads_after == []
             await repository.open()
-            assert await repository.get(message_id=message.id) is not None
+            assert await repository.find_message(message_id=message.id) is not None
         finally:
             await gateway.close()
+
+
+class TestMessageActionEligibility:
+    """The stored message owns who may control it (sender or recipient)."""
+
+    def test_sender_and_recipient_are_eligible_and_an_outside_actor_is_not(self) -> None:
+        sender_id: UUID = uuid4()
+        recipient_id: UUID = uuid4()
+        outside_id: UUID = uuid4()
+        message: ChannelMessageDAO = ChannelMessageDAO(
+            id=uuid4(),
+            agent_session_id=uuid4(),
+            sender_id=sender_id,
+            sender_name="sender",
+            recipient_id=recipient_id,
+            recipient_name="recipient",
+            sent_at=datetime.now(tz=timezone.utc),
+            accepted_at=None,
+            message_contents="hi",
+            created_at=datetime.now(tz=timezone.utc),
+            message_index=1,
+            forced_at=None,
+            message_type="prompt",
+            in_reply_to_id=None,
+            channel_id=None,
+            cancelled_at=None,
+            cancel_reason=None,
+            coalesce_key=None,
+        )
+        assert message.is_sender_or_recipient(participant_id=sender_id) is True
+        assert message.is_sender_or_recipient(participant_id=recipient_id) is True
+        assert message.is_sender_or_recipient(participant_id=outside_id) is False
 
 
 class TestRegisterParticipants:
@@ -424,7 +457,9 @@ class TestInsertMessage:
             first: ChannelMessageDAO = await gateway.send(new=new_message)
             again: ChannelMessageDAO = await gateway.send(new=new_message)
             assert again.id == first.id and again.message_index == first.message_index
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert len(pending) == 1
         finally:
             await gateway.close()
@@ -466,7 +501,7 @@ class TestInsertMessage:
         finally:
             await gateway.close()
 
-    async def test_close_agent_cancels_pending_inbound(self, tmp_path: Path) -> None:
+    async def test_close_agent_cancels_list_pending_inbound_messages(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
@@ -479,8 +514,165 @@ class TestInsertMessage:
             )
             cancelled: int = await gateway.close_agent(session_id=agent.id, reason="session_closed")
             assert cancelled == 1
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert pending == []
+        finally:
+            await gateway.close()
+
+
+class TestForceLocalWakeAndRefusals:
+    """Gateway force wakes the in-process recipient poller; refusals do not (108.2 F3)."""
+
+    async def test_force_and_reforce_wake_the_registered_recipient_while_refusals_do_not(
+        self, tmp_path: Path
+    ) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            outsider: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo f6789abc")
+            recipient_wake: asyncio.Event = gateway.local_wake(recipient_id=agent.id)
+            outsider_wake: asyncio.Event = gateway.local_wake(recipient_id=outsider.id)
+            prompt: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="run the suite",
+                    channel_id=channel.id,
+                )
+            )
+            assert recipient_wake.is_set()  # the send woke the registered recipient poller
+            assert not outsider_wake.is_set()
+
+            recipient_wake.clear()
+            assert await gateway.force(message_id=prompt.id, by=outsider.id) is False
+            assert not recipient_wake.is_set()  # a refused force must not wake the stored recipient
+            assert not outsider_wake.is_set()
+
+            assert await gateway.force(message_id=prompt.id, by=user.id) is True
+            assert recipient_wake.is_set()
+
+            recipient_wake.clear()
+            assert await gateway.force(message_id=prompt.id, by=agent.id) is True
+            assert recipient_wake.is_set()
+
+            recipient_wake.clear()
+            assert await gateway.force(message_id=uuid4(), by=user.id) is False
+            assert not recipient_wake.is_set()
+
+            assert await gateway.accept(message_id=prompt.id)
+            recipient_wake.clear()
+            assert await gateway.force(message_id=prompt.id, by=user.id) is False
+            assert not recipient_wake.is_set()
+        finally:
+            await gateway.close()
+
+
+class TestCancelActorsAndReasons:
+    """Gateway cancel: sender/recipient/system actors, outsider refusal, reasons (108.3)."""
+
+    async def test_recipient_cancels_outsider_cannot_and_reason_is_stored(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            outsider: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo f6789abc")
+            prompt: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="draft this",
+                    channel_id=channel.id,
+                )
+            )
+            assert await gateway.cancel(message_id=prompt.id, by=outsider.id, reason="trespass") is False
+            untouched: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
+            assert untouched is not None and untouched.cancelled_at is None
+
+            assert await gateway.cancel(message_id=prompt.id, by=agent.id, reason="agent_declined") is True
+            stored_message: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
+            assert stored_message is not None
+            assert (
+                stored_message.cancelled_at is not None and stored_message.cancel_reason == "agent_declined"
+            )
+        finally:
+            await gateway.close()
+
+    async def test_omitted_actor_cancels_without_an_actor_check(self, tmp_path: Path) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            prompt: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="start the run",
+                    channel_id=channel.id,
+                )
+            )
+            # Internal system cancellation (``by=None``): no actor check applies.
+            assert await gateway.cancel(message_id=prompt.id, reason="start_failed") is True
+            stored_message: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
+            assert stored_message is not None
+            assert stored_message.cancelled_at is not None and stored_message.cancel_reason == "start_failed"
+        finally:
+            await gateway.close()
+
+
+class TestDuplicateRetryAfterClosure:
+    """A duplicate-id retry returns the stored row unchanged, even after closure (108.1)."""
+
+    async def test_retry_after_closure_with_changed_unknown_envelope_returns_the_stored_message_and_wakes_it(
+        self, tmp_path: Path
+    ) -> None:
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        try:
+            channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@testhost")
+            user: ParticipantDAO = await gateway.register_user(channel_id=channel.id, name="tester (tui)")
+            agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="slo abc12345")
+            message_id: UUID = uuid4()
+            original: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    id=message_id,
+                    sender_id=user.id,
+                    recipient_id=agent.id,
+                    message_contents="first attempt",
+                    channel_id=channel.id,
+                )
+            )
+            cancelled: int = await gateway.close_agent(session_id=agent.id, reason="recipient_closed")
+            assert cancelled == 1
+
+            agent_wake: asyncio.Event = gateway.local_wake(recipient_id=agent.id)
+            agent_wake.clear()
+            unknown_recipient_id: UUID = uuid4()
+            retry: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    id=message_id,
+                    sender_id=unknown_recipient_id,
+                    recipient_id=unknown_recipient_id,
+                    message_contents="changed retry envelope",
+                    coalesce_key="retry-must-not-coalesce",
+                    channel_id=channel.id,
+                )
+            )
+
+            assert retry.id == original.id and retry.message_index == original.message_index
+            assert retry.sender_id == user.id and retry.recipient_id == agent.id
+            assert retry.message_contents == "first attempt"
+            assert retry.cancel_reason == "recipient_closed"
+            assert retry.coalesce_key is None
+            conversation: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
+                agent_session_id=agent.id
+            )
+            assert len(conversation) == 1
+            assert agent_wake.is_set()  # the stored recipient, not the retry envelope's, is woken
         finally:
             await gateway.close()
 
@@ -499,7 +691,7 @@ class TestAcceptAndCancel:
             )
             assert await gateway.accept(message_id=message.id) is True
             assert await gateway.accept(message_id=message.id) is False
-            stored: ChannelMessageDAO | None = await gateway.get(message_id=message.id)
+            stored: ChannelMessageDAO | None = await gateway.find_message(message_id=message.id)
             assert stored is not None and stored.accepted_at is not None
         finally:
             await gateway.close()
@@ -516,10 +708,10 @@ class TestAcceptAndCancel:
                 )
             )
             assert await gateway.cancel(message_id=message.id, by=user.id) is True
-            stored: ChannelMessageDAO | None = await gateway.get(message_id=message.id)
+            stored: ChannelMessageDAO | None = await gateway.find_message(message_id=message.id)
             assert stored is not None
             assert stored.cancelled_at is not None and stored.cancel_reason == "operator"
-            assert await gateway.pending_inbound(recipient_id=agent.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=agent.id) == []
         finally:
             await gateway.close()
 
@@ -557,7 +749,7 @@ class TestForcePendingRow:
                 )
             )
             forced: bool = await gateway.force(message_id=row.id, by=agent.id)
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
             assert forced is True
             assert stored is not None and stored.forced_at is not None
             assert stored.accepted_at is None and stored.cancelled_at is None
@@ -651,7 +843,7 @@ class TestForceIsAtomicAndPromptOnly:
             await asyncio.sleep(0.4)
             other.execute("COMMIT")
             forced: bool = await force_task
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
             assert forced is False
             assert stored is not None and stored.accepted_at is not None
             assert stored.forced_at is None
@@ -691,7 +883,7 @@ class TestForceIsAtomicAndPromptOnly:
             )
             for row, actor in ((note, agent.id), (notice, agent.id), (reply, user.id)):
                 assert await gateway.force(message_id=row.id, by=actor) is False
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
                 assert stored is not None and stored.forced_at is None
         finally:
             await gateway.close()
@@ -715,7 +907,7 @@ class TestForceIsAtomicAndPromptOnly:
                 )
             )
             assert await gateway.force(message_id=row.id, by=user.id) is True
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
             assert stored is not None and stored.forced_at == row.forced_at
         finally:
             await gateway.close()
@@ -723,7 +915,7 @@ class TestForceIsAtomicAndPromptOnly:
 
 class TestForcedFirstOrdering:
     async def test_pending_inbound_orders_forced_rows_first_then_fifo(self, tmp_path: Path) -> None:
-        """``pending_inbound`` sorts forced rows ahead of normal rows, FIFO within each class.
+        """``list_pending_inbound_messages`` sorts forced rows ahead of normal rows, FIFO within each class.
 
         Spec 108.2 §4: ``ORDER BY (forced_at IS NULL), message_index``.
         """
@@ -754,7 +946,9 @@ class TestForcedFirstOrdering:
                 )
             )
             await gateway.force(message_id=rows[2].id, by=agent.id)
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert [row.message_contents for row in pending] == [
                 "late normal",
                 "forced later",
@@ -781,7 +975,9 @@ class TestPendingReads:
                         sender_id=user.id, recipient_id=agent.id, message_contents=text, channel_id=channel.id
                     )
                 )
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert [row.message_contents for row in pending] == ["one", "two", "three"]
         finally:
             await gateway.close()
@@ -807,7 +1003,9 @@ class TestPendingReads:
                     channel_id=channel.id,
                 )
             )
-            outbound: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            outbound: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert [row.id for row in outbound] == [reply.id]
             assert reply.agent_session_id == agent.id
         finally:
@@ -870,13 +1068,15 @@ class TestCoalesceSupersede:
                     coalesce_key=f"wf:abcd:fleet",
                 )
             )
-            pending: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert [row.id for row in pending] == [newer.id]
-            stored_older: Optional[ChannelMessageDAO] = await gateway.get(message_id=older.id)
+            stored_older: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=older.id)
             assert stored_older is not None
             assert stored_older.cancelled_at is not None
             assert stored_older.cancel_reason == "superseded"
-            stored_newer: Optional[ChannelMessageDAO] = await gateway.get(message_id=newer.id)
+            stored_newer: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=newer.id)
             assert stored_newer is not None
             assert stored_newer.cancelled_at is None and stored_newer.accepted_at is None
             assert stored_newer.coalesce_key == "wf:abcd:fleet"
@@ -933,11 +1133,11 @@ class TestCoalesceSupersede:
                     coalesce_key="wf:abcd:fleet",
                 )
             )
-            stored_accepted: Optional[ChannelMessageDAO] = await gateway.get(message_id=accepted.id)
+            stored_accepted: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=accepted.id)
             assert stored_accepted is not None
             assert stored_accepted.cancelled_at is None and stored_accepted.accepted_at is not None
             for row in (different_key, different_sender):
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
                 assert stored is not None and stored.cancelled_at is None
         finally:
             await gateway.close()
@@ -974,9 +1174,11 @@ class TestCoalesceSupersede:
                 )
             )
             assert first.id == second.id == message_id
-            pending: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert [row.id for row in pending] == [message_id]
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=message_id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=message_id)
             assert stored is not None and stored.coalesce_key is None
         finally:
             await gateway.close()
@@ -1003,11 +1205,15 @@ class TestAtomicCloseAgent:
             )
             cancelled: int = await gateway.close_agent(session_id=agent.id, reason="recipient_closed")
             assert cancelled == 1
-            participant: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=agent.id)
+            participant: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=agent.id)
             assert participant is not None and participant.status == "closed"
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=agent.id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=agent.id
+            )
             assert pending == []
-            conversation: list[ChannelMessageDAO] = await gateway.conversation(agent_session_id=agent.id)
+            conversation: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
+                agent_session_id=agent.id
+            )
             assert conversation[0].cancel_reason == "recipient_closed"
             with pytest.raises(RecipientClosedError):
                 await gateway.send(
@@ -1042,7 +1248,7 @@ class TestSentMessagesAndReplies:
                         channel_id=channel.id,
                     )
                 )
-            rows: list[ChannelMessageDAO] = await gateway.recent_sent_messages(
+            rows: list[ChannelMessageDAO] = await gateway.list_recent_sent_messages(
                 sender_id=user.id, recipient_id=agent.id, limit=5
             )
             assert [row.message_contents for row in rows] == ["third", "second", "first"]
@@ -1079,7 +1285,7 @@ class TestSentMessagesAndReplies:
                     channel_id=channel.id,
                 )
             )
-            rows: list[ChannelMessageDAO] = await gateway.recent_sent_messages(
+            rows: list[ChannelMessageDAO] = await gateway.list_recent_sent_messages(
                 sender_id=user.id, recipient_id=agent.id, limit=5
             )
             assert [row.message_contents for row in rows] == ["mine"]
@@ -1109,14 +1315,14 @@ class TestSentMessagesAndReplies:
                     in_reply_to_id=request.id,
                 )
             )
-            found: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+            found: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
             assert found is not None and found.id == reply.id
             assert found.accepted_at is None and found.cancelled_at is None
             assert await gateway.cancel(message_id=reply.id, reason="recipient_closed") is True
-            cancelled_reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+            cancelled_reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
             assert cancelled_reply is not None and cancelled_reply.id == reply.id
             assert cancelled_reply.cancelled_at is not None
-            assert await gateway.reply_for(message_id=reply.id) is None
+            assert await gateway.find_reply(message_id=reply.id) is None
         finally:
             await gateway.close()
 
@@ -1193,9 +1399,11 @@ class TestDurableSessionInbox:
             )
             cancelled: int = await gateway.close_agent(session_id=session.id, reason="session_closed")
             assert cancelled == 1
-            stored_prompt: Optional[ChannelMessageDAO] = await gateway.get(message_id=operator_prompt.id)
+            stored_prompt: Optional[ChannelMessageDAO] = await gateway.find_message(
+                message_id=operator_prompt.id
+            )
             assert stored_prompt is not None and stored_prompt.cancel_reason == "session_closed"
-            stored_note: Optional[ChannelMessageDAO] = await gateway.get(message_id=early_note.id)
+            stored_note: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=early_note.id)
             assert stored_note is not None and stored_note.cancelled_at is None
             late: ChannelMessageDAO = await gateway.send(
                 new=NewMessageDAO(
@@ -1203,10 +1411,10 @@ class TestDurableSessionInbox:
                 )
             )
             pending_ids: list[UUID] = [
-                row.id for row in await gateway.pending_inbound(recipient_id=session.id)
+                row.id for row in await gateway.list_pending_inbound_messages(recipient_id=session.id)
             ]
             assert pending_ids == [early_note.id, late.id]
-            closed_session: Optional[ParticipantDAO] = await gateway.get_participant(
+            closed_session: Optional[ParticipantDAO] = await gateway.find_participant(
                 participant_id=session.id
             )
             assert closed_session is not None and closed_session.status == "closed"
@@ -1254,7 +1462,7 @@ class TestClosedInboxOperatorPolicy:
                     await gateway.send(
                         new=NewMessageDAO(sender_id=user.id, recipient_id=session.id, message_contents="late")
                     )
-            assert await gateway.pending_inbound(recipient_id=session.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=session.id) == []
         finally:
             await gateway.close()
 
@@ -1294,13 +1502,15 @@ class TestClosedInboxOperatorPolicy:
                     message_type="notice",
                 )
             )
-            assert [row.id for row in await gateway.pending_inbound(recipient_id=session.id)] == [
+            assert [
+                row.id for row in await gateway.list_pending_inbound_messages(recipient_id=session.id)
+            ] == [
                 agent_row.id,
                 system_row.id,
             ]
             # Closing again (a second process exit) keeps non-operator rows pending.
             assert await gateway.close_agent(session_id=session.id, reason="session_closed") == 0
-            assert len(await gateway.pending_inbound(recipient_id=session.id)) == 2
+            assert len(await gateway.list_pending_inbound_messages(recipient_id=session.id)) == 2
         finally:
             await gateway.close()
 
@@ -1326,11 +1536,11 @@ class TestClosedInboxOperatorPolicy:
             )
             assert await gateway.close_agent(session_id=session.id, reason="session_closed") == 2
             for row_id in (from_tui.id, from_cli.id):
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row_id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row_id)
                 assert stored is not None and stored.cancel_reason == "session_closed"
-            assert [row.id for row in await gateway.pending_inbound(recipient_id=session.id)] == [
-                from_agent.id
-            ]
+            assert [
+                row.id for row in await gateway.list_pending_inbound_messages(recipient_id=session.id)
+            ] == [from_agent.id]
         finally:
             await gateway.close()
 
@@ -1430,15 +1640,15 @@ class TestClosedInboxOperatorPolicy:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             for participant_id in (user_id, open_session_id, closed_workflow_id):
-                stored: Optional[ParticipantDAO] = await gateway.get_participant(
+                stored: Optional[ParticipantDAO] = await gateway.find_participant(
                     participant_id=UUID(participant_id)
                 )
                 assert stored is not None and stored.durable_inbox is False
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
                 recipient_id=UUID(open_session_id)
             )
             assert [str(row.id) for row in pending] == [pending_id]
-            cancelled: Optional[ChannelMessageDAO] = await gateway.get(message_id=UUID(cancelled_id))
+            cancelled: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=UUID(cancelled_id))
             assert cancelled is not None and cancelled.cancel_reason == "recipient_closed"
             with pytest.raises(RecipientClosedError):
                 await gateway.send(

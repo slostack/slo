@@ -314,7 +314,7 @@ class TuiChannelAdapter:
         Returns:
             list[ChannelMessageDAO]: Pending rows for the session's agent, FIFO.
         """
-        return await self._gateway.pending_inbound(
+        return await self._gateway.list_pending_inbound_messages(
             recipient_id=channel_participant_id_for_session(session_id=self._app._session.session_id),
         )
 
@@ -396,7 +396,7 @@ class TuiChannelAdapter:
         Returns:
             list[ChannelMessageDAO]: Note rows newest first.
         """
-        return await self._gateway.recent_notes_to(
+        return await self._gateway.list_recent_notes_to(
             recipient_id=channel_participant_id_for_session(session_id=session_id),
             limit=limit,
         )
@@ -411,7 +411,7 @@ class TuiChannelAdapter:
             Optional[str]: ``open`` or ``closed``, or ``None`` when the
                 participant has never registered.
         """
-        participant: Optional[ParticipantDAO] = await self._gateway.get_participant(
+        participant: Optional[ParticipantDAO] = await self._gateway.find_participant(
             participant_id=channel_participant_id_for_session(session_id=session_id),
         )
         return participant.status if participant is not None else None
@@ -420,7 +420,7 @@ class TuiChannelAdapter:
         """Poll for outbound rows addressed to the TUI user and deliver them."""
         while not self._stopping:
             try:
-                rows: list[ChannelMessageDAO] = await self._gateway.pending_outbound(
+                rows: list[ChannelMessageDAO] = await self._gateway.list_pending_outbound_messages(
                     recipient_ids=[self.user_participant.id],
                 )
                 for row in rows:

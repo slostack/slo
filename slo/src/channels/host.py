@@ -10,7 +10,7 @@ host owns the adapter's whole lifecycle:
   ├─ adapter.start(ctx)                 adapter reads its platform → ctx.inbound(...)
   ├─ loop until a signal or request_stop():
   │    heartbeat the channel every 5 s
-  │    pending_outbound(users of this channel) → adapter.deliver → accept
+  │    list_pending_outbound_messages(users of this channel) → adapter.deliver → accept
   │    (a failed delivery stays pending; that user backs off 1 s → 60 s)
   └─ adapter.stop(); remove the signal handlers; return the exit code
 ```
@@ -333,7 +333,7 @@ class HostAdapterContext:
         attachment: Optional[AttachmentDAO] = self._attachments.get(participant_id=user.id)
         if attachment is None or attachment.agent_id is None:
             return NOT_ATTACHED_TEXT
-        agent: Optional[ParticipantDAO] = await self._gateway.get_participant(
+        agent: Optional[ParticipantDAO] = await self._gateway.find_participant(
             participant_id=attachment.agent_id
         )
         if agent is None or agent.status != "open":
@@ -545,7 +545,9 @@ class AdapterHost:
         users: dict[UUID, ParticipantDAO] = {
             user.id: user for user in await self._gateway.channel_users(channel_id=channel.id)
         }
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_outbound(recipient_ids=list(users))
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_outbound_messages(
+            recipient_ids=list(users)
+        )
         held: set[UUID] = set()
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         for row in rows:

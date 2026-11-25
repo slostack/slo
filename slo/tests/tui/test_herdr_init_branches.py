@@ -26,13 +26,13 @@ def test_delivery_construction_is_inert_and_reuses_stores(tmp_path: Path) -> Non
     app = SloTUI(session=session)
     assert not history_root.exists()
     with patch.object(app, "set_interval") as interval:
-        app._build_session_delivery(session=session)
+        app._create_session_ownership_lease_store_if_missing(session=session)
         assert app._lease_store is not None
         assert app._workflow_handle_store is None and app._workflow_app_service is None
         app._workflow_app_service = app._build_workflow_service()
         stores = (app._lease_store, app._workflow_handle_store, app._workflow_app_service)
         assert all(store is not None for store in stores)
-        app._build_session_delivery(session=session)
+        app._create_session_ownership_lease_store_if_missing(session=session)
         assert all(
             left is right
             for left, right in zip(

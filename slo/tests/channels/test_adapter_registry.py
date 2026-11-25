@@ -142,7 +142,7 @@ class TestX5CustomAdapterRoundTrip:
             running: asyncio.Task[int] = asyncio.create_task(host.run())
 
             async with asyncio.timeout(10.0):
-                while not (pending := await gateway.pending_inbound(recipient_id=agent.id)):
+                while not (pending := await gateway.list_pending_inbound_messages(recipient_id=agent.id)):
                     await asyncio.sleep(0.02)
             request: ChannelMessageDAO = pending[0]
             assert request.message_contents == "ping"
@@ -172,7 +172,7 @@ class TestX5CustomAdapterRoundTrip:
                     "user_ref": "u-1",
                 }
             ]
-            reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=request.id)
+            reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=request.id)
             assert reply is not None and reply.accepted_at is not None
             assert request.channel_id == ChannelGateway.stable_channel_id(kind="http", name="echo")
         finally:

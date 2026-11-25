@@ -335,7 +335,7 @@ class ChannelPoller:
         Returns:
             list[ChannelMessageDAO]: Pending prompts in gateway display order.
         """
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._participant_id,
         )
         running_id: Optional[UUID] = self._running_row.id if self._running_row is not None else None
@@ -359,7 +359,7 @@ class ChannelPoller:
         async with self._queue_admission_lock:
             if self._running_row is not None and self._running_row.id == message_id:
                 return False
-            message: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=message_id)
+            message: Optional[ChannelMessageDAO] = await self._gateway.find_message(message_id=message_id)
             if (
                 message is None
                 or message.recipient_id != self._participant_id
@@ -414,7 +414,7 @@ class ChannelPoller:
 
     async def _recover_on_start(self) -> None:
         """Accept rows already in history; pause when other rows remain."""
-        pending: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._participant_id,
         )
         if not pending:
@@ -449,7 +449,7 @@ class ChannelPoller:
         Returns:
             bool: ``True`` unless the sender is a known agent or system.
         """
-        sender: Optional[ParticipantDAO] = await self._gateway.get_participant(
+        sender: Optional[ParticipantDAO] = await self._gateway.find_participant(
             participant_id=message.sender_id
         )
         return sender is None or sender.is_operator
@@ -541,7 +541,7 @@ class ChannelPoller:
         (108.3 O2).
         """
         await self._note_display.show_owed()
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._participant_id,
         )
         for row in rows:
@@ -578,7 +578,7 @@ class ChannelPoller:
         Returns:
             bool: ``True`` while the row is neither accepted nor cancelled.
         """
-        current: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=message.id)
+        current: Optional[ChannelMessageDAO] = await self._gateway.find_message(message_id=message.id)
         return current is not None and current.accepted_at is None and current.cancelled_at is None
 
     def _session_idle(self) -> bool:

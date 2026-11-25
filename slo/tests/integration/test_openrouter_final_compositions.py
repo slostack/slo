@@ -271,7 +271,7 @@ async def test_normalized_provider_failure_populates_headless_status_and_termina
     status = json.loads(status_path.read_text())
     assert status["state"] == "failed" and status["exit_code"] == 1
     assert status["orchestrator_session_id"] == "body-session"
-    pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=owner_id)
+    pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(recipient_id=owner_id)
     await gateway.close()
     terminals = [message for message in pending if message.message_type == "prompt"]
     assert len(terminals) == 1

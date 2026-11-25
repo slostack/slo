@@ -82,7 +82,7 @@ class TestTuiAdapterProtocol:
             delivered: bool = await adapter.deliver(message=notice, user=adapter.user_participant)
 
             assert delivered is True
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=notice.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=notice.id)
             assert stored is not None and stored.accepted_at is not None
             assert adapter.channel.name == adapter.name
         finally:

@@ -66,8 +66,8 @@ class SubAgentDispatcher(Protocol):
 class PendingInboundReader(Protocol):
     """Consumer-owned slice of ``ChannelGateway`` that note counting needs."""
 
-    async def pending_inbound(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
-        """Return rows still pending for one recipient, FIFO."""
+    async def list_pending_inbound_messages(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
+        """Return rows still pending for one recipient, forced first then FIFO."""
         ...
 
 
@@ -102,7 +102,7 @@ class PendingChannelNotes:
             int: Number of pending notes.
         """
         try:
-            pending: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+            pending: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
                 recipient_id=self._recipient_id
             )
         except Exception as exc:  # noqa: BLE001 — a broken queue must not hide the dispatch result

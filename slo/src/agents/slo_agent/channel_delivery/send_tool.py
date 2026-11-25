@@ -323,7 +323,7 @@ class SendMessageTool:
         Returns:
             SendMessageResultDAO: ``recipient_closed`` with the display name.
         """
-        participant: Optional[ParticipantDAO] = await self._gateway.get_participant(
+        participant: Optional[ParticipantDAO] = await self._gateway.find_participant(
             participant_id=recipient_id
         )
         return SendMessageResultDAO(
@@ -342,4 +342,4 @@ class SendMessageTool:
         """
         if in_reply_to_id is None:
             return True
-        return await self._gateway.get(message_id=in_reply_to_id) is not None
+        return await self._gateway.find_message(message_id=in_reply_to_id) is not None

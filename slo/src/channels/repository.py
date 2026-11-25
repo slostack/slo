@@ -757,6 +757,26 @@ class ChannelRepository:
 
         return await self._execute_database_operation(_query)
 
+    async def close_user(self, *, participant_id: UUID) -> None:
+        """Mark a user absent without settling any messages in either direction.
+
+        Called through the gateway when a channel adapter stops. Repeated
+        closure and unknown ids are harmless; agent lifecycle is separate.
+
+        Args:
+            participant_id (UUID): User participant whose adapter stopped.
+        """
+
+        def _write(connection: sqlite3.Connection) -> None:
+            """Persist user presence without modifying the durable inbox."""
+            connection.execute(
+                "UPDATE participants SET status = 'closed' WHERE id = ? AND kind = 'user'",
+                (str(participant_id),),
+            )
+            connection.commit()
+
+        await self._execute_database_operation(_write)
+
     async def close_agent_and_cancel_ineligible_pending_messages(
         self, *, participant_id: UUID, reason: str
     ) -> int:

@@ -287,6 +287,17 @@ class ChannelGateway:
         )
         return await self._repository.upsert_participant(participant=participant)
 
+    async def close_user(self, *, participant_id: UUID) -> None:
+        """Close an adapter's user presence while retaining all pending messages.
+
+        Adapters call this on stop; register_user reopens the same identity
+        on resume. Unlike agent closure, user closure never cancels rows.
+
+        Args:
+            participant_id (UUID): User participant whose adapter stopped.
+        """
+        await self._repository.close_user(participant_id=participant_id)
+
     async def close_agent(self, *, session_id: UUID, reason: str) -> int:
         """Close one agent participant and cancel its pending inbound rows.
 

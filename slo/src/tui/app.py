@@ -2813,6 +2813,8 @@ class SloTUI(App):
             await old_session.stop_channel_delivery(reason="session_closed")
         except Exception as exc:  # noqa: BLE001 — replacement must continue
             log_error(msg=f"channel delivery stop on /new failed: {exc}")
+        if self._channel_adapter is not None:
+            await self._channel_adapter.stop()
         self._stop_delivery_timers()
         await self._release_replaced_session_lease(session=old_session)
         self._workflow_renderer = None
@@ -2932,6 +2934,11 @@ class SloTUI(App):
                 content="New session selected; some UI state could not refresh.", classes="tool-result"
             )
         if self._runtime_may_start(session=session):
+            if self._channel_adapter is not None:
+                try:
+                    await self._channel_adapter.rebind_operator_to_current_session()
+                except Exception as exc:  # noqa: BLE001 — replacement must continue
+                    log_error(msg=f"channel operator rebind on /new failed: {exc}")
             await self._finish_replacement_runtime()
 
     async def _finish_replacement_runtime(self) -> None:

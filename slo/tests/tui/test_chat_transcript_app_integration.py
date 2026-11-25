@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from textual.widgets import Static
@@ -19,6 +20,10 @@ from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDA
 from src.agents.slo_agent.sessions.dao import AgentEventSubscriber, SessionConfigDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
+from src.channels.dao import ChannelMessageDAO, NewMessageDAO, ParticipantDAO
+from src.channels.gateway import ChannelGateway
+from src.channels.repository import ChannelRepository
+from src.tui.channel.adapter import TuiChannelAdapter
 from src.tui.components.prompt_input.component import PromptInputComponent
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 from src.tui.widgets.assistant_stream_block import AssistantStreamBlock
@@ -302,3 +307,131 @@ async def test_hide_show_retains_progress_modal_focus_and_usable_prompt(tmp_path
         assert prompt.text == "ok"
         assert app.focused is prompt
         assert len(app.screen_stack) == 1
+
+
+async def test_new_rebinds_operator_and_resume_reclaims_pending_reply(tmp_path: Path) -> None:
+    """Mounted replacement isolates replies and binds the successor's real inbox."""
+
+    factory: RecordingSessionFactory = RecordingSessionFactory()
+    initial: SloAgentSession = factory(
+        config=session_config(tmp_path=tmp_path), allow_pending_preparation=True
+    )
+    gateway: ChannelGateway = ChannelGateway(repository=ChannelRepository(db_path=tmp_path / "channels.db"))
+    app: SloTUI = SloTUI(session=initial, session_factory=factory, channel_gateway=gateway)
+    async with app.run_test() as pilot:
+        adapter: TuiChannelAdapter | None = app.channel_adapter
+        assert adapter is not None
+        old_user: ParticipantDAO = adapter.user_participant
+        app.query_one(PromptInputComponent).load_text("/new successor")
+        await pilot.press("enter")
+        await pilot.pause()
+        successor: SloAgentSession = app._session
+        assert successor is not initial
+        assert adapter.user_participant.id != old_user.id
+        closed: ParticipantDAO | None = await gateway.find_participant(participant_id=old_user.id)
+        assert closed is not None and closed.status == "closed"
+        assert successor.channel_poller is not None
+        assert successor.channel_poller.boundary_inbox._operator_participant_id == adapter.user_participant.id
+        worker: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="remote worker")
+        reply: ChannelMessageDAO = await gateway.send(
+            new=NewMessageDAO(
+                sender_id=worker.id,
+                recipient_id=old_user.id,
+                message_contents="reply for retired session",
+                message_type="reply",
+            )
+        )
+        await asyncio.sleep(0.6)
+        stored: ChannelMessageDAO | None = await gateway.find_message(message_id=reply.id)
+        assert stored is not None and stored.accepted_at is None and stored.cancelled_at is None
+        transcript: ChatTranscriptComponent = app.query_one(ChatTranscriptComponent)
+        assert "reply for retired session" not in transcript.logical_copy_text()
+        resumed: SloAgentSession = factory(
+            config=session_config(tmp_path=tmp_path).model_copy(update={"session_id": initial.session_id}),
+            allow_pending_preparation=True,
+        )
+        await app._commit_replacement_session(old_session=successor, candidate=resumed)
+        assert adapter.user_participant.id == old_user.id
+        assert adapter.user_participant.status == "open"
+        async with asyncio.timeout(3):
+            while True:
+                stored = await gateway.find_message(message_id=reply.id)
+                if stored is not None and stored.accepted_at is not None:
+                    break
+                await asyncio.sleep(0.01)
+        assert stored.cancelled_at is None
+        assert "reply for retired session" in transcript.logical_copy_text()
+
+
+class CloseUserLockedGateway(ChannelGateway):
+    """Reject user closure while retaining the real SQLite queue."""
+
+    async def close_user(self, *, participant_id: UUID) -> None:
+        """Simulate a locked presence write during replacement and teardown."""
+        raise sqlite3.OperationalError("database is locked")
+
+
+class RegisterUserFailsAfterStartGateway(ChannelGateway):
+    """Allow initial registration, then refuse every replacement registration."""
+
+    registration_completed: bool = False
+
+    async def register_user(
+        self, *, channel_id: UUID, name: str, external_ref: str | None = None
+    ) -> ParticipantDAO:
+        """Register the initial operator against SQLite; fail subsequent attempts."""
+        if self.registration_completed:
+            raise sqlite3.OperationalError("database is locked")
+        participant: ParticipantDAO = await super().register_user(
+            channel_id=channel_id, name=name, external_ref=external_ref
+        )
+        self.registration_completed = True
+        return participant
+
+
+@pytest.mark.parametrize("gateway_type", [CloseUserLockedGateway, RegisterUserFailsAfterStartGateway])
+async def test_new_completes_when_operator_gateway_fails(
+    tmp_path: Path, gateway_type: type[ChannelGateway]
+) -> None:
+    """A queue outage cannot strand replacement or retain predecessor ownership."""
+    factory: RecordingSessionFactory = RecordingSessionFactory()
+    initial: SloAgentSession = factory(
+        config=session_config(tmp_path=tmp_path), allow_pending_preparation=True
+    )
+    gateway: ChannelGateway = gateway_type(repository=ChannelRepository(db_path=tmp_path / "channels.db"))
+    app: SloTUI = SloTUI(session=initial, session_factory=factory, channel_gateway=gateway)
+
+    async with app.run_test() as pilot:
+        adapter: TuiChannelAdapter | None = app.channel_adapter
+        assert adapter is not None
+        old_user: ParticipantDAO = adapter.user_participant
+        lease_store = app._lease_store
+        assert lease_store is not None
+        assert await lease_store.is_active(session_id=initial.session_id)
+        app.query_one(PromptInputComponent).load_text("/new successor")
+        await pilot.press("enter")
+        await pilot.pause()
+        successor: SloAgentSession = app._session
+        assert successor is factory.sessions[1]
+        assert app._session_transitioning is False
+        assert initial.channel_poller is None
+        assert not await lease_store.is_active(session_id=initial.session_id)
+        transcript: ChatTranscriptComponent = app.query_one(ChatTranscriptComponent)
+        if gateway_type is RegisterUserFailsAfterStartGateway:
+            assert successor.channel_poller is None
+            assert transcript.logical_copy_text().count("Channel queue unavailable") == 1
+            assert "Channel queue unavailable; prompts stay local." in transcript.logical_copy_text()
+            app.query_one(PromptInputComponent).load_text("replacement prompt")
+            await pilot.press("enter")
+            await pilot.pause()
+            messages: list[ChannelMessageDAO] = await gateway.list_recent_sent_messages(
+                sender_id=old_user.id, recipient_id=UUID(successor.session_id)
+            )
+            assert not any(message.message_contents == "replacement prompt" for message in messages)
+            assert "channel send failed" in transcript.logical_copy_text()
+        else:
+            app.query_one(PromptInputComponent).load_text("replacement prompt")
+            await pilot.press("enter")
+            await wait_for_answer(app=app)
+            await pilot.pause()
+            assert "replacement prompt" in transcript.logical_copy_text()

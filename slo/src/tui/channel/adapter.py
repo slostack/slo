@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Protocol, TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from config.logger import log_warning
+from config.logger import log_error, log_warning
 
 from src.agents.slo_agent.channel_delivery.poller import channel_participant_id_for_session
 from src.channels.dao import (
@@ -213,7 +213,9 @@ class TuiChannelAdapter:
         """Register the channel and its user, and start the outbound loop.
 
         The TUI channel id is per-install, persisted under
-        ``<SLO_HOME>/channels/tui.json`` so a restarted TUI keeps its identity.
+        ``<SLO_HOME>/channels/tui.json``. The operator slot is scoped to the
+        stable session id: separate sessions have separate reply inboxes,
+        while a resumed session reclaims its pending replies.
 
         Args:
             ctx (Optional[AdapterContext]): Accepted for ``ChannelAdapter``
@@ -226,22 +228,52 @@ class TuiChannelAdapter:
             name=self.name,
             channel_id=channel_id,
         )
-        self._user = await self._gateway.register_user(
-            channel_id=self._channel.id,
-            name=f"{getpass.getuser()} (tui)",
-            external_ref="operator",
-        )
+        await self._register_session_operator()
         self._stopping = False
         self._outbound_task = asyncio.create_task(self._outbound_loop())
 
+    async def rebind_operator_to_current_session(self) -> None:
+        """Retire the old inbox and poll the adopted session's operator slot.
+
+        Called by the app after predecessor delivery stops and the successor
+        is adopted, before its delivery starts. The defensive join also makes
+        rebinding safe when the caller has not already stopped the adapter.
+        Pending replies remain stored for a later resume. A failed rebind leaves
+        the adapter with no operator, so channel sends are refused.
+        """
+        await self.stop()
+        self._user = None
+        await self._register_session_operator()
+        self._stopping = False
+        self._outbound_task = asyncio.create_task(self._outbound_loop())
+
+    async def _register_session_operator(self) -> None:
+        """Register or reopen the current session's durable user slot."""
+        self._user = await self._gateway.register_user(
+            channel_id=self.channel.id,
+            name=f"{getpass.getuser()} (tui {self._app._session.session_id[:8]})",
+            external_ref=f"operator:{self._app._session.session_id}",
+        )
+
     async def stop(self) -> None:
-        """Stop the outbound delivery loop."""
+        """Stop delivery and close this session's user without discarding replies.
+
+        Safe before start and on repeated teardown. The next start reopens
+        the same user slot so pending replies remain deliverable.
+        """
         self._stopping = True
         task: Optional[asyncio.Task[None]] = self._outbound_task
         self._outbound_task = None
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if self._user is not None and self._user.status != "closed":
+            try:
+                await self._gateway.close_user(participant_id=self._user.id)
+            except Exception as exc:  # noqa: BLE001 — local teardown must complete
+                log_error(msg=f"channel operator close failed: {exc}")
+                return
+            self._user = self._user.model_copy(update={"status": "closed"})
 
     async def send_prompt(self, *, text: str, force: bool = False) -> ChannelMessageDAO:
         """Enqueue one operator prompt for the session's agent.

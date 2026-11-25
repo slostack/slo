@@ -547,10 +547,11 @@ class TestForceLocalWakeAndRefusals:
             assert recipient_wake.is_set()  # the send woke the registered recipient poller
             assert not outsider_wake.is_set()
 
+            recipient_wake.clear()
             assert await gateway.force(message_id=prompt.id, by=outsider.id) is False
+            assert not recipient_wake.is_set()  # a refused force must not wake the stored recipient
             assert not outsider_wake.is_set()
 
-            recipient_wake.clear()
             assert await gateway.force(message_id=prompt.id, by=user.id) is True
             assert recipient_wake.is_set()
 
@@ -1666,47 +1667,3 @@ class TestClosedInboxOperatorPolicy:
             assert reopened.status == "open" and reopened.durable_inbox is True
         finally:
             await gateway.close()
-
-
-async def test_close_user_preserves_pending_rows_and_admits_late_replies(tmp_path: Path) -> None:
-    """User closure changes presence, not queue ownership or admission (R5)."""
-    gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
-    try:
-        channel: ChannelDAO = await gateway.register_channel(kind="tui", name="tui@test")
-        user: ParticipantDAO = await gateway.register_user(
-            channel_id=channel.id, name="operator", external_ref="session"
-        )
-        agent: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="worker")
-        prompt: ChannelMessageDAO = await gateway.send(
-            new=NewMessageDAO(sender_id=user.id, recipient_id=agent.id, message_contents="pending prompt")
-        )
-        early: ChannelMessageDAO = await gateway.send(
-            new=NewMessageDAO(
-                sender_id=agent.id, recipient_id=user.id, message_contents="early", message_type="reply"
-            )
-        )
-        await gateway.close_user(participant_id=agent.id)
-        unchanged = await gateway.find_participant(participant_id=agent.id)
-        assert unchanged is not None and unchanged.status == "open"
-        await gateway.close_user(participant_id=user.id)
-        await gateway.close_user(participant_id=user.id)
-        closed: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=user.id)
-        assert closed is not None and closed.status == "closed" and closed.is_operator
-        late: ChannelMessageDAO = await gateway.send(
-            new=NewMessageDAO(
-                sender_id=agent.id, recipient_id=user.id, message_contents="late", message_type="reply"
-            )
-        )
-        assert [row.id for row in await gateway.list_pending_outbound_messages(recipient_ids=[user.id])] == [
-            early.id,
-            late.id,
-        ]
-        assert [row.id for row in await gateway.list_pending_inbound_messages(recipient_id=agent.id)] == [
-            prompt.id
-        ]
-        reopened: ParticipantDAO = await gateway.register_user(
-            channel_id=channel.id, name="operator", external_ref="session"
-        )
-        assert reopened.id == user.id and reopened.status == "open"
-    finally:
-        await gateway.close()

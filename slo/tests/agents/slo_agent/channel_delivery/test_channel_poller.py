@@ -1136,7 +1136,9 @@ class TestPollerReplyToClosedSender:
             stored_request: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=request.id)
             assert stored_request is not None
             assert stored_request.accepted_at is not None and stored_request.cancelled_at is None
-            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert (
+                await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            )
             assert await gateway.list_pending_outbound_messages(recipient_ids=[workflow.id]) == []
             history: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(root=tmp_path / "history")
             events: list[SessionHistoryEventDAO] = await history.load_events(session_id=str(session_id))
@@ -1221,7 +1223,9 @@ class TestPollerReplyToClosedSender:
 
             assert failing_handler.raised == 1
             assert runner.ran == [request.id, follow_up.id]
-            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert (
+                await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            )
             assert poller.busy is False and poller.paused is None
             # Read-only: the inbox has no public reservation reader (see the first journey).
             assert request.id not in boundary_inbox._reserved_ids
@@ -1281,13 +1285,17 @@ class TestPollerReplyToClosedSender:
             await _wait_until(predicate=lambda: poller.current_run_task is None)
 
             assert poller.paused == "aborted" and poller.busy is False
-            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert (
+                await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            )
             assert await gateway.list_pending_outbound_messages(recipient_ids=[workflow.id]) == []
             assert request.id not in boundary_inbox._reserved_ids
             # The aborted pause holds Q across several poll intervals.
             await asyncio.sleep(0.2)
             assert runner.ran == [request.id]
-            queued_follow_up: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=follow_up.id)
+            queued_follow_up: Optional[ChannelMessageDAO] = await gateway.find_message(
+                message_id=follow_up.id
+            )
             assert queued_follow_up is not None and queued_follow_up.accepted_at is None
             assert poller.paused == "aborted"
 
@@ -1360,7 +1368,9 @@ class TestPollerReplyToClosedSender:
             assert runner.ran == [request.id]
             assert poller.current_run_task is None and poller.busy is False
             assert request.id not in boundary_inbox._reserved_ids
-            assert await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert (
+                await gateway.find_message(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            )
             assert await gateway.list_pending_outbound_messages(recipient_ids=[workflow.id]) == []
             closed_session: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=agent.id)
             assert closed_session is not None and closed_session.status == "closed"

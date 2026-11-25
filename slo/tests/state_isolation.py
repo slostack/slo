@@ -46,12 +46,28 @@ INHERITED_STATE_OVERRIDES: tuple[str, ...] = (
 )
 """State and content overrides that must not escape the test-owned home.
 
-The final five entries name orchestrator child-process variables
-(``src/agents/slo_agent/orchestrator/process.py``) and the host Claude-bridge
-switch. A run started inside a Slo pool child inherits them; without removal
-they silently convert plain headless runs into channel-registered children,
-disable follow-up turns, and switch the default tool bundle from extended to
-local. Tests opt back in through their own ``monkeypatch.setenv``.
+The final five entries are the variables a Slo orchestrator injects into pool
+children (``src/agents/slo_agent/orchestrator/process.py``) plus the host
+Claude-bridge switch. A suite started inside such a child inherits them, and
+two of them demonstrably corrupt channel and Claude-bridge tests:
+
+* ``SLO_CHANNEL_PARENT_ID`` activates channel mode in any headless run
+  (``src/cli/headless.py`` ``_is_channel_mode``), so a plain run opens the
+  shared queue gateway and ``_config_with_child_messaging`` appends an extra
+  ``send_message`` tool. A plain-run test then observes a registered queue
+  participant; in an orchestrator run the orchestrator bootstrap adds a
+  second ``send_message`` on top, and the Claude bridge's tool-binding freeze
+  rejects the duplicate name ("Unsupported Claude tool binding.").
+* ``SLO_HEADLESS_FOLLOWUP_TURNS=0`` makes ``followup_turn_cap()``
+  (``src/cli/headless_channel.py``) return zero, so the follow-up loop never
+  runs and every queued prompt is left unaccepted.
+
+``SLO_CLAUDE_BRIDGE_ENABLED``, ``SLO_PARENT_PID`` and
+``SLO_CHANNEL_PARTICIPANT_NAME`` are likewise cleared as isolation policy:
+independent single-variable runs showed they fail none of the investigated
+tests, but they are child-launch identity/follow-up knobs that must not leak
+into test-owned runs. Tests opt back in through their own
+``monkeypatch.setenv``.
 """
 
 

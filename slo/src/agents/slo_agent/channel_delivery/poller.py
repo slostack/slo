@@ -23,6 +23,7 @@ from src.agents.slo_agent.channel_delivery.note_display import ChannelDisplaySin
 from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
 from src.agents.slo_agent.channel_delivery.turn_runner import TurnOutcomeDAO, TurnRunner
 from src.channels.dao import ChannelMessageDAO, ParticipantDAO
+from src.channels.errors import RecipientClosedError
 from src.channels.gateway import ChannelGateway
 
 if TYPE_CHECKING:
@@ -605,11 +606,16 @@ class ChannelPoller:
 
         Settlement maps the finished task to its effects: a run that never
         started cancels its row (``start_failed``); an aborted run pauses the
-        poller; every started run gets exactly one reply. When an effect
+        poller; every started run attempts exactly one reply. When an effect
         raises, the run task and row stay in place, so the next tick (or
         ``stop``) retries the settlement from the same finished task without
         rerunning the model. Each effect is idempotent (stable reply id,
         guarded cancel, pause), so a retry never duplicates one.
+
+        One reply failure is terminal rather than retried: a sender that has
+        closed and admits nobody (a finished workflow or child) refuses the
+        reply with ``RecipientClosedError``, which no retry can change. That
+        run settles without a reply and leaves a local diagnostic instead.
         """
         run_task: Optional["asyncio.Task[TurnOutcomeDAO]"] = self._run_task
         row: Optional[ChannelMessageDAO] = self._running_row
@@ -625,11 +631,39 @@ class ChannelPoller:
         else:
             if outcome.status == "aborted":
                 self._paused_reason = "aborted"
-            await self._replies.write(request=row, outcome=outcome)
+            try:
+                await self._replies.write(request=row, outcome=outcome)
+            except RecipientClosedError as error:
+                self._log_reply_refused_by_closed_sender(request=row, error=error)
         self._run_task = None
         self._running_row = None
         self._running_row_started = False
         self._boundary_inbox.release(message_id=row.id)
+
+    def _log_reply_refused_by_closed_sender(
+        self, *, request: ChannelMessageDAO, error: RecipientClosedError
+    ) -> None:
+        """Record locally that a finished run's reply was refused by its closed sender.
+
+        WHAT: Writes one warning naming the request, its sender and the reply
+            id that was not stored; message contents are never logged.
+        WHO: ``_settle_finished_run``, at the reply step only.
+        WHEN: Once per run, when the reply write raised ``RecipientClosedError``;
+            settlement cleanup runs right after it.
+
+        Args:
+            request (ChannelMessageDAO): The prompt row whose reply was refused.
+            error (RecipientClosedError): The refusal raised by the gateway.
+        """
+        try:
+            log_warning(
+                msg=(
+                    f"channel reply dropped: sender {error.participant_id} of request {request.id} "
+                    f"is closed; reply {ReplyWriter.reply_id_for(request_id=request.id)} was not stored"
+                )
+            )
+        except Exception:  # noqa: BLE001 -- a failed diagnostic must not block settlement
+            pass
 
     def _finished_run_outcome(self, *, run_task: "asyncio.Task[TurnOutcomeDAO]") -> Optional[TurnOutcomeDAO]:
         """Return how a finished run task ended, without re-awaiting it.

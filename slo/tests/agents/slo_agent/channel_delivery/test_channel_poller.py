@@ -15,18 +15,22 @@ seams, not patched internals.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Optional
 from uuid import UUID, uuid4
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
+from src.agents.slo_agent.channel_delivery.boundary_inbox import ChannelBoundaryInbox
 from src.agents.slo_agent.channel_delivery.poller import ChannelPoller, ChannelDisplaySink
 from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
 from src.agents.slo_agent.channel_delivery.turn_runner import TurnOutcomeDAO, TurnRunner
+from src.agents.slo_agent.history.dao import SessionHistoryEventDAO
 from src.agents.slo_agent.history.filesystem_store import FilesystemSessionHistoryStore
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.channels.dao import ChannelDAO, ChannelMessageDAO, NewMessageDAO, ParticipantDAO
@@ -1048,3 +1052,360 @@ class TestPollerSettlementIsRetained:
             assert replies[0].id == ReplyWriter.reply_id_for(request_id=request.id)
         finally:
             await gateway.close()
+
+
+class TestPollerReplyToClosedSender:
+    """A prompt whose sender closed before the reply settles terminally (closed-reply fix)."""
+
+    async def test_prompt_from_a_closed_workflow_settles_without_a_reply_and_the_next_prompt_runs(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Journey: workflow W sends P and closes; S runs P once, drops the refused reply, then runs Q.
+
+        Real SQLite gateway and participants, real ``SloAgentSession`` driven by the
+        production-shaped ``SessionTurnRunner``, ``FauxChatModel`` at the provider
+        boundary, real ``ChannelBoundaryInbox``; the poller loop is the entry point.
+        """
+        caplog.set_level(logging.WARNING, logger="slo")
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        workflow: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="orchestrator W")
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path,
+            session_id=str(session_id),
+            responses=[AIMessage(content="answer for W"), AIMessage(content="unblocked")],
+        )
+        boundary_inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+        poller: ChannelPoller = ChannelPoller(
+            gateway=gateway,
+            session=session,
+            runner=SessionTurnRunner(session=session),
+            replies=ReplyWriter(gateway=gateway),
+            boundary_inbox=boundary_inbox,
+            interval=0.02,
+            durable_inbox=True,
+        )
+        try:
+            await poller.start()
+            # Hold the queue while W sends P and closes, so P is still queued when W is gone.
+            poller.pause(reason="test_hold")
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=workflow.id,
+                    recipient_id=agent.id,
+                    message_contents="report from W",
+                    message_type="prompt",
+                )
+            )
+            await gateway.close_agent(session_id=workflow.id, reason="recipient_closed")
+            closed_workflow: Optional[ParticipantDAO] = await gateway.get_participant(
+                participant_id=workflow.id
+            )
+            assert closed_workflow is not None and closed_workflow.status == "closed"
+            follow_up: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="next", channel_id=channel.id
+                )
+            )
+            poller.resume()
+
+            async with asyncio.timeout(10.0):
+                while len(await _replies_to(gateway=gateway, user_id=user.id, request_id=follow_up.id)) != 1:
+                    await asyncio.sleep(0.02)
+            await _wait_until(predicate=lambda: poller.current_run_task is None)
+
+            follow_up_replies: list[ChannelMessageDAO] = await _replies_to(
+                gateway=gateway, user_id=user.id, request_id=follow_up.id
+            )
+            assert [reply.message_contents for reply in follow_up_replies] == ["unblocked"]
+            stored_request: Optional[ChannelMessageDAO] = await gateway.get(message_id=request.id)
+            assert stored_request is not None
+            assert stored_request.accepted_at is not None and stored_request.cancelled_at is None
+            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.pending_outbound(recipient_ids=[workflow.id]) == []
+            history: FilesystemSessionHistoryStore = FilesystemSessionHistoryStore(root=tmp_path / "history")
+            events: list[SessionHistoryEventDAO] = await history.load_events(session_id=str(session_id))
+            assert [
+                event.payload.metadata.get("channel_message_id")
+                for event in events
+                if event.kind == "user_message"
+            ] == [str(request.id), str(follow_up.id)]
+            assert poller.busy is False and poller.paused is None
+            assert await poller.pending_prompts() == []
+            # The inbox exposes no reader for reservations, and an accepted row is
+            # never pending again, so a leaked reservation has no behavioral
+            # symptom; read the set directly (read-only) to prove release.
+            assert request.id not in boundary_inbox._reserved_ids
+            refused_diagnostics: list[logging.LogRecord] = [
+                record
+                for record in caplog.records
+                if record.levelno == logging.WARNING
+                and str(request.id) in record.getMessage()
+                and str(workflow.id) in record.getMessage()
+            ]
+            assert len(refused_diagnostics) == 1
+            assert not [
+                record
+                for record in caplog.records
+                if "channel poller run settlement failed" in record.getMessage()
+            ]
+        finally:
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+    async def test_closed_sender_reply_settles_when_the_diagnostic_log_fails(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising log handler on ``slo`` cannot keep the refused run from settling (CR-7)."""
+        caplog.set_level(logging.WARNING, logger="slo")
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        workflow: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="orchestrator W")
+        runner: RecordingTurnRunner = RecordingTurnRunner()
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, session_id=str(session_id), responses=[AIMessage(content="unused")]
+        )
+        boundary_inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+        poller: ChannelPoller = ChannelPoller(
+            gateway=gateway,
+            session=session,
+            runner=runner,
+            replies=ReplyWriter(gateway=gateway),
+            boundary_inbox=boundary_inbox,
+            interval=0.02,
+            durable_inbox=True,
+        )
+        slo_logger: logging.Logger = logging.getLogger("slo")
+        failing_handler: Optional[RaisingLogHandler] = None
+        try:
+            await poller.start()
+            poller.pause(reason="test_hold")
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=workflow.id,
+                    recipient_id=agent.id,
+                    message_contents="report from W",
+                    message_type="prompt",
+                )
+            )
+            await gateway.close_agent(session_id=workflow.id, reason="recipient_closed")
+            follow_up: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="next", channel_id=channel.id
+                )
+            )
+            failing_handler = RaisingLogHandler(fragment=str(request.id))
+            slo_logger.addHandler(failing_handler)
+            poller.resume()
+
+            async with asyncio.timeout(10.0):
+                while len(await _replies_to(gateway=gateway, user_id=user.id, request_id=follow_up.id)) != 1:
+                    await asyncio.sleep(0.02)
+            await _wait_until(predicate=lambda: poller.current_run_task is None)
+
+            assert failing_handler.raised == 1
+            assert runner.ran == [request.id, follow_up.id]
+            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert poller.busy is False and poller.paused is None
+            # Read-only: the inbox has no public reservation reader (see the first journey).
+            assert request.id not in boundary_inbox._reserved_ids
+            assert not [
+                record
+                for record in caplog.records
+                if "channel poller run settlement failed" in record.getMessage()
+            ]
+        finally:
+            if failing_handler is not None:
+                slo_logger.removeHandler(failing_handler)
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+    async def test_aborted_turn_for_a_closed_sender_settles_paused_without_a_reply(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An aborted run whose sender closed mid-run settles, stays paused, and Q waits for resume (CR-10)."""
+        caplog.set_level(logging.WARNING, logger="slo")
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        channel, user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        workflow: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="orchestrator W")
+        release: asyncio.Event = asyncio.Event()
+        runner: AbortsFirstRunTurnRunner = AbortsFirstRunTurnRunner(release=release)
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, session_id=str(session_id), responses=[AIMessage(content="unused")]
+        )
+        boundary_inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+        poller: ChannelPoller = ChannelPoller(
+            gateway=gateway,
+            session=session,
+            runner=runner,
+            replies=ReplyWriter(gateway=gateway),
+            boundary_inbox=boundary_inbox,
+            interval=0.02,
+            durable_inbox=True,
+        )
+        try:
+            await poller.start()
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=workflow.id,
+                    recipient_id=agent.id,
+                    message_contents="report from W",
+                    message_type="prompt",
+                )
+            )
+            await _wait_until(predicate=lambda: runner.ran == [request.id])
+            await gateway.close_agent(session_id=workflow.id, reason="recipient_closed")
+            follow_up: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=user.id, recipient_id=agent.id, message_contents="next", channel_id=channel.id
+                )
+            )
+            release.set()
+            await _wait_until(predicate=lambda: poller.current_run_task is None)
+
+            assert poller.paused == "aborted" and poller.busy is False
+            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.pending_outbound(recipient_ids=[workflow.id]) == []
+            assert request.id not in boundary_inbox._reserved_ids
+            # The aborted pause holds Q across several poll intervals.
+            await asyncio.sleep(0.2)
+            assert runner.ran == [request.id]
+            queued_follow_up: Optional[ChannelMessageDAO] = await gateway.get(message_id=follow_up.id)
+            assert queued_follow_up is not None and queued_follow_up.accepted_at is None
+            assert poller.paused == "aborted"
+
+            poller.resume()
+            async with asyncio.timeout(10.0):
+                while len(await _replies_to(gateway=gateway, user_id=user.id, request_id=follow_up.id)) != 1:
+                    await asyncio.sleep(0.02)
+            assert runner.ran == [request.id, follow_up.id]
+            refused_diagnostics: list[logging.LogRecord] = [
+                record
+                for record in caplog.records
+                if record.levelno == logging.WARNING and str(request.id) in record.getMessage()
+            ]
+            assert len(refused_diagnostics) == 1
+            assert not [
+                record
+                for record in caplog.records
+                if "channel poller run settlement failed" in record.getMessage()
+            ]
+        finally:
+            release.set()
+            await poller.stop(reason="test_done")
+            await gateway.close()
+
+    async def test_stop_settles_a_run_for_a_closed_sender_without_a_settlement_error(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``stop`` owns P's unfinished run, W closes mid-run, and stop settles it cleanly (CR-11)."""
+        caplog.set_level(logging.WARNING, logger="slo")
+        gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
+        session_id: UUID = uuid4()
+        _channel, _user, agent = await _register_tui_participants(gateway=gateway, session_id=session_id)
+        workflow: ParticipantDAO = await gateway.register_agent(session_id=uuid4(), name="orchestrator W")
+        release: asyncio.Event = asyncio.Event()
+        runner: BlockingTurnRunner = BlockingTurnRunner(release=release)
+        session: SloAgentSession = _build_session(
+            tmp_path=tmp_path, session_id=str(session_id), responses=[AIMessage(content="unused")]
+        )
+        boundary_inbox: ChannelBoundaryInbox = ChannelBoundaryInbox(gateway=gateway, agent_id=agent.id)
+        poller: ChannelPoller = ChannelPoller(
+            gateway=gateway,
+            session=session,
+            runner=runner,
+            replies=ReplyWriter(gateway=gateway),
+            boundary_inbox=boundary_inbox,
+            interval=0.02,
+            durable_inbox=True,
+        )
+        try:
+            await poller.start()
+            request: ChannelMessageDAO = await gateway.send(
+                new=NewMessageDAO(
+                    sender_id=workflow.id,
+                    recipient_id=agent.id,
+                    message_contents="report from W",
+                    message_type="prompt",
+                )
+            )
+            await _wait_until(predicate=lambda: runner.ran == [request.id])
+            await gateway.close_agent(session_id=workflow.id, reason="recipient_closed")
+            stopping: asyncio.Task[None] = asyncio.create_task(poller.stop(reason="session_closed"))
+            # Read-only coordination: once stop has cancelled and joined the loop
+            # (``_task`` cleared), only stop can settle the run, so releasing the
+            # runner now proves stop owns the settlement. No public reader exists.
+            await _wait_until(predicate=lambda: poller._task is None)
+            assert poller.busy is True
+            release.set()
+            await asyncio.wait_for(stopping, timeout=10)
+
+            assert runner.ran == [request.id]
+            assert poller.current_run_task is None and poller.busy is False
+            assert request.id not in boundary_inbox._reserved_ids
+            assert await gateway.get(message_id=ReplyWriter.reply_id_for(request_id=request.id)) is None
+            assert await gateway.pending_outbound(recipient_ids=[workflow.id]) == []
+            closed_session: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=agent.id)
+            assert closed_session is not None and closed_session.status == "closed"
+            refused_diagnostics: list[logging.LogRecord] = [
+                record
+                for record in caplog.records
+                if record.levelno == logging.WARNING and str(request.id) in record.getMessage()
+            ]
+            assert len(refused_diagnostics) == 1
+            assert not [
+                record
+                for record in caplog.records
+                if "could not settle its last run on stop" in record.getMessage()
+                or "channel poller run settlement failed" in record.getMessage()
+            ]
+        finally:
+            release.set()
+            await gateway.close()
+
+
+class RaisingLogHandler(logging.Handler):
+    """Injected log handler that raises for records naming one fragment (CR-7).
+
+    Added through the public ``logging.getLogger("slo").addHandler``; counts
+    each raise so the test proves the diagnostic really failed.
+    """
+
+    def __init__(self, *, fragment: str) -> None:
+        """Arm the handler for records whose message contains ``fragment``."""
+        super().__init__(level=logging.WARNING)
+        self._fragment: str = fragment
+        self.raised: int = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Raise for a matching record; ignore every other record."""
+        if self._fragment not in record.getMessage():
+            return
+        self.raised += 1
+        raise RuntimeError("diagnostic sink unavailable")
+
+
+class AbortsFirstRunTurnRunner:
+    """TurnRunner stub: the first run blocks until released and reports ``aborted``; later runs complete."""
+
+    def __init__(self, *, release: asyncio.Event) -> None:
+        """Bind the release event that ends the first run."""
+        self._release: asyncio.Event = release
+        self.ran: list[UUID] = []
+
+    async def run(
+        self,
+        *,
+        message: ChannelMessageDAO,
+        on_started: Callable[[], Awaitable[None]],
+    ) -> TurnOutcomeDAO:
+        """Accept the row; abort the first run after release, complete the rest."""
+        self.ran.append(message.id)
+        await on_started()
+        if len(self.ran) > 1:
+            return TurnOutcomeDAO(status="completed", final_text="after resume")
+        await self._release.wait()
+        return TurnOutcomeDAO(status="aborted")

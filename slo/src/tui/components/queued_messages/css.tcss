@@ -3,7 +3,7 @@ QueuedMessagesComponent {
     max-height: 12;
     margin: 0 1 0 1;
     padding: 0 1 0 1;
-    border: round $primary 30%;
+    border: solid $rule;
     background: $surface;
     display: none;
 }
@@ -23,8 +23,8 @@ QueuedMessagesComponent .queued-row-text {
 
 QueuedMessagesComponent .queued-row-cancel {
     width: auto;
-    color: $error;
-    text-style: bold;
+    color: $text-dim;
+    text-style: none;
 }
 
 QueuedMessagesComponent .queued-overflow {
@@ -35,6 +35,6 @@ QueuedMessagesComponent .queued-overflow {
 
 QueuedMessagesComponent .queued-paused {
     height: 1;
-    color: $warning;
+    color: $text-muted;
     text-style: italic;
 }

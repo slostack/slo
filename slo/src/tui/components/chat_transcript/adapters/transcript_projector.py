@@ -36,6 +36,7 @@ class TranscriptMountHost(Protocol):
         *,
         text: str,
         before: Optional[int] = None,
+        sender_name: Optional[str] = None,
     ) -> UserMessageBlock:
         """Mount and return a fresh user message block."""
         ...
@@ -485,7 +486,10 @@ class TranscriptProjectionAdapter:
         separated = await self._host.mount_turn_separator_if_needed(before=before)
         if separated and before is not None:
             before += 1
-        await self._host.mount_user_message_block(text=text, before=before)
+        if sender_name is None:
+            await self._host.mount_user_message_block(text=text, before=before)
+        else:
+            await self._host.mount_user_message_block(text=text, before=before, sender_name=sender_name)
         self._host.record_transcript_line(
             content=self._user_turn_line(text=text, sender_name=sender_name), classes="user-line"
         )

@@ -233,6 +233,14 @@ class TestSlashRouterDispatch:
         assert command.usage == "/queue [resume | cancel <n|all> | edit <n> | force <n>] (bare: list)"
 
     @pytest.mark.asyncio
+    async def test_theme_notice_is_admitted_before_model_preparation(self) -> None:
+        """The informational theme command remains available while a model prepares."""
+        admission: SlashCommandAdmissionDAO = SlashRouter.admit(
+            line="/theme", preparation_status="pending"
+        )
+        assert admission.action == "dispatch"
+
+    @pytest.mark.asyncio
     async def test_queue_resume_is_admitted_before_model_preparation(self) -> None:
         """``/queue resume`` dispatches even while the model is unprepared (recovery pause)."""
         admission: SlashCommandAdmissionDAO = SlashRouter.admit(
@@ -812,11 +820,11 @@ class TestSlashAuthHandler:
 
 
 class TestSlashThemeHandler:
-    """Tests for the ``/theme`` toggle command."""
+    """Tests for the single-theme ``/theme`` notice."""
 
     @pytest.mark.asyncio
-    async def test_theme_returns_toggle_theme_true(self) -> None:
-        """``/theme`` returns ``toggle_theme=True`` and nothing else."""
+    async def test_theme_requests_a_toggle_between_slo_dark_and_slo_default(self) -> None:
+        """``/theme`` asks the TUI to toggle between the two registered themes."""
         session: MagicMock = _build_session_stub()
 
         result: SlashCommandResultDAO = await SlashRouter.dispatch(

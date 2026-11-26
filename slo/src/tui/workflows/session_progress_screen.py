@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Optional
 
+from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -39,6 +40,15 @@ if TYPE_CHECKING:
     from src.tui.components.agent_composer.component import AgentComposerComponent
 
 __all__ = ["PROGRESS_RESET_VIEW_NOTICE", "ProgressLog", "SessionProgressScreen"]
+
+# Status word -> (glyph, theme token). Glyphs match the sub-agent fleet rows.
+_STATUS_BADGES: dict[str, tuple[str, str]] = {
+    "running": ("◍", "accent"),
+    "completed": ("●", "success"),
+    "failed": ("✕", "status-error"),
+    "aborted": ("✕", "status-error"),
+}
+_STATUS_FALLBACK: tuple[str, str] = ("·", "text-muted")
 
 PROGRESS_RESET_VIEW_NOTICE: str = "Progress view reset; earlier position unavailable"
 """Shown after a non-append repaint until the reader next navigates."""
@@ -506,14 +516,37 @@ class SessionProgressScreen(ModalScreen[None]):
         self._render_state()
 
     def _render_state(self) -> None:
-        """Paint the status line: notices, last readable status and its observation time."""
-        parts: list[str] = []
+        """Paint the status line: notices, a coloured status badge, then its observation time."""
+        notices: list[str] = []
         if self._reset_notice_navigation is not None:
-            parts.append(PROGRESS_RESET_VIEW_NOTICE)
+            notices.append(PROGRESS_RESET_VIEW_NOTICE)
         if self._snapshot is not None and self._snapshot.notice:
-            parts.append(self._snapshot.notice)
-        parts.extend(self._status_parts())
-        self._state.update(content=" · ".join(parts))
+            notices.append(self._snapshot.notice)
+        status_parts: list[str] = self._status_parts()
+        fields: list[Text] = [Text(notice) for notice in notices]
+        if self._last_readable is not None:
+            fields.append(self._status_badge(status=status_parts.pop(0)))
+        fields.extend(Text(part) for part in status_parts)
+        self._state.update(content=Text(" · ").join(fields))
+
+    def _status_badge(self, *, status: str) -> Text:
+        """Return the status word with its glyph, coloured by the active theme.
+
+        Args:
+            status (str): Readable status from the observed snapshot.
+
+        Returns:
+            Text: Glyph and bold status word in the matching theme colour.
+        """
+        variables: dict[str, str] = self.app.get_css_variables()
+        glyph, token = _STATUS_FALLBACK
+        lowered: str = status.strip().lower()
+        for name, badge in _STATUS_BADGES.items():
+            if name in lowered:
+                glyph, token = badge
+                break
+        colour: str = variables[token]
+        return Text.assemble((f"{glyph} ", colour), (status, f"bold {colour}"))
 
     def _status_parts(self) -> list[str]:
         """Return the last readable status and update time, or a waiting placeholder.

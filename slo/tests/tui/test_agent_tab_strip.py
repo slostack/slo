@@ -17,29 +17,29 @@ class TestAgentTabDAO:
     """``AgentTabDAO`` display-label logic."""
 
     def test_display_label_running(self) -> None:
-        """Running tab label shows ``⏳``."""
+        """Running tab label shows the compact activity glyph."""
         tab: AgentTabDAO = AgentTabDAO(index=0, label="orchestrator", status="running")
 
-        assert "⏳" in tab.display_label
+        assert "◍" in tab.display_label
         assert "orchestrator" in tab.display_label
 
     def test_display_label_completed(self) -> None:
-        """Completed tab label shows ``✓``."""
+        """Completed tab label shows the success glyph."""
         tab: AgentTabDAO = AgentTabDAO(index=1, label="task-A", status="completed")
 
-        assert "✓" in tab.display_label
+        assert "●" in tab.display_label
 
     def test_display_label_failed(self) -> None:
-        """Failed tab label shows ``✗``."""
+        """Failed tab label shows the error glyph."""
         tab: AgentTabDAO = AgentTabDAO(index=1, label="task-A", status="failed")
 
-        assert "✗" in tab.display_label
+        assert "✕" in tab.display_label
 
     def test_display_label_pending(self) -> None:
-        """Pending tab label shows ``○``."""
+        """Pending tab label shows the idle glyph."""
         tab: AgentTabDAO = AgentTabDAO(index=0, label="x", status="pending")
 
-        assert "○" in tab.display_label
+        assert "·" in tab.display_label
 
     def test_display_label_includes_label(self) -> None:
         """The base label text appears in the display label."""

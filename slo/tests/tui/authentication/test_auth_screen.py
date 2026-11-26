@@ -19,6 +19,7 @@ from src.auth.oauth_errors import OAuthTimeoutError, OAuthTokenError
 from src.auth.oauth_flow import AuthorizationPresentationDAO
 from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
 from src.auth.provider_factory import OAuthAuthenticationFlow
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.authentication import AuthenticationScreen
 from src.tui.authentication.widgets.api_key_input import ApiKeyInputWidget
 from src.tui.authentication.widgets.method_select import MethodSelectWidget
@@ -118,6 +119,8 @@ class _Harness(App):
     def __init__(self, *, store: CredentialStore, oauth_factory: _FauxOAuthFactory) -> None:
         """Save injected collaborators for the mounted modal."""
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self._store: CredentialStore = store
         self._oauth_factory: _FauxOAuthFactory = oauth_factory
         self.dismissed_with: Optional[CredentialDAO] = None

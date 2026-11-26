@@ -13,19 +13,20 @@ WorkflowProgressComponent {
 WorkflowProgressComponent SubAgentFleetPanel {
     height: auto;
     max-height: 25vh;
+    border-top: solid $rule;
 }
 
 WorkflowProgressComponent SubAgentFleetPanel > .workflow-sessions-heading {
     height: 1;
     padding: 0 1;
-    color: $text-muted;
+    color: $text-dim;
 }
 
 WorkflowProgressComponent SubAgentFleetPanel > .workflow-sessions-resize-notice {
     display: none;
     height: 1;
     padding: 0 1;
-    color: $warning;
+    color: $text-muted;
     text-wrap: nowrap;
     text-overflow: ellipsis;
 }
@@ -39,12 +40,84 @@ WorkflowProgressComponent SubAgentFleetPanel > FleetSessionList {
 
 WorkflowProgressComponent SubAgentFleetRow {
     height: 1;
+    background: $surface;
+    border-left: blank;
 }
 
-WorkflowProgressComponent SubAgentFleetRow > Static {
-    width: 1fr;
+/* Selection: a tinted band plus a left marker. Unselected rows keep a blank
+ * marker column so selecting never shifts the row text. Dim/muted cells are
+ * lifted to readable text colours on the band; status colours stay semantic. */
+WorkflowProgressComponent FleetSessionList > SubAgentFleetRow.-highlight {
+    background: $list-selection-blurred-bg;
+    border-left: outer $border-muted;
+    text-style: none;
+}
+
+WorkflowProgressComponent FleetSessionList:focus > SubAgentFleetRow.-highlight {
+    background: $list-selection-bg;
+    border-left: outer $list-selection-marker;
+    text-style: none;
+}
+
+WorkflowProgressComponent SubAgentFleetRow.-highlight .fleet-row-meta {
+    color: $text-muted;
+}
+
+WorkflowProgressComponent SubAgentFleetRow.-highlight .fleet-row-label {
+    color: $list-selection-text;
+}
+
+WorkflowProgressComponent SubAgentFleetRow.-highlight.-idle .fleet-row-status,
+WorkflowProgressComponent SubAgentFleetRow.-highlight.-idle .fleet-row-status-word {
+    color: $text-muted;
+}
+
+WorkflowProgressComponent SubAgentFleetRow > .fleet-row-content {
+    width: 100%;
     height: 1;
-    padding: 0 1;
+    background: transparent;
+}
+
+WorkflowProgressComponent SubAgentFleetRow .fleet-row-status {
+    width: 2;
+    color: $text-dim;
+    text-align: center;
+}
+
+WorkflowProgressComponent SubAgentFleetRow .fleet-row-status-word {
+    width: 11;
+    color: $text-dim;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* Running uses $warning, not $accent: in slo-dark $accent equals $success, so
+ * running and completed rows would otherwise be indistinguishable. */
+WorkflowProgressComponent SubAgentFleetRow.-running .fleet-row-status,
+WorkflowProgressComponent SubAgentFleetRow.-running .fleet-row-status-word {
+    color: $warning;
+}
+
+WorkflowProgressComponent SubAgentFleetRow.-completed .fleet-row-status,
+WorkflowProgressComponent SubAgentFleetRow.-completed .fleet-row-status-word {
+    color: $success;
+}
+
+WorkflowProgressComponent SubAgentFleetRow.-failed .fleet-row-status,
+WorkflowProgressComponent SubAgentFleetRow.-failed .fleet-row-status-word,
+WorkflowProgressComponent SubAgentFleetRow.-aborted .fleet-row-status,
+WorkflowProgressComponent SubAgentFleetRow.-aborted .fleet-row-status-word {
+    color: $status-error;
+}
+
+WorkflowProgressComponent SubAgentFleetRow .fleet-row-meta {
+    width: auto;
+    color: $text-dim;
+}
+
+WorkflowProgressComponent SubAgentFleetRow .fleet-row-label {
+    width: 1fr;
+    color: $text-muted;
     text-wrap: nowrap;
     text-overflow: ellipsis;
 }

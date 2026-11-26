@@ -178,6 +178,11 @@ class AssistantStreamBlock(Vertical):
         text-style: none;
     }
 
+    AssistantStreamBlock .assistant-stream-caret {
+        color: $text-muted;
+        text-style: none;
+    }
+
     AssistantStreamBlock .assistant-terminal-warning {
         color: $warning;
         text-style: italic;

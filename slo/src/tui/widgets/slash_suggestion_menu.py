@@ -21,7 +21,7 @@ class SlashSuggestionMenu(Vertical):
         width: 100%;
         height: auto;
         background: $panel;
-        border: round $accent;
+        border: solid $border;
         padding: 0 1;
         margin: 1 0 0 0;
     }

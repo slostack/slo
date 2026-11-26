@@ -85,20 +85,32 @@ class UserMessageBlock(Vertical):
         margin: 1 0 1 0;
         padding: 1 1 2 1;
         background: $user-msg-bg;
-        align-vertical: middle;
+        border-left: solid $text-dim;
+    }
+
+    UserMessageBlock:hover {
+        border-left: solid $secondary;
+    }
+
+    UserMessageBlock .user-message-speaker {
+        width: 100%;
+        height: 1;
+        color: $secondary;
+        text-style: none;
+        background: $user-msg-bg;
     }
 
     UserMessageBlock .user-message-body {
         width: 100%;
         height: auto;
         color: $text;
-        text-style: bold;
+        text-style: none;
         text-align: left;
         background: $user-msg-bg;
     }
     """
 
-    def __init__(self, *, text: str) -> None:
+    def __init__(self, *, text: str, sender_name: Optional[str] = None) -> None:
         """Store and render the exact submitted user-message source.
 
         WHAT: Builds the child Content visual from the same string used for
@@ -109,10 +121,12 @@ class UserMessageBlock(Vertical):
 
         Args:
             text (str): Exact user-message source; never stripped or transformed.
+            sender_name (Optional[str]): Displayed speaker; defaults to ``you``.
         """
         super().__init__()
         self._text: str = text
         self._expanded: bool = True
+        self._speaker: Static = Static(sender_name or "you", classes="user-message-speaker", markup=False)
         self._body: UserMessageBody = UserMessageBody(
             source_text=self._text,
             classes="user-message-body",
@@ -124,6 +138,7 @@ class UserMessageBlock(Vertical):
         Yields:
             ComposeResult: The body built from the exact user source buffer.
         """
+        yield self._speaker
         yield self._body
 
     @property

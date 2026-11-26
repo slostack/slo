@@ -1,37 +1,26 @@
-$auth-surface: #151817;
-$auth-border: #3e5148;
-$auth-heading: #b8c7bd;
-$auth-code: #d0b57a;
-$auth-action-background: #b8c7bd;
-$auth-action-foreground: #151817;
-$auth-selection-background: #3e5148;
-$auth-selection-foreground: #d8d8d8;
-
 #auth-modal-body {
-    background: $auth-surface;
-    border: round $auth-border;
+    background: $surface;
+    border: solid $border-hairline;
     padding: 1 2;
     width: 76;
     max-width: 100%;
     height: auto;
-    /* Cap at the screen height so the body, not the screen, overflows. Otherwise a tall
-       step (browser authorization at 80x24) is cropped and scroll_visible has nothing to
-       scroll, hiding the error and the Back/Cancel buttons. */
+    /* Cap at screen height so tall browser steps scroll without hiding actions. */
     max-height: 100%;
     overflow-y: auto;
-    scrollbar-color: $auth-border;
+    scrollbar-color: $border-hairline;
 }
-/* OAuthStatusWidget is a Vertical (height 1fr, overflow hidden), which would crop its own
-   rows instead of letting #auth-modal-body scroll to the error and Back/Cancel. */
+
 #auth-modal-body OAuthStatusWidget {
     height: auto;
 }
+
 AuthenticationScreen .screen--selection {
     background: $auth-selection-background;
     color: $auth-selection-foreground;
 }
 
-.auth-title { color: $auth-heading; text-style: bold; margin-bottom: 1; }
+.auth-title { color: $text-muted; text-style: none; margin-bottom: 1; }
 .auth-instruction, .auth-url, .auth-redirect {
     color: $foreground;
     width: 1fr;
@@ -42,32 +31,31 @@ AuthenticationScreen .screen--selection {
     overflow-x: hidden;
     text-wrap: wrap;
 }
-/* AuthorizationLink extends Textual's Link, whose defaults use $text-accent, an
-   $accent hover, and a reverse focus band. Keep the link on auth tokens instead. */
+
 #auth-modal-body AuthorizationLink.auth-url {
     color: $foreground;
     text-style: underline;
 }
 #auth-modal-body AuthorizationLink.auth-url:hover,
 #auth-modal-body AuthorizationLink.auth-url:focus {
-    color: $auth-heading;
+    color: $text-muted;
     text-style: bold underline;
 }
-.auth-device-code { color: $auth-code; text-style: bold; margin-bottom: 1; }
+.auth-device-code { color: $warning; text-style: bold; margin-bottom: 1; }
 .auth-error { color: $error; margin-top: 1; height: auto; }
 #auth-modal-body ApiKeyInputWidget {
     height: auto;
 }
 #auth-modal-body Button.-primary {
-    background: $auth-action-background;
-    color: $auth-action-foreground;
+    background: $accent;
+    color: $button-color-foreground;
     text-style: bold;
 }
 #auth-modal-body Button.-primary:hover,
 #auth-modal-body Button.-primary:focus {
-    background: $auth-heading;
-    color: $auth-surface;
-    border: tall $auth-border;
+    background: $text-muted;
+    color: $surface;
+    border: solid $border-hairline;
 }
 
 RadioSet {

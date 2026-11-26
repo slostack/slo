@@ -1110,7 +1110,7 @@ _SIBLINGS: int = 19
 _LONG_TASK: str = "Verify the redesigned workflow list keeps long task text readable " * 4
 _LONG_LINE: str = "wide-tool-output-" + "x" * 300
 _MULTILINE_DRAFT: str = "First draft line\nSecond draft line\nThird draft line"
-_THEMES: tuple[str, ...] = ("slo-dark", "slo-default")
+_THEMES: tuple[str, ...] = ("slo-default",)
 
 
 def _publish_fleet(*, world: _World, target_status: str) -> None:
@@ -1197,13 +1197,17 @@ def _session_state(*, screen: SessionProgressScreen) -> list[str]:
     the loader's header status, so a test can tell "Abort requested" apart from
     terminal evidence.
 
+    The status field paints as a coloured badge (``"◍ running"``); its leading
+    glyph is decoration, so it is stripped to keep fields comparable as words.
+
     Args:
         screen (SessionProgressScreen): Open progress screen.
 
     Returns:
-        list[str]: Painted fields in order.
+        list[str]: Painted fields in order, badge glyphs removed.
     """
-    return str(screen.query_one("#session-state", Static).render()).split(" · ")
+    fields: list[str] = str(screen.query_one("#session-state", Static).render()).split(" · ")
+    return [field[2:] if field[:2] in {"◍ ", "● ", "✕ ", "· "} else field for field in fields]
 
 
 class TestTwentyChildFleetJourney:
@@ -1258,7 +1262,8 @@ class TestTwentyChildFleetJourney:
                 item for item in panel.query(SubAgentFleetRow) if item.row.key.session_id == "sibling-00"
             )
             capped: str = "Verify workflow list sibling 00"
-            assert str(sibling.query_one(Static).render()) == f"[running] sibling-00: {capped}"
+            assert str(sibling.query_one(".fleet-row-status", Static).render()) == "◍"
+            assert str(sibling.query_one(".fleet-row-task", Static).render()) == capped
             assert sibling.region.height <= 1
             _capture(app=app, views=views, name=f"{stem}-1-list-multiline")
 

@@ -50,9 +50,9 @@ class ThinkingSpinner(Horizontal):
     """
 
     DEFAULT_CSS = """
-    ThinkingSpinner { width: 100%; height: auto; padding: 0 1; }
-    ThinkingSpinner .thinking-spinner-glyph { color: $accent; text-style: bold; }
-    ThinkingSpinner .thinking-spinner-text { color: $text-muted; text-style: italic; }
+    ThinkingSpinner { width: 100%; height: auto; padding: 0 1; color: $text-dim; }
+    ThinkingSpinner .thinking-spinner-glyph { color: $text-muted; text-style: none; }
+    ThinkingSpinner .thinking-spinner-text { color: $text-dim; text-style: none; }
     """
 
     def __init__(self, *, interval_seconds: float = 1.5) -> None:

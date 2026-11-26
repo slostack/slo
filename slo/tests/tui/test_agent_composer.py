@@ -26,6 +26,7 @@ from src.channels.dao import ChannelMessageDAO, NewMessageDAO
 from src.channels.gateway import ChannelGateway
 from src.channels.repository import ChannelRepository
 from src.tui.channel.adapter import TuiChannelAdapter
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.components.agent_composer.component import (
     AGENT_FINISHED_NOTICE,
     SEND_FAILED_NOTICE,
@@ -45,6 +46,8 @@ class _ComposerHost(App[None]):
                 component once the app (and its theme variables) exist.
         """
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self._composer_factory = composer_factory
 
     def compose(self) -> ComposeResult:
@@ -106,9 +109,9 @@ async def _settle(pilot: Pilot[None], cycles: int = 6) -> None:
 
 
 class TestAgentComposerPromptAppearance:
-    """The modal composer exposes a framed, readable prompt before focus."""
+    """The modal composer keeps resting rules quiet and brightens them on focus."""
 
-    async def test_prompt_has_accent_rules_and_a_visible_editing_line(self, tmp_path: Path) -> None:
+    async def test_prompt_has_focus_sensitive_rules_and_a_visible_editing_line(self, tmp_path: Path) -> None:
         gateway: ChannelGateway = await _open_gateway(tmp_path=tmp_path)
         try:
             _, composer_factory, _ = await _build_composer(gateway=gateway, target_session_id=str(uuid4()))
@@ -123,8 +126,11 @@ class TestAgentComposerPromptAppearance:
                     assert prompt.styles.border_bottom[0] == "solid"
                     assert prompt.styles.border_left[0] in ("", "none")
                     assert prompt.styles.border_right[0] in ("", "none")
-                    assert prompt.styles.border_top[1].hex == app.get_css_variables()["accent"]
-                    assert prompt.styles.border_bottom[1] == prompt.styles.border_top[1]
+                    expected_rule_color: str = (
+                        app.get_css_variables()["accent"] if focused else app.get_css_variables()["rule"]
+                    )
+                    assert prompt.styles.border_top[1].hex.lower() == expected_rule_color.lower()
+                    assert prompt.styles.border_bottom[1].hex.lower() == expected_rule_color.lower()
                     assert prompt.region.height == 3
                     assert prompt.content_region.height == 1
                     assert prompt.region.bottom <= app.size.height
@@ -710,11 +716,10 @@ class _ProgressHost(App[None]):
     def __init__(self, *, factory: Callable[[], Screen[None]]) -> None:
         """Register the Slo themes and keep the modal factory."""
         super().__init__()
-        from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+        from src.tui.theme import SLO_DEFAULT_THEME
 
         self.register_theme(SLO_DEFAULT_THEME)
-        self.register_theme(SLO_DARK_THEME)
-        self.theme = SLO_DARK_THEME.name
+        self.theme = SLO_DEFAULT_THEME.name
         self._factory = factory
 
     def compose(self) -> ComposeResult:

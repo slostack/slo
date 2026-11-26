@@ -90,10 +90,16 @@ class TestToolExecutionBlock:
         assert '"b"' in expanded_text
         assert "[" in expanded_text and "]" in expanded_text
 
-    def test_tool_block_uses_pending_fill_by_default(self) -> None:
-        """A not-yet-terminal tool block paints the pending token fill (spec 72.a.5)."""
-        block_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock {")[1].split("}")[0]
-        assert "background: $tool-pending-bg;" in block_rule
+    def test_tool_block_uses_neutral_surface_and_single_colored_glyph(self) -> None:
+        """Tool state is conveyed by its glyph rather than colored block fills or bold names."""
+        css: str = ToolExecutionBlock.DEFAULT_CSS
+        block_rule: str = css.split("ToolExecutionBlock {")[1].split("}")[0]
+
+        assert "background: $surface;" in block_rule
+        assert "background: $tool-success-bg;" not in css
+        assert "background: $tool-error-bg;" not in css
+        assert "text-style: bold;" not in css
+        assert "tool-call-glyph" in css
 
     def test_widget_css_uses_transcript_output_pad(self) -> None:
         """The widget declares the uniform ``TRANSCRIPT_OUTPUT_PAD`` convention."""
@@ -114,6 +120,39 @@ class TestToolExecutionBlock:
         assert "may not have completed" in result_text
         assert block.result_output is None
         assert block._result_line.has_class("tool-call-incomplete")
+
+    @pytest.mark.asyncio
+    async def test_status_glyph_and_name_style_change_with_tool_outcome(self) -> None:
+        """Pending, successful and failed states update only the status glyph and text."""
+        session: SloAgentSession = SloAgentSession(
+            agent=SloAgent(llm=FauxChatModel(responses=[AIMessage(content="unused")])),
+            workdir=Path("."),
+            session_id=str(uuid4()),
+        )
+        app: SloTUI = SloTUI(session=session)
+
+        async with app.run_test() as pilot:
+            block: ToolExecutionBlock = await app.query_one(ChatTranscriptComponent).mount_tool_execution_block(
+                tool_call_id="call_1",
+                tool_name="grep",
+            )
+            await pilot.pause()
+            assert str(block._glyph.render()) == "◠"
+            assert block._glyph.styles.color.hex == app.get_css_variables()["accent"]
+            assert block._headline.styles.text_style.bold is not True
+            assert block.styles.background.hex.lower() == app.current_theme.surface.lower()
+
+            block.update_result(tool_name="grep", output="first\nsecond\nthird")
+            await pilot.pause()
+            assert str(block._glyph.render()) == "●"
+            assert block._glyph.styles.color.hex == app.get_css_variables()["success"]
+            assert str(block._state.render()) == "3 matches"
+
+            block.update_result(tool_name="grep", output="Error: unavailable", is_error=True)
+            await pilot.pause()
+            assert str(block._glyph.render()) == "✕"
+            assert block._glyph.styles.color.hex.lower() == app.get_css_variables()["status-error"].lower()
+            assert str(block._state.render()) == "failed"
 
     @pytest.mark.asyncio
     async def test_ctrl_o_toggles_active_expandable_tool_block(self) -> None:
@@ -198,13 +237,14 @@ class TestToolExecutionBlockTerminalStateClasses:
         assert block.has_class("-active")
         assert block.has_class("-done")
 
-    def test_css_paints_pending_done_and_error_token_selectors(self) -> None:
-        """The stylesheet maps each lifecycle class to its canonical token fill."""
-        done_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock.-done {")[1].split("}")[0]
-        error_rule: str = ToolExecutionBlock.DEFAULT_CSS.split("ToolExecutionBlock.-error {")[1].split("}")[0]
+    def test_css_paints_only_terminal_glyphs_with_state_colors(self) -> None:
+        """Success and error colors belong to the status glyph, not block backgrounds."""
+        css: str = ToolExecutionBlock.DEFAULT_CSS
 
-        assert "background: $tool-success-bg;" in done_rule
-        assert "background: $tool-error-bg;" in error_rule
+        assert "ToolExecutionBlock.-done .tool-call-glyph" in css
+        assert "ToolExecutionBlock.-error .tool-call-glyph" in css
+        assert "color: $success;" in css
+        assert "color: $status-error;" in css
 
 
 class TestToolExecutionBlockGlobalExpand:

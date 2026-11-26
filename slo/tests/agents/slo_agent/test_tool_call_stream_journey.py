@@ -465,7 +465,7 @@ class TestToolCallMountedJourney:
             assert all(block.is_attached and block.visible and block.region.height > 0 for block in blocks)
             assert {block.result_output for block in blocks} == {"contents of a.py", "no matches for todo"}
             painted_text: str = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
-            assert painted_text.count("⏺") == 2
+            assert painted_text.count("●") == 2  # one completed-status glyph per tool block
             assert "contents of a.py" in painted_text
             assert "no matches for todo" in painted_text
         history_events: list[SessionHistoryEventDAO] = await history_store.load_events(

@@ -81,7 +81,7 @@ def _row(
 
 
 class _ThemedHost(App[None]):
-    """Load the production stylesheets with both Slo themes registered, as ``SloTUI`` does."""
+    """Load the production stylesheets with both Slo themes registered."""
 
     CSS_PATH = [str(APP_TCSS), str(FLEET_TCSS)]
 
@@ -90,7 +90,7 @@ class _ThemedHost(App[None]):
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
-        self.theme = SLO_DARK_THEME.name
+        self.theme = SLO_DEFAULT_THEME.name
 
 
 class _RowHost(_ThemedHost):
@@ -106,8 +106,9 @@ class _RowHost(_ThemedHost):
         self._rows = rows
 
     def compose(self) -> ComposeResult:
-        """Yield each row as a top-level widget."""
-        yield from self._rows
+        """Yield rows under the same semantic selector ancestor as production."""
+        with WorkflowProgressComponent():
+            yield from self._rows
 
 
 def _painted(*, app: App, widget: Widget) -> str:
@@ -128,8 +129,88 @@ def _painted(*, app: App, widget: Widget) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _same_color(actual: str, expected: str | None) -> bool:
+    """Compare hex colours allowing Textual's 1-step text-alpha blending drift."""
+    assert expected is not None
+    a = [int(actual.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)]
+    b = [int(expected.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)]
+    return all(abs(x - y) <= 2 for x, y in zip(a, b, strict=True))
+
+
+@pytest.mark.parametrize("theme_name", ["slo-dark", "slo-default"])
+@pytest.mark.asyncio
+async def test_running_and_completed_rows_are_visually_distinct(theme_name: str) -> None:
+    """Running and completed rows differ in glyph, word and colour in every Slo theme."""
+    running = SubAgentFleetRow(row=_row(session_id="child-a", status="running"))
+    completed = SubAgentFleetRow(row=_row(session_id="child-b", status="completed"))
+    host = _RowHost(rows=[running, completed])
+    async with host.run_test(size=(120, 10)) as pilot:
+        pilot.app.theme = theme_name
+        await pilot.pause()
+        assert str(running._status_word.render()) == "running"
+        assert str(completed._status_word.render()) == "completed"
+        assert running._status_glyph.styles.color != completed._status_glyph.styles.color
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """Return WCAG relative luminance for ``#rrggbb``."""
+    channels: list[float] = []
+    for index in (0, 2, 4):
+        value: float = int(hex_color.lstrip("#")[index : index + 2], 16) / 255
+        channels.append(value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast(foreground: str, background: str) -> float:
+    """Return the WCAG contrast ratio between two hex colours."""
+    high, low = sorted((_relative_luminance(foreground), _relative_luminance(background)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+class _ListHost(_ThemedHost):
+    """Mount a real ``FleetSessionList`` so native highlight classes apply."""
+
+    def compose(self) -> ComposeResult:
+        """Yield an empty session list under the production selector ancestor."""
+        with WorkflowProgressComponent():
+            yield FleetSessionList()
+
+
+@pytest.mark.parametrize("theme_name", ["slo-dark", "slo-default"])
+@pytest.mark.parametrize("focused", [True, False], ids=["focused", "blurred"])
+@pytest.mark.asyncio
+async def test_selected_row_uses_theme_band_and_stays_readable(theme_name: str, focused: bool) -> None:
+    """The selected row gets the theme selection band and every cell meets WCAG AA."""
+    host = _ListHost()
+    async with host.run_test(size=(120, 12)) as pilot:
+        host.theme = theme_name
+        session_list = host.query_one(FleetSessionList)
+        statuses: list[str] = ["running", "completed", "failed", "aborted", "pending"]
+        await session_list.extend(
+            [
+                SubAgentFleetRow(row=_row(session_id=f"child-{i}", task_text="t", task_summary="Audit", status=s))
+                for i, s in enumerate(statuses)
+            ]
+        )
+        if focused:
+            session_list.focus()
+        else:
+            host.set_focus(None)
+        variables = host.current_theme.variables
+        expected_band: str = variables["list-selection-bg" if focused else "list-selection-blurred-bg"]
+        for index in range(len(statuses)):
+            session_list.index = index
+            await pilot.pause()
+            row = session_list.children[index]
+            assert isinstance(row, SubAgentFleetRow)
+            band: str = row.styles.background.hex
+            assert _same_color(band, expected_band)
+            for cell in (row._status_glyph, row._status_word, row._session_id, row._task_label):
+                assert _contrast(cell.styles.color.hex, band) >= 4.5, (row.row.status, cell.classes)
+
+
 class TestSubAgentFleetRow:
-    """One literal ``[status] session_id: task`` row per snapshot row."""
+    """One status glyph and the unchanged session/task data per snapshot row."""
 
     @pytest.mark.asyncio
     async def test_child_row_paints_status_session_and_task(self) -> None:
@@ -140,7 +221,37 @@ class TestSubAgentFleetRow:
 
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
-            assert _painted(app=pilot.app, widget=row) == "[running] child-1: Audit the parser"
+            assert _painted(app=pilot.app, widget=row) == "◍ running    child-1: Audit the parser"
+            assert _same_color(row._status_glyph.styles.color.hex, SLO_DEFAULT_THEME.warning)
+            assert _same_color(row._status_word.styles.color.hex, SLO_DEFAULT_THEME.warning)
+            assert _same_color(row._session_id.styles.color.hex, SLO_DEFAULT_THEME.variables["text-dim"])
+            assert _same_color(row._task_label.styles.color.hex, SLO_DEFAULT_THEME.variables["text-muted"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "glyph", "color"),
+        [
+            ("pending", "·", SLO_DEFAULT_THEME.variables["text-dim"]),
+            ("queued", "·", SLO_DEFAULT_THEME.variables["text-dim"]),
+            ("running", "◍", SLO_DEFAULT_THEME.warning),
+            ("completed", "●", SLO_DEFAULT_THEME.success),
+            ("failed", "✕", SLO_DEFAULT_THEME.variables["status-error"]),
+            ("aborted", "✕", SLO_DEFAULT_THEME.variables["status-error"]),
+        ],
+    )
+    async def test_status_paints_the_matching_glyph_and_semantic_color(
+        self, status: str, glyph: str, color: str
+    ) -> None:
+        """The status glyph and word share one semantic color per row state."""
+        row: SubAgentFleetRow = SubAgentFleetRow(row=_row(session_id="child-state", status=status))
+
+        async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
+            await pilot.pause()
+            assert str(row._status_glyph.render()) == glyph
+            assert str(row._status_word.render()) == status
+            assert _same_color(row._status_glyph.styles.color.hex, color)
+            assert _same_color(row._status_word.styles.color.hex, color)
+            assert row.row.status == status
 
     @pytest.mark.asyncio
     async def test_parent_row_label_is_exactly_orchestrator(self) -> None:
@@ -151,7 +262,8 @@ class TestSubAgentFleetRow:
 
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
-            assert _painted(app=pilot.app, widget=row) == f"[completed] {ORCHESTRATOR_ID}: Orchestrator"
+            assert _painted(app=pilot.app, widget=row) == f"● completed  {ORCHESTRATOR_ID}: Orchestrator"
+            assert _same_color(row._status_glyph.styles.color.hex, SLO_DEFAULT_THEME.success)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -165,7 +277,7 @@ class TestSubAgentFleetRow:
             await pilot.pause()
             assert (
                 _painted(app=pilot.app, widget=row)
-                == "[running] child-1: Task summary unavailable — open details"
+                == "◍ running    child-1: Task summary unavailable — open details"
             )
 
     @pytest.mark.asyncio
@@ -183,7 +295,7 @@ class TestSubAgentFleetRow:
         async with _RowHost(rows=[row]).run_test(size=(120, 10)) as pilot:
             await pilot.pause()
             assert _painted(app=pilot.app, widget=row) == (
-                "[running] child-1: [bold]fix[/bold] ]8;;http://x [link] done"
+                "◍ running    child-1: [bold]fix[/bold] ]8;;http://x [link] done"
             )
 
     @pytest.mark.asyncio
@@ -197,7 +309,7 @@ class TestSubAgentFleetRow:
 
         async with _RowHost(rows=[row]).run_test(size=(220, 10)) as pilot:
             await pilot.pause()
-            assert _painted(app=pilot.app, widget=row) == "[running] child-1: Review multilingual task detail"
+            assert _painted(app=pilot.app, widget=row) == "◍ running    child-1: Review multilingual task detail"
 
     @pytest.mark.asyncio
     async def test_apply_row_updates_label_in_place(self) -> None:
@@ -215,7 +327,7 @@ class TestSubAgentFleetRow:
             await pilot.pause()
 
             assert row.row is updated
-            assert _painted(app=pilot.app, widget=row) == "[completed] child-1: Audit parser rules"
+            assert _painted(app=pilot.app, widget=row) == "● completed  child-1: Audit parser rules"
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +513,7 @@ class TestSnapshotApplication:
             after: list[SubAgentFleetRow] = _row_widgets(host=host)
             assert [id(item) for item in after] == [id(item) for item in before]
             assert {item.row.status for item in after} == {"completed"}
-            assert _painted(app=host, widget=after[1]) == "[completed] child-01: task child-01"
+            assert _painted(app=host, widget=after[1]) == "● completed  child-01: task child-01"
 
     @pytest.mark.asyncio
     async def test_added_row_keeps_selected_key(self) -> None:

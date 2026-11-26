@@ -1,18 +1,18 @@
 AgentComposerComponent {
     height: auto;
     max-height: 14;
-    border-top: solid $primary;
+    border-top: solid $border-hairline;
     padding: 0 1;
     & .agent-composer-header {
-        color: $accent;
+        color: $text-muted;
         height: 1;
     }
     & .agent-composer-status {
-        color: $warning;
+        color: $text-muted;
         height: auto;
     }
     & .agent-composer-notes {
-        color: $secondary;
+        color: $text-muted;
         height: auto;
         max-height: 3;
     }
@@ -21,7 +21,15 @@ AgentComposerComponent {
         height: auto;
         max-height: 5;
     }
-    & Input, & Input:focus {
+    & Input {
+        border: none;
+        border-top: solid $border-hairline;
+        border-bottom: solid $border-hairline;
+        background: $surface;
+        height: 3;
+        padding: 0 1;
+    }
+    & Input:focus {
         border: none;
         border-top: solid $accent;
         border-bottom: solid $accent;

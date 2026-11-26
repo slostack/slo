@@ -16,6 +16,7 @@ from src.auth.credential_store import CredentialStore
 from src.auth.oauth_flow import AuthorizationPresentationDAO
 from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
 from src.auth.provider_factory import OAuthAuthenticationFlow
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.authentication import AuthenticationScreen
 from src.tui.authentication.widgets.oauth_status import OAuthStatusWidget
 
@@ -103,6 +104,8 @@ class _Harness(App):
     def __init__(self, *, store: CredentialStore) -> None:
         """Keep the temporary durable store for the modal."""
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self._store: CredentialStore = store
 
     def on_mount(self) -> None:

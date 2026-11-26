@@ -38,7 +38,7 @@ from src.tui.model_catalog import ModelSuggestionProjection, model_suggestion_en
 from src.tui.prompt_history import PromptHistoryNavigator
 from src.tui.slash_router import SlashCommandResultDAO, SlashRouter
 from src.tui.slash_suggestion_engine import SlashSuggestionEngine, SlashSuggestionStateDAO
-from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
 from tests.tui._scroll_settle import pump_until
 from tests.conftest import GatedFauxChatModel
@@ -135,6 +135,12 @@ async def _history_user_texts(*, session: SloAgentSession) -> list[str]:
 
 class _PromptInputComponentHost(App):
     """Minimal mounted host for PromptInputComponent binding boundaries."""
+
+    def __init__(self) -> None:
+        """Register Slo's semantic CSS tokens for the component stylesheet."""
+        super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
 
     def compose(self) -> ComposeResult:
         """Compose the borrowed menu and the editor under test.
@@ -618,7 +624,7 @@ async def test_focus_and_teardown_cutoffs(tmp_path: Path) -> None:
 
 
 async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
-    """Computed editor styling matches the moved app rule in both themes, focused/blurred."""
+    """Computed editor styling matches the moved app rule in the Slo theme, focused/blurred."""
     session: SloAgentSession = _build_session(workdir=tmp_path)
     app: SloTUI = SloTUI(session=session)
     invoke_log: list[str] = []
@@ -631,7 +637,7 @@ async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
             await pilot.pause()
             editor: PromptInputComponent = _require_prompt_input(app=app)
 
-            for theme in (SLO_DARK_THEME, SLO_DEFAULT_THEME):
+            for theme in (SLO_DEFAULT_THEME,):
                 app.theme = theme.name
                 await pilot.pause()
                 for focused in (True, False):
@@ -672,7 +678,9 @@ async def test_layout_and_packaged_styles(tmp_path: Path) -> None:
                     assert styles.border_top[0] == "solid"
                     assert styles.border_bottom[0] == "solid"
                     assert styles.border_top[1] is not None
-                    assert styles.border_top[1].hex.lower() == theme_accent.lower()
+                    assert styles.border_top[1].hex.lower() == (
+                        theme_accent.lower() if focused else app.get_css_variables()["rule"]
+                    )
                     assert str(styles.height) == "auto"
                     assert str(styles.min_height) == "3"
                     assert str(styles.max_height) == "17"

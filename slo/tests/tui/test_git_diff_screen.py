@@ -10,6 +10,7 @@ from src.tui.git_diff_screen import GitDiffScreen
 from src.tui.slodiff.model import FileStateKind
 from src.tui.slodiff.view import SloDiffView
 from src.tui.widgets.literal_text_static import LiteralTextStatic
+from src.tui.theme import SLO_DEFAULT_THEME
 
 
 def _content() -> GitDiffContentDAO:
@@ -24,6 +25,12 @@ def _content() -> GitDiffContentDAO:
 
 class _HostApp(App[None]):
     """Push the target screen immediately for Pilot interaction tests."""
+
+    def __init__(self) -> None:
+        """Register the Slo semantic CSS tokens used by the diff widgets."""
+        super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
 
     def compose(self) -> ComposeResult:
         """Yield no base widgets below the pushed modal screen."""

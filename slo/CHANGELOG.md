@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.34.0] — 2026-11-26
+
+This release includes the TUI presentation refresh merged since v0.33.0 and
+clarifies existing CLI channel messaging usage.
+
+### Added
+
+- **Syntax highlighting for expanded tool output.** Tool arguments render as
+  JSON; `read` results use file-aware highlighting, `grep` results highlight
+  path and line prefixes, and recognisable diff or JSON output is highlighted.
+  Failed calls, unknown formats and output over 200,000 characters remain plain.
+  Text remains literal, copying is unchanged, and colours follow theme changes.
+
+### Changed
+
+- **Consistent semantic colours across both themes.** `slo-dark` remains the
+  boot default, with `slo-default` as the quieter Tokyo Night alternative.
+  Shared tokens style prompt borders, tool output, workflow selection and
+  accented footer shortcut keys.
+- **Workflow status is readable without relying on colour.** Rows display
+  status words alongside their glyphs, distinguish running from completed work,
+  and show focused or blurred selection bands with a stable left marker.
+
+### Fixed
+
+- **Theme stylesheet loading and resume startup.** Both themes define the same
+  semantic variables, avoiding undefined-variable failures in `slo-dark`.
+- **Header and footer visibility.** Removing borders that consumed their single
+  display row restores workspace and session details and keyboard hints.
+- **Workflow row selection and authentication selection colours.** Selected
+  workflow rows are visible with contrast-checked text in both themes, and the
+  authentication screen uses its dedicated selection tokens again.
+
+### Documentation
+
+- Explain how to discover sessions with `slo channel agents` and message them
+  with `slo channel send`, including reply waits, forced delivery, timeouts and
+  exit codes. Preserve the channel usage clarification in the v0.33.0 notes;
+  these commands are existing functionality, not new in v0.34.0.
+
 ## [0.33.0] — 2026-11-24
 
 First tagged release since v0.31.4. Includes the OpenRouter output-budget and
@@ -11,6 +51,9 @@ repository fixes below.
 - **A shared channel queue** connects interactive sessions, CLI senders,
   orchestrators and child agents through SQLite. Prompts, forced steering, notes
   and correlated replies use participant identities and per-conversation ordering.
+  Operators can use `slo channel agents` to discover open sessions and
+  `slo channel send --to <id-prefix> "message"` to message one from a terminal;
+  `--wait` prints the reply and `--force` steers the active run.
 - **External adapter hosting and Telegram transport**, with adapter registration,
   attachment handling, user-to-agent attachment and outbound delivery retries.
   Delivery failures leave rows pending with per-user backoff; platform delivery

@@ -18,18 +18,20 @@ def test_release_candidate_version_and_notes_agree() -> None:
         assert identity in notes
     assert "subscription OAuth" in notes
     assert "not live entitlement" in notes
-    current = notes.split(f"## [{version}] — ", 1)[1].split("\n## [", 1)[0]
-    assert "OpenRouter" in current
-    assert "64,000" in current
-    assert "8,192" in current
+    assert notes.split("\n## [", 1)[1].startswith(f"{version}] — ")
+    # Budget defaults shipped in 0.32.0; later releases must retain that history.
+    budget_release = notes.split("## [0.32.0] — ", 1)[1].split("\n## [", 1)[0]
+    assert "OpenRouter" in budget_release
+    assert "64,000" in budget_release
+    assert "8,192" in budget_release
 
 
-def test_v0330_release_metadata_preserves_packaging_owned_launchers() -> None:
+def test_v0340_release_metadata_preserves_packaging_owned_launchers() -> None:
     """The current release version keeps both pipx-generated launcher contracts."""
     project: dict[str, object] = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == "0.33.0"
+    assert project["version"] == "0.34.0"
     assert project["scripts"] == {"slo": "src.cli:main", "slo-entry": "src.cli:main"}
-    assert "## [0.33.0] — " in (APP_ROOT / "CHANGELOG.md").read_text()
+    assert "## [0.34.0] — 2026-11-26" in (APP_ROOT / "CHANGELOG.md").read_text()
 
 
 def test_runner_defaults_cover_inherited_jobs_and_preserve_macos() -> None:

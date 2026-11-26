@@ -3488,6 +3488,23 @@ send and follow operations; Telegram is the implemented external adapter in
 `src/channels/adapters/telegram/`. The TUI conforms to the protocol but runs
 in-process, not under `AdapterHost`.
 
+**Message a session from the terminal.** Use `slo channel agents` to list open
+agent sessions and their ID prefixes, then target one with `slo channel send`:
+
+```bash
+slo channel agents
+slo channel send --to <session-id-prefix> "Summarize the latest changes."
+```
+
+A normal send queues a prompt for that session. Add `--wait` to wait for and
+print its reply (300 seconds by default); choose a different wait limit with
+`--timeout`, for example `--wait --timeout 60`. Add `--force` to deliver the
+prompt into the current run at its next safe boundary; `--force --wait` waits
+for acceptance, not a reply. Quote the message text, and use `--` before text
+that begins with a hyphen. The command returns exit code `3` if the recipient is
+closed, `5` if the ID does not match an open agent, and `124` if a `--wait`
+operation times out. See `slo channel send --help` for the complete options.
+
 **Workflow and scheduler delivery.** `WorkflowNotifier` sends started/phase
 updates as notes, coalesced fleet updates as notices, and terminal
 completed/failed/aborted reports as ordinary prompts to the owning session.

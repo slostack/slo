@@ -59,8 +59,8 @@ class TestWriteEntry:
             ),
             (TranscriptEntryDAO(kind="assistant", content="fallback"), ["◀ Assistant", "fallback", "─" * 24]),
             (TranscriptEntryDAO(kind="thinking", content="hmm"), ["~ Thinking", "hmm", "─" * 24]),
-            (TranscriptEntryDAO(kind="tool", tool_name="grep", output="out"), ["⚙ grep", "out", "─" * 24]),
-            (TranscriptEntryDAO(kind="tool"), ["⚙ tool", "─" * 24]),
+            (TranscriptEntryDAO(kind="tool", tool_name="grep", output="out"), ["● grep", "out", "─" * 24]),
+            (TranscriptEntryDAO(kind="tool"), ["● tool", "─" * 24]),
             (TranscriptEntryDAO(kind="user"), ["▶ User", "─" * 24]),
         ],
     )
@@ -104,7 +104,7 @@ class TestWriteEntry:
         """Untrusted tool output with Rich markup is written as literal text."""
         log = _write(entry=TranscriptEntryDAO(kind="tool", tool_name="[b]x[/b]", output="[red]boom[/red]"))
 
-        assert _plain(writes=log.writes)[:2] == ["⚙ [b]x[/b]", "[red]boom[/red]"]
+        assert _plain(writes=log.writes)[:2] == ["● [b]x[/b]", "[red]boom[/red]"]
 
     async def test_writes_to_mounted_rich_log_without_scrolling(self) -> None:
         """A mounted non-following RichLog keeps its offset after rendering entries."""
@@ -149,7 +149,7 @@ class TestFormatEntry:
         [
             (TranscriptEntryDAO(kind="user", content="u"), "▶ User\nu\n"),
             (TranscriptEntryDAO(kind="assistant", content="c"), "◀ Assistant\nc\n"),
-            (TranscriptEntryDAO(kind="tool", output="o" * 600), "⚙ tool\n" + "o" * 500 + "\n"),
+            (TranscriptEntryDAO(kind="tool", output="o" * 600), "● tool\n" + "o" * 500 + "\n"),
         ],
     )
     def test_remaining_kinds(self, entry: TranscriptEntryDAO, expected: str) -> None:

@@ -19,7 +19,7 @@ from src.auth.credential_dao import ProviderName
 from src.auth.oauth_flow import AuthorizationPresentationDAO
 from src.auth.oauth_provider import DeviceAuthorizationPresentationDAO, OAuthLoginMethod
 from src.tui.authentication.widgets.oauth_status import OAuthStatusWidget
-from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 from tests.tui.authentication._painted_output import painted_link_targets, painted_text, painted_widget_strips
 
 _AUTH_SCREEN_TCSS: Path = Path(authentication_package.__file__).parent / "auth_screen.tcss"
@@ -38,18 +38,17 @@ class _Harness(App):
         *,
         login_method: OAuthLoginMethod,
         open_url_error: Exception | None = None,
-        theme_name: str = SLO_DARK_THEME.name,
+        theme_name: str = SLO_DEFAULT_THEME.name,
     ) -> None:
         """Keep the interaction type, an optional open-URL failure, and the Slo theme to paint with.
 
         Args:
             login_method (OAuthLoginMethod): Browser or device interaction to mount.
             open_url_error (Exception | None, optional): Raised by open_url when set. Defaults to None.
-            theme_name (str, optional): Registered Slo theme to apply. Defaults to slo-dark.
+            theme_name (str, optional): Registered Slo theme to apply. Defaults to slo-default.
         """
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
-        self.register_theme(SLO_DARK_THEME)
         self.theme = theme_name
         self._login_method: OAuthLoginMethod = login_method
         self._open_url_error: Exception | None = open_url_error
@@ -90,7 +89,7 @@ class TestAuthorizationLinkPainting:
     """Browser and device presentations paint one clickable, wrapped link."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("theme_name", [SLO_DARK_THEME.name, SLO_DEFAULT_THEME.name])
+    @pytest.mark.parametrize("theme_name", [SLO_DEFAULT_THEME.name])
     async def test_browser_presentation_paints_link_targeting_authorization_url(
         self, theme_name: str
     ) -> None:

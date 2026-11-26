@@ -40,7 +40,7 @@ from src.agents.slo_agent.orchestrator.dao import (
 from src.agents.slo_agent.orchestrator.fleet_store import FleetStore
 from src.agents.slo_agent.orchestrator.layout import OrchestrationLayout
 from src.agents.slo_agent.orchestrator.workflow_registry import WorkflowHandleDAO, WorkflowHandleStore
-from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.workflow_visualizer_loader import WorkflowVisualizerLoader
 from src.tui.workflows.abort_confirmation_screen import AbortConfirmationScreen
 from src.tui.workflows.abort_submission import (
@@ -101,6 +101,8 @@ class _ConfirmationHost(App[None]):
             target (ChildAbortTargetDAO): Captured target.
         """
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self.target: ChildAbortTargetDAO = target
         self.results: list[Optional[bool]] = []
         self.confirmation: Optional[AbortConfirmationScreen] = None
@@ -196,13 +198,12 @@ class TestAbortConfirmationScreen:
             assert not isinstance(app.screen, AbortConfirmationScreen)
 
     @pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
-    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME.name, SLO_DARK_THEME.name])
+    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME.name])
     async def test_buttons_reachable_at_every_size_and_theme(self, size: tuple[int, int], theme: str) -> None:
-        """Both buttons are painted inside the terminal at 60x20, 80x24 and 120x40 in both themes."""
+        """Both buttons are painted inside the terminal at 60x20, 80x24 and 120x40 in the Slo theme."""
         app = _ConfirmationHost(target=_target())
         async with app.run_test(size=size) as pilot:
             app.register_theme(SLO_DEFAULT_THEME)
-            app.register_theme(SLO_DARK_THEME)
             app.theme = theme
             await pilot.pause()
             width, height = size

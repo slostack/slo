@@ -12,11 +12,11 @@ from textual.widgets import Button
 __all__ = ["AgentTabDAO", "AgentTabStrip"]
 
 _STATUS_ICONS: dict[str, str] = {
-    "pending": "○",
-    "running": "⏳",
-    "completed": "✓",
-    "failed": "✗",
-    "aborted": "✗",
+    "pending": "·",
+    "running": "◍",
+    "completed": "●",
+    "failed": "✕",
+    "aborted": "✕",
 }
 """Status icon glyphs keyed by lifecycle status string."""
 
@@ -56,18 +56,23 @@ class AgentTabStrip(Horizontal):
 
     DEFAULT_CSS = """
     AgentTabStrip {
-        height: 3;
+        height: 2;
         width: 100%;
         background: $surface;
-        border-bottom: solid $primary;
+        border-bottom: solid $rule;
     }
     AgentTabStrip Button {
         min-width: 12;
         margin: 0 1 0 0;
     }
+    AgentTabStrip Button {
+        color: $text-muted;
+    }
+
     AgentTabStrip Button.-active {
-        background: $primary;
-        color: $background;
+        background: $panel;
+        color: $text-muted;
+        border-bottom: solid $accent;
     }
     """
 

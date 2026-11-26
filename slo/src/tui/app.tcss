@@ -1,15 +1,6 @@
-/* src/tui/app.tcss
- *
- * Minimal layout inspired by Claude Code's CLI:
- *   - No frame around the transcript; conversation flows on the surface.
- *   - Prompt input framed only by two horizontal accent rules (top and
- *     bottom); no side edges or corners, in focused and unfocused states.
- *   - Subtle header/footer so the conversation is the focal point.
- *
- * Colours resolve through the active Textual theme (tokyo-night by
- * default) via $surface / $accent, so runtime theme switches via the
- * command palette stay coherent.
- */
+/* Quiet Tokyo Night presentation: flat surfaces, muted chrome and sparse semantic color.
+ * Header and Footer are one row tall: never give them a border, or it consumes
+ * that row and hides the workspace/session title and key hints. */
 
 Screen {
     background: $surface;
@@ -18,10 +9,42 @@ Screen {
 
 Header {
     background: $surface;
+    color: $text-dim;
+}
+
+Header .header--title,
+Header .header--subtitle {
+    color: $text-dim;
 }
 
 Footer {
     background: $surface;
+    color: $text-dim;
+}
+
+/* Shortcut keys (clear, expand/collapse, copy…) use the theme's shortcut-key
+ * accent; descriptions stay dim so the keys read first. */
+Footer FooterKey {
+    color: $text-dim;
+    background: $surface;
+}
+
+Footer FooterKey .footer-key--key {
+    color: $shortcut-key;
+    background: $surface;
+    text-style: bold;
+    padding: 0;
+}
+
+Footer FooterKey .footer-key--description {
+    color: $text-dim;
+    background: $surface;
+}
+
+Footer FooterKey:hover .footer-key--key,
+Footer FooterKey:hover .footer-key--description {
+    color: $shortcut-key;
+    background: $panel;
 }
 
 #chat-shell {
@@ -34,5 +57,4 @@ Footer {
     margin: 1 0 0 0;
 }
 
-/* Component styling lives in ThinkingSpinner.DEFAULT_CSS,
- * PromptInputComponent.DEFAULT_CSS, and WorkflowProgressComponent.DEFAULT_CSS. */
+/* Component styling lives in the widget/component DEFAULT_CSS and adjacent TCSS. */

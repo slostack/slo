@@ -42,7 +42,7 @@ class WorkflowTranscriptRenderer:
         """Write one entry as header, body renderables and a closing separator.
 
         WHAT: Assistant answers and user messages render as Markdown, reasoning and
-            thinking as dim italic, tool entries as a bold header plus clipped
+            thinking as italic, tool entries as a bold header plus clipped
             output. Unknown kinds fall back to their literal text.
         WHO: Called by HeadlessWorkflowVisualizer's textual detail pane and by the
             session progress modal.
@@ -73,21 +73,21 @@ class WorkflowTranscriptRenderer:
         """
         block = Text()
         if entry.kind == "user":
-            block.append("▶ User\n", style="bold cyan")
-            cls._append_line(block=block, value=entry.content, style="cyan")
+            block.append("▶ User\n", style="bold")
+            cls._append_line(block=block, value=entry.content, style="")
             return block
         if entry.kind == "assistant":
             return cls._format_assistant(block=block, entry=entry)
         if entry.kind == "thinking":
-            block.append("~ Thinking\n", style="bold dim")
+            block.append("~ Thinking\n", style="bold italic")
             cls._append_line(
-                block=block, value=cls._clip(value=entry.content, limit=_REASONING_LIMIT), style="dim italic"
+                block=block, value=cls._clip(value=entry.content, limit=_REASONING_LIMIT), style="italic"
             )
             return block
         if entry.kind == "tool":
-            block.append(f"⚙ {entry.tool_name or 'tool'}\n", style="bold yellow")
+            block.append(f"● {entry.tool_name or 'tool'}\n", style="")
             output: str = cls._clip(value=entry.output, limit=_FORMATTED_TOOL_OUTPUT_LIMIT)
-            cls._append_line(block=block, value=output, style="yellow")
+            cls._append_line(block=block, value=output, style="")
             return block
         block.append(str(entry) + "\n")
         return block
@@ -103,11 +103,11 @@ class WorkflowTranscriptRenderer:
         Returns:
             Text: The completed block.
         """
-        block.append("◀ Assistant\n", style="bold green")
+        block.append("◀ Assistant\n", style="bold")
         if entry.reasoning:
-            block.append("~ reasoning\n", style="bold dim")
-            block.append(entry.reasoning[:_REASONING_LIMIT] + "\n", style="dim italic")
-        cls._append_line(block=block, value=entry.answer or entry.content, style="green")
+            block.append("~ reasoning\n", style="bold italic")
+            block.append(entry.reasoning[:_REASONING_LIMIT] + "\n", style="italic")
+        cls._append_line(block=block, value=entry.answer or entry.content, style="")
         return block
 
     @staticmethod
@@ -143,7 +143,7 @@ class WorkflowTranscriptRenderer:
             log (RichLog): Target log.
             entry (TranscriptEntryDAO): User entry.
         """
-        log.write(Text("▶ User", style="bold cyan"), scroll_end=False)
+        log.write(Text("▶ User", style="bold"), scroll_end=False)
         if entry.content:
             log.write(Markdown(entry.content), scroll_end=False)
 
@@ -155,25 +155,25 @@ class WorkflowTranscriptRenderer:
             log (RichLog): Target log.
             entry (TranscriptEntryDAO): Assistant entry.
         """
-        log.write(Text("◀ Assistant", style="bold green"), scroll_end=False)
+        log.write(Text("◀ Assistant", style="bold"), scroll_end=False)
         if entry.reasoning:
-            log.write(Text("~ reasoning", style="bold dim"), scroll_end=False)
-            log.write(Markdown(entry.reasoning[:_REASONING_LIMIT], style="dim italic"), scroll_end=False)
+            log.write(Text("~ reasoning", style="bold italic"), scroll_end=False)
+            log.write(Markdown(entry.reasoning[:_REASONING_LIMIT], style="italic"), scroll_end=False)
         body: str = entry.answer or entry.content or ""
         if body:
             log.write(Markdown(body), scroll_end=False)
 
     @staticmethod
     def _write_thinking(*, log: RichLog, entry: TranscriptEntryDAO) -> None:
-        """Write the thinking header and clipped dim Markdown body.
+        """Write the thinking header and clipped italic Markdown body.
 
         Args:
             log (RichLog): Target log.
             entry (TranscriptEntryDAO): Thinking entry.
         """
-        log.write(Text("~ Thinking", style="bold dim"), scroll_end=False)
+        log.write(Text("~ Thinking", style="bold italic"), scroll_end=False)
         if entry.content:
-            log.write(Markdown(entry.content[:_REASONING_LIMIT], style="dim italic"), scroll_end=False)
+            log.write(Markdown(entry.content[:_REASONING_LIMIT], style="italic"), scroll_end=False)
 
     @staticmethod
     def _write_tool(*, log: RichLog, entry: TranscriptEntryDAO) -> None:
@@ -183,9 +183,9 @@ class WorkflowTranscriptRenderer:
             log (RichLog): Target log.
             entry (TranscriptEntryDAO): Tool entry.
         """
-        log.write(Text(f"⚙ {entry.tool_name or 'tool'}", style="bold yellow"), scroll_end=False)
+        log.write(Text(f"● {entry.tool_name or 'tool'}", style=""), scroll_end=False)
         if entry.output:
-            log.write(Text(str(entry.output)[:_WRITTEN_TOOL_OUTPUT_LIMIT], style="yellow"), scroll_end=False)
+            log.write(Text(str(entry.output)[:_WRITTEN_TOOL_OUTPUT_LIMIT], style=""), scroll_end=False)
 
     @staticmethod
     def _write_fallback(*, log: RichLog, entry: TranscriptEntryDAO) -> None:

@@ -17,10 +17,21 @@ from src.auth.openrouter_authentication import OpenRouterAuthenticationService
 from src.auth.provider_factory import OAuthFlowFactory
 from src.integrations.openrouter.client import OpenRouterAPIClient
 from src.tui.authentication.auth_screen import AuthenticationScreen
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.authentication.widgets.api_key_input import ApiKeyInputWidget
 from src.tui.authentication.widgets.provider_select import ProviderSelectWidget
 from src.tui.authentication.widgets.success_widget import SuccessWidget
 from tests.tui.authentication._painted_output import assert_widget_painted, wait_until_painted
+
+
+class _ThemedApp(App[None]):
+    """Mount authentication screens with the production Slo theme tokens."""
+
+    def __init__(self) -> None:
+        """Register the semantic variables before the modal mounts."""
+        super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
 
 
 @pytest.mark.parametrize("provider", [ProviderName.OPENROUTER, ProviderName.KIMI_FOR_CODING])
@@ -52,7 +63,7 @@ async def test_openrouter_modal_delegates_and_cancels(tmp_path: Path, navigation
         safe_message="Authentication cancelled; no key was saved."
     )
     screen = AuthenticationScreen(store=CredentialStore(path=path), openrouter_factory=lambda: service)
-    app: App[None] = App()
+    app: App[None] = _ThemedApp()
     async with app.run_test() as pilot:
         await app.push_screen(screen)
         assert ProviderName.OPENROUTER in [provider for provider, _ in ProviderSelectWidget.PROVIDERS]
@@ -95,7 +106,7 @@ async def test_modal_paints_safe_result(tmp_path: Path, size: tuple[int, int], v
         return_value=OpenRouterAuthenticationResultDAO(key_verified=verified, safe_message=message)
     )
     screen = AuthenticationScreen(store=CredentialStore(path=path), openrouter_factory=lambda: service)
-    app: App[None] = App()
+    app: App[None] = _ThemedApp()
     async with app.run_test(size=size) as pilot:
         await app.push_screen(screen)
         await screen.on_provider_select_widget_chosen(
@@ -145,7 +156,7 @@ async def test_mounted_listing_credential_change_paints_retry_without_success(
             catalog_service=catalog,
         )
         screen = AuthenticationScreen(store=store, openrouter_factory=lambda: service)
-        app: App[None] = App()
+        app: App[None] = _ThemedApp()
         async with app.run_test(size=size) as pilot:
             await app.push_screen(screen)
             await screen.on_provider_select_widget_chosen(
@@ -198,7 +209,7 @@ async def test_mounted_post_save_cancellation_paints_saved_state(tmp_path: Path)
             catalog_service=catalog,
         )
         screen = AuthenticationScreen(store=store, openrouter_factory=lambda: service)
-        app: App[None] = App()
+        app: App[None] = _ThemedApp()
         async with app.run_test(size=(80, 24)) as pilot:
             await app.push_screen(screen)
             await screen.on_provider_select_widget_chosen(

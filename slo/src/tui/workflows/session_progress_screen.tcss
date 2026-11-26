@@ -8,7 +8,7 @@ SessionProgressScreen {
 #progress-box {
     width: 92%;
     height: 88%;
-    border: round $border-muted;
+    border: solid $accent;
     background: $surface;
     padding: 1 2;
 }
@@ -27,7 +27,7 @@ SessionProgressScreen {
 
 #task-description {
     height: auto;
-    color: $text-muted;
+    color: $text;
 }
 
 #session-state {
@@ -58,7 +58,7 @@ SessionProgressScreen #task-scroll {
 
 SessionProgressScreen .hint {
     height: 1;
-    color: $text-muted;
+    color: $text-dim;
 }
 
 SessionProgressScreen .actions {

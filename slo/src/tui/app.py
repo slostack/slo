@@ -267,15 +267,8 @@ class SloTUI(App):
         ),
     ]
 
-    DEFAULT_THEME: str = SLO_DARK_THEME.name  # slo boots into the slo-dark (near-black/green) palette
-    """Textual theme applied on construction.
-
-    Defaults to the slo-dark theme (near-black/green) — the visual
-    signature that distinguishes slo from poe-harness. Runtime theme
-    switches via the command palette stay coherent because both themes
-    are registered in ``__init__`` immediately after ``super().__init__()``
-    initialises ``_registered_themes``.
-    """
+    DEFAULT_THEME: str = SLO_DARK_THEME.name
+    """The Textual theme applied on install and at startup (slo-dark, near-black/green)."""
 
     def __init__(
         self,
@@ -338,8 +331,8 @@ class SloTUI(App):
         self._workflow_visibility_lock: asyncio.Lock = asyncio.Lock()
         self._workflow_observation_close_task: Optional[asyncio.Task[None]] = None
         self._browser_host: BrowserHost = browser_host or BrowserHost.current()
-        self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
+        self.register_theme(SLO_DEFAULT_THEME)
         self.theme = self.DEFAULT_THEME
         self._session: SloAgentSession = session
         self._preparation_task: Optional[asyncio.Task[None]] = None
@@ -719,12 +712,12 @@ class SloTUI(App):
         return CredentialResolver.resolve(provider=provider) is not None
 
     async def _toggle_theme(self) -> None:
-        """Toggle the active theme between slo-default and slo-dark.
+        """Toggle the active theme between slo-dark and slo-default.
 
-        If the current theme is neither of the two, switches to slo-default.
+        If the current theme is neither of the two, switches to slo-dark.
         """
         next_theme: str = (
-            SLO_DARK_THEME.name if self.theme == SLO_DEFAULT_THEME.name else SLO_DEFAULT_THEME.name
+            SLO_DEFAULT_THEME.name if self.theme == SLO_DARK_THEME.name else SLO_DARK_THEME.name
         )
         self.theme = next_theme
         if self._chat_transcript is not None:

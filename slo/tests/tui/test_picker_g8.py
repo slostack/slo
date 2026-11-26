@@ -12,6 +12,7 @@ from src.tui.model_catalog import model_suggestion_entries
 from src.tui.slash_command_registry import SlashCommandRegistry
 from src.tui.slash_suggestion_engine import SlashSuggestionEngine
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
+from src.tui.theme import SLO_DEFAULT_THEME
 
 
 def test_projection_and_input_do_not_resolve_credentials() -> None:
@@ -33,6 +34,12 @@ def test_projection_and_input_do_not_resolve_credentials() -> None:
 
 class MenuApp(App[None]):
     """Mount only the real menu without session or persistence side effects."""
+
+    def __init__(self) -> None:
+        """Register the semantic theme variables used by the production menu."""
+        super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
 
     def compose(self) -> ComposeResult:
         """Yield the production renderer."""

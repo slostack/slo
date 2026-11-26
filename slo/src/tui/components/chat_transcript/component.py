@@ -1541,9 +1541,15 @@ class ChatTranscriptComponent(Vertical):
         """
         return "\n".join(text for text, classes in self._adapter.lines if classes != "turn-separator")
 
-    async def mount_user_message_block(self, *, text: str, before: Optional[int] = None) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self,
+        *,
+        text: str,
+        before: Optional[int] = None,
+        sender_name: Optional[str] = None,
+    ) -> UserMessageBlock:
         """Add a user message for live output or replayed history."""
-        block = UserMessageBlock(text=text)
+        block = UserMessageBlock(text=text, sender_name=sender_name)
         await self._mount_transcript_widget(block=block, before=before)
         return block
 

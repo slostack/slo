@@ -76,8 +76,6 @@ class SlashCommandResultDAO(BaseModel):
             ``AuthenticationScreen`` (02.b.6).
         refresh_title (bool): True iff the TUI should refresh the
             top-bar title from session runtime state.
-        toggle_theme (bool): True iff the TUI should toggle between the
-            slo-default and slo-dark themes.
         abort_run (bool): True iff the TUI should escalate the cooperative
             abort to a hard cancel of the in-flight task when it does not
             wind down on its own (e.g. a tool call is hung).
@@ -105,30 +103,46 @@ class SlashCommandResultDAO(BaseModel):
             in memory and renders the service's typed outcome line.
     """
 
-    rendered: Optional[str] = None
-    should_exit: bool = False
-    should_clear: bool = False
-    open_auth_modal: bool = False
-    refresh_title: bool = False
-    replace_session: bool = False
-    requested_session_name: Optional[str] = None
-    rename_current_session_to: Optional[str] = None
-    toggle_theme: bool = False
-    abort_run: bool = False
-    forced_prompt_text: Optional[str] = None
+    rendered: Optional[str] = Field(default=None, description="Transcript line to render, or none.")
+    should_exit: bool = Field(default=False, description="Whether the TUI exits after applying this result.")
+    should_clear: bool = Field(default=False, description="Whether the TUI clears its transcript.")
+    open_auth_modal: bool = Field(default=False, description="Whether the TUI opens authentication.")
+    toggle_theme: bool = Field(
+        default=False, description="Whether the TUI toggles between the slo-dark and slo-default themes."
+    )
+    refresh_title: bool = Field(default=False, description="Whether the TUI refreshes session title and usage.")
+    replace_session: bool = Field(default=False, description="Whether the TUI replaces its active session.")
+    requested_session_name: Optional[str] = Field(
+        default=None, description="Optional name for a replacement session."
+    )
+    rename_current_session_to: Optional[str] = Field(
+        default=None, description="New name for the active session."
+    )
+    abort_run: bool = Field(default=False, description="Whether the TUI escalates the active run abort.")
+    forced_prompt_text: Optional[str] = Field(
+        default=None, description="Prompt text to enqueue as a forced message."
+    )
     queue_cancel_position: Optional[int] = Field(default=None, description="1-based pending row to cancel.")
     queue_cancel_all: bool = Field(default=False, description="Cancel every currently pending prompt row.")
     queue_edit_position: Optional[int] = Field(
         default=None, description="1-based pending row to restore for editing."
     )
-    render_tree: Optional[object] = None
-    tree_format: Optional[str] = None
-    refresh_context_window: bool = False
-    refresh_usage_status: bool = False
-    git_diff_path: Optional[str] = None
+    render_tree: Optional[object] = Field(default=None, description="Session tree to mount, when requested.")
+    tree_format: Optional[str] = Field(default=None, description="Format requested for session tree output.")
+    refresh_context_window: bool = Field(
+        default=False, description="Whether to remeasure and repaint context-window usage."
+    )
+    refresh_usage_status: bool = Field(
+        default=False, description="Whether to repaint the cached usage status."
+    )
+    git_diff_path: Optional[str] = Field(default=None, description="Repository-relative file path to open as a diff.")
     code_path: Optional[str] = Field(default=None, description="Raw local editor path intent.")
-    dismissed_workflow_id: Optional[str] = None
-    resumed_workflow_id: Optional[str] = None
+    dismissed_workflow_id: Optional[str] = Field(
+        default=None, description="Workflow whose durable dismissal succeeded."
+    )
+    resumed_workflow_id: Optional[str] = Field(
+        default=None, description="Workflow whose relaunch succeeded."
+    )
     tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = Field(
         default=None, description="Local workflow display intent."
     )
@@ -151,8 +165,12 @@ class SlashCommandResultDAO(BaseModel):
 class SlashCommandAdmissionDAO(BaseModel):
     """Pre-dispatch intent; the app retains preparation and activity lifetime."""
 
-    action: Literal["dispatch", "prepare", "reject"]
-    refresh_model_context: bool = False
+    action: Literal["dispatch", "prepare", "reject"] = Field(
+        description="App-owned decision to dispatch, prepare, or reject this slash input."
+    )
+    refresh_model_context: bool = Field(
+        default=False, description="Whether exact /model refresh invalidates cached model context."
+    )
 
 
 class SlashRouter:
@@ -191,6 +209,7 @@ class SlashRouter:
             "/model",
             "/code",
             "/queue",
+            "/theme",
         }:
             return SlashCommandAdmissionDAO(action="dispatch")
         return SlashCommandAdmissionDAO(action="reject")
@@ -842,7 +861,7 @@ class SlashRouter:
 
     @classmethod
     async def _handle_theme(cls, *, rest: str, session: SloAgentSession) -> SlashCommandResultDAO:
-        """Toggle between the slo-default and slo-dark themes.
+        """Toggle between the slo-dark and slo-default themes.
 
         Args:
             rest (str): Trailing argument text (unused).

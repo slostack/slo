@@ -417,8 +417,10 @@ async def test_mounted_startup_shared_worker_gates_and_recovers(
                     participant_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
 
                     async def _all_prompts_replied() -> bool:
-                        conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                            agent_session_id=participant_id
+                        conversation: list[ChannelMessageDAO] = (
+                            await gateway.repository.list_conversation_messages(
+                                agent_session_id=participant_id
+                            )
                         )
                         prompt_rows: list[ChannelMessageDAO] = [
                             row for row in conversation if row.message_type == "prompt"
@@ -435,8 +437,8 @@ async def test_mounted_startup_shared_worker_gates_and_recovers(
                     async with asyncio.timeout(10.0):
                         while not await _all_prompts_replied():
                             await asyncio.sleep(0.02)
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=participant_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=participant_id)
                     )
                     prompt_rows: list[ChannelMessageDAO] = [
                         row for row in conversation if row.message_type == "prompt"

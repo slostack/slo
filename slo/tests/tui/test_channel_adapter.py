@@ -177,8 +177,8 @@ class TestPromptSubmissionGoesThroughTheQueue:
                 agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
 
                 async def _answered() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     replies: list[ChannelMessageDAO] = [
                         row for row in conversation if row.message_type == "reply"
@@ -195,7 +195,7 @@ class TestPromptSubmissionGoesThroughTheQueue:
                 # A2: the request row was accepted exactly once.
                 adapter = app.channel_adapter
                 assert adapter is not None
-                conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
+                conversation: list[ChannelMessageDAO] = await gateway.repository.list_conversation_messages(
                     agent_session_id=agent_id
                 )
                 prompts: list[ChannelMessageDAO] = [
@@ -260,8 +260,8 @@ class TestThreePromptsRunInOrder:
                 await pilot.press("enter")
 
                 async def _second_row_pending() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     return any(
                         row.message_contents == "second"
@@ -282,8 +282,8 @@ class TestThreePromptsRunInOrder:
                 await pilot.press("enter")
 
                 async def _third_row_pending() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     return any(
                         row.message_contents == "third"
@@ -300,15 +300,15 @@ class TestThreePromptsRunInOrder:
                 release_first_run.set()
 
                 async def _all_replied() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     replies = [row for row in conversation if row.message_type == "reply"]
                     return len(replies) == 3 and all(row.accepted_at is not None for row in replies)
 
                 await _wait_until_db(predicate=_all_replied, timeout_seconds=30.0)
 
-                conversation = await gateway.repository.conversation(agent_session_id=agent_id)
+                conversation = await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                 prompts: list[ChannelMessageDAO] = [
                     row for row in conversation if row.message_type == "prompt"
                 ]
@@ -383,12 +383,12 @@ class TestAbortPausesAndQueueResumeContinues:
 
                 release_first_run.set()
                 first_row: ChannelMessageDAO = (
-                    await gateway.repository.conversation(agent_session_id=agent_id)
+                    await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                 )[0]
 
                 async def _first_run_finished_and_held_row_pending() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     held = next((r for r in conversation if r.message_contents == "held"), None)
                     first_reply = next(
@@ -420,8 +420,8 @@ class TestAbortPausesAndQueueResumeContinues:
                 )
 
                 async def _held_row_ran_to_a_reply() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     held = next((r for r in conversation if r.message_contents == "held"), None)
                     if held is None or held.accepted_at is None or held.cancelled_at is not None:
@@ -475,8 +475,8 @@ class TestRecoveredPauseShowsANotice:
                 agent_id: UUID = channel_participant_id_for_session(session_id=fixed_session_id)
 
                 async def _row_still_pending() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     row = next(
                         (r for r in conversation if r.message_contents == "leftover prompt"),
@@ -494,8 +494,8 @@ class TestRecoveredPauseShowsANotice:
                 await pump_until(pilot=pilot, predicate=lambda: poller.paused is None)
 
                 async def _leftover_row_ran() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     row = next(
                         (r for r in conversation if r.message_contents == "leftover prompt"),
@@ -554,8 +554,8 @@ class TestSlashCommandBypassesTheQueue:
                 assert any("help" in content.lower() for content, _ in _transcript_lines(app=app))
 
                 async def _run_row_plus_forced_row() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     prompts = [row for row in conversation if row.message_type == "prompt"]
                     return (
@@ -593,8 +593,8 @@ class TestForceKeyBindingsSendThroughTheQueue:
                 agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
 
                 async def _conversation_prompts() -> list[ChannelMessageDAO]:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     return [row for row in conversation if row.message_type == "prompt"]
 
@@ -676,8 +676,8 @@ class TestForcedSendWhileIdleRunsAtOnce:
                 )
 
                 async def _single_forced_row() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     prompts: list[ChannelMessageDAO] = [
                         row for row in conversation if row.message_type == "prompt"
@@ -693,8 +693,8 @@ class TestForcedSendWhileIdleRunsAtOnce:
                 release.set()
 
                 async def _answered() -> bool:
-                    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                        agent_session_id=agent_id
+                    conversation: list[ChannelMessageDAO] = (
+                        await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                     )
                     replies: list[ChannelMessageDAO] = [
                         row for row in conversation if row.message_type == "reply"
@@ -704,7 +704,7 @@ class TestForcedSendWhileIdleRunsAtOnce:
                 await _wait_until_db(predicate=_answered)
 
                 # The completed run is the forced row's own reply, linked back.
-                conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
+                conversation: list[ChannelMessageDAO] = await gateway.repository.list_conversation_messages(
                     agent_session_id=agent_id
                 )
                 prompts: list[ChannelMessageDAO] = [
@@ -754,8 +754,8 @@ class TestQueueForceSlashCommandJourney:
                     agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
 
                     async def _conversation_prompts() -> list[ChannelMessageDAO]:
-                        conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(
-                            agent_session_id=agent_id
+                        conversation: list[ChannelMessageDAO] = (
+                            await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
                         )
                         return [row for row in conversation if row.message_type == "prompt"]
 
@@ -799,14 +799,14 @@ class TestQueueForceSlashCommandJourney:
                     async def _all_settled() -> bool:
                         rows: list[ChannelMessageDAO] = await _conversation_prompts()
                         return all(row.accepted_at is not None for row in rows) and all(
-                            [await gateway.reply_for(message_id=row.id) for row in (rows[0], rows[1])]
+                            [await gateway.find_reply(message_id=row.id) for row in (rows[0], rows[1])]
                         )
 
                     await _wait_until_db(predicate=_all_settled)
                     await pump_until(pilot=pilot, predicate=lambda: poller.busy is False)
                     echoes: list[str] = _user_echo_texts(app=app)
                     replies: list[Optional[ChannelMessageDAO]] = [
-                        await gateway.reply_for(message_id=row.id) for row in await _conversation_prompts()
+                        await gateway.find_reply(message_id=row.id) for row in await _conversation_prompts()
                     ]
                 finally:
                     # Never unmount with the provider still held (unmount joins the run).
@@ -927,7 +927,7 @@ class TestAbortEscalationNeverKillsALaterRun:
                 agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
 
                 async def _conversation() -> list[ChannelMessageDAO]:
-                    return await gateway.repository.conversation(agent_session_id=agent_id)
+                    return await gateway.repository.list_conversation_messages(agent_session_id=agent_id)
 
                 prompt_input.text = "first"
                 await pilot.press("enter")
@@ -1142,8 +1142,10 @@ class TestOutboundRepliesFromOtherAgents:
                 )
 
                 async def _both_accepted() -> bool:
-                    foreign: Optional[ChannelMessageDAO] = await gateway.get(message_id=foreign_reply.id)
-                    own: Optional[ChannelMessageDAO] = await gateway.get(message_id=own_reply.id)
+                    foreign: Optional[ChannelMessageDAO] = await gateway.find_message(
+                        message_id=foreign_reply.id
+                    )
+                    own: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=own_reply.id)
                     return (
                         foreign is not None
                         and foreign.accepted_at is not None
@@ -1241,7 +1243,7 @@ class TestObserverFailureNeverRepeatsADisplayedRow:
                     )
 
                     async def _notice_accepted() -> bool:
-                        stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=notice.id)
+                        stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=notice.id)
                         return stored is not None and stored.accepted_at is not None
 
                     await _wait_until_db(predicate=_notice_accepted)

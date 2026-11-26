@@ -69,7 +69,7 @@ def _expected_id(*, event: str, phase_index: int) -> UUID:
 
 async def _pending_for_target(*, gateway: ChannelGateway) -> list[ChannelMessageDAO]:
     """Return the pending rows addressed to the target session."""
-    return await gateway.pending_inbound(recipient_id=UUID(_TARGET_SESSION_ID))
+    return await gateway.list_pending_inbound_messages(recipient_id=UUID(_TARGET_SESSION_ID))
 
 
 class TestStarted:
@@ -280,7 +280,7 @@ class TestReceivePaths:
             # The TUI participant has never registered: the row cannot be
             # inserted, and the workflow must keep running anyway.
             await notifier.started(brief_preview="brief")
-            assert await gateway.pending_outbound(recipient_ids=[]) == []
+            assert await gateway.list_pending_outbound_messages(recipient_ids=[]) == []
         finally:
             await gateway.close()
 

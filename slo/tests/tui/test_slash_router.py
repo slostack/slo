@@ -1479,9 +1479,9 @@ class TestQueueAndSteerOverARealChannelQueue:
             second = await self._send_prompt(gateway=gateway, user=user, agent=agent, text="two")
             result: SlashCommandResultDAO = await SlashRouter.dispatch(line="/queue force 2", session=session)
             assert result.rendered == "(row 2 forced — applies at the next boundary)"
-            stored = await gateway.get(message_id=second.id)
+            stored = await gateway.find_message(message_id=second.id)
             assert stored is not None and stored.forced_at is not None
-            stored_first = await gateway.get(message_id=first.id)
+            stored_first = await gateway.find_message(message_id=first.id)
             assert stored_first is not None and stored_first.forced_at is None
         finally:
             await session.stop_channel_delivery(reason="test_done")

@@ -59,7 +59,7 @@ def _close_agent(*, agent_id: UUID) -> None:
 
 
 def _conversation(*, agent_id: UUID) -> list[ChannelMessageDAO]:
-    return _db(lambda gateway: gateway.conversation(agent_session_id=agent_id))
+    return _db(lambda gateway: gateway.list_conversation_messages(agent_session_id=agent_id))
 
 
 def _invoke(*args: str) -> Result:
@@ -96,7 +96,7 @@ class AgentResponder:
         gateway: ChannelGateway = await ChannelGateway.default()
         try:
             while not self._stop.is_set():
-                for row in await gateway.pending_inbound(recipient_id=self._agent_id):
+                for row in await gateway.list_pending_inbound_messages(recipient_id=self._agent_id):
                     await self._handle(gateway=gateway, row=row)
                 await asyncio.sleep(0.05)
         finally:
@@ -260,7 +260,9 @@ class TestFollowCommand:
             time.sleep(0.8)
 
             async def _act(gateway: ChannelGateway) -> None:
-                request: ChannelMessageDAO = (await gateway.pending_inbound(recipient_id=agent.id))[0]
+                request: ChannelMessageDAO = (
+                    await gateway.list_pending_inbound_messages(recipient_id=agent.id)
+                )[0]
                 await gateway.accept(message_id=request.id)
                 await ReplyWriter(gateway=gateway).write(
                     request=request, outcome=TurnOutcomeDAO(status="completed", final_text="late answer")

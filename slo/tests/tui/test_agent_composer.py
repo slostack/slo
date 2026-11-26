@@ -182,7 +182,7 @@ class TestAgentComposerSends:
                 assert len(rows) == 1
                 assert rows[0].forced is True
                 assert rows[0].preview == "use pytest -x"
-                stored = await gateway.get(message_id=rows[0].message_id)
+                stored = await gateway.find_message(message_id=rows[0].message_id)
                 assert stored is not None and stored.forced_at is not None
         finally:
             await gateway.close()

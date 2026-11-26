@@ -110,7 +110,7 @@ async def test_terminal_after_stream_exit_retains_admitted_redaction(
                 await task
         else:
             assert await task == (0 if kind == "run_completed" else 1)
-    pending = await gateway.pending_inbound(recipient_id=target.id)
+    pending = await gateway.list_pending_inbound_messages(recipient_id=target.id)
     terminals = [row for row in pending if row.message_type == "prompt"]
     assert len(terminals) == 1
     assert "ordinary terminal [REDACTED]" in terminals[0].message_contents
@@ -164,7 +164,7 @@ async def test_concurrent_runners_keep_distinct_admitted_captures(tmp_path: Path
         assert CredentialResolver.operation_credential() is None
         await runner._notify_terminal()
         assert CredentialResolver.operation_credential() is None
-        messages = await gateway.pending_inbound(recipient_id=target.id)
+        messages = await gateway.list_pending_inbound_messages(recipient_id=target.id)
         assert len(messages) == 1 and "[REDACTED]" in messages[0].message_contents
         assert credential.access_token not in messages[0].model_dump_json()
         await gateway.close()

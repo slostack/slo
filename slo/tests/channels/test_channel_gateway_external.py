@@ -301,7 +301,7 @@ class TestChannelUsersAndHeartbeat:
 
             await gateway.heartbeat_channel(channel_id=channel.id)
 
-            stored: ChannelDAO | None = await gateway.get_channel(channel_id=channel.id)
+            stored: ChannelDAO | None = await gateway.find_channel(channel_id=channel.id)
             assert stored is not None
             assert stored.last_seen_at > channel.last_seen_at
         finally:

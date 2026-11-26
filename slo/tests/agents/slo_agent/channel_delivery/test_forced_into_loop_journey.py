@@ -353,7 +353,7 @@ async def test_forced_row_joins_the_current_run_ahead_of_queued_normal_rows(tmp_
         release.set()
 
         async def _forced_accepted() -> bool:
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced_row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced_row.id)
             return stored is not None and stored.accepted_at is not None
 
         await asyncio.wait_for(_wait_until(predicate=_forced_accepted), timeout=10.0)
@@ -377,14 +377,16 @@ async def test_forced_row_joins_the_current_run_ahead_of_queued_normal_rows(tmp_
         # Every row accepted exactly once.
         async def _all_accepted() -> bool:
             stored_rows: list[Optional[ChannelMessageDAO]] = [
-                await gateway.get(message_id=row.id)
+                await gateway.find_message(message_id=row.id)
                 for row in (running_row, normal_one, normal_two, forced_row)
             ]
             return all(row is not None and row.accepted_at is not None for row in stored_rows)
 
         await asyncio.wait_for(_wait_until(predicate=_all_accepted), timeout=10.0)
         # The run's reply carries the steered answer.
-        outbound: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+        outbound: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+            recipient_ids=[user.id]
+        )
         reply_for_running: list[ChannelMessageDAO] = [
             row for row in outbound if row.in_reply_to_id == running_row.id
         ]
@@ -473,7 +475,7 @@ async def test_accepted_steering_survives_session_level_reconnect_retry(tmp_path
         release.set()
 
         async def _steered_row_accepted() -> bool:
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced_row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced_row.id)
             return stored is not None and stored.accepted_at is not None
 
         await asyncio.wait_for(_wait_until(predicate=_steered_row_accepted), timeout=10.0)
@@ -491,7 +493,7 @@ async def test_accepted_steering_survives_session_level_reconnect_retry(tmp_path
         assert retried_context.count("use pytest -x") == 1
         # The accepted row is not re-accepted: the poller's snapshot no longer
         # holds it and the queue keeps it accepted.
-        stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced_row.id)
+        stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced_row.id)
         assert stored is not None and stored.accepted_at is not None
         assert poller.boundary_inbox.has_forced() is False
         # The run's own prompt is the first call's only user text.
@@ -566,14 +568,14 @@ async def test_cancel_at_steering_applied_event_leaves_row_accepted(tmp_path: Pa
         await asyncio.wait_for(_wait_until(predicate=_runner_cancelled), timeout=10.0)
 
         async def _forced_accepted() -> bool:
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced_row.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced_row.id)
             return stored is not None and stored.accepted_at is not None
 
         await asyncio.wait_for(_wait_until(predicate=_forced_accepted), timeout=10.0)
 
         # The row is accepted at the boundary confirm — before the
         # ``steering_applied`` yield that the runner closed the generator on.
-        stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced_row.id)
+        stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced_row.id)
         assert stored is not None and stored.accepted_at is not None
 
         # No rerun: the poller never starts a run for the accepted row, and the

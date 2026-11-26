@@ -274,7 +274,7 @@ class InboxImporter:
         Returns:
             bool: ``True`` when a row was written, ``False`` for a duplicate.
         """
-        if await self._gateway.get(message_id=item.channel_message_id) is not None:
+        if await self._gateway.find_message(message_id=item.channel_message_id) is not None:
             return False
         identity: Optional[_LegacyWorkflowIdentityDAO] = item.workflow_identity
         if identity is None:
@@ -334,7 +334,7 @@ class InboxImporter:
         orchestrator_id: UUID = channel_participant_id_for_session(
             session_id=identity.orchestrator_session_id
         )
-        known: Optional[ParticipantDAO] = await self._gateway.get_participant(participant_id=orchestrator_id)
+        known: Optional[ParticipantDAO] = await self._gateway.find_participant(participant_id=orchestrator_id)
         if known is not None:
             return known
         registered: ParticipantDAO = await self._gateway.register_agent(

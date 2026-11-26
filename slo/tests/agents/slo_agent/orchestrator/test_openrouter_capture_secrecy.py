@@ -173,7 +173,7 @@ async def test_headless_preparation_failure_writes_terminal_status_and_notifies_
     stdout = capsys.readouterr().out
     status_path = root / "history" / "preparation-session" / "orchestrator.json"
     status = json.loads(status_path.read_text(encoding="utf-8"))
-    pending = await gateway.pending_inbound(recipient_id=target_participant.id)
+    pending = await gateway.list_pending_inbound_messages(recipient_id=target_participant.id)
     public = (
         stdout + status_path.read_text(encoding="utf-8") + "".join(row.message_contents for row in pending)
     )

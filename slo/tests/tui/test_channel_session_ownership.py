@@ -99,15 +99,19 @@ class TestOnlyTheLeaseOwnerRunsTheQueue:
                         )
                     )
                     async with asyncio.timeout(20.0):
-                        while not await sender_gateway.pending_outbound(recipient_ids=[user.id]):
+                        while not await sender_gateway.list_pending_outbound_messages(
+                            recipient_ids=[user.id]
+                        ):
                             await pilot_a.pause(0.02)
                     # Give a second (wrong) owner every chance to run the row too.
                     for _ in range(25):
                         await pilot_b.pause(0.02)
-                    replies: list[ChannelMessageDAO] = await sender_gateway.pending_outbound(
+                    replies: list[ChannelMessageDAO] = await sender_gateway.list_pending_outbound_messages(
                         recipient_ids=[user.id]
                     )
-                    stored: Optional[ChannelMessageDAO] = await sender_gateway.get(message_id=request.id)
+                    stored: Optional[ChannelMessageDAO] = await sender_gateway.find_message(
+                        message_id=request.id
+                    )
         finally:
             await sender_gateway.close()
 

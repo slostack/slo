@@ -23,6 +23,7 @@ from src.agents.slo_agent.channel_delivery.note_display import ChannelDisplaySin
 from src.agents.slo_agent.channel_delivery.reply_writer import ReplyWriter
 from src.agents.slo_agent.channel_delivery.turn_runner import TurnOutcomeDAO, TurnRunner
 from src.channels.dao import ChannelMessageDAO, ParticipantDAO
+from src.channels.errors import RecipientClosedError
 from src.channels.gateway import ChannelGateway
 
 if TYPE_CHECKING:
@@ -334,7 +335,7 @@ class ChannelPoller:
         Returns:
             list[ChannelMessageDAO]: Pending prompts in gateway display order.
         """
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._participant_id,
         )
         running_id: Optional[UUID] = self._running_row.id if self._running_row is not None else None
@@ -358,7 +359,7 @@ class ChannelPoller:
         async with self._queue_admission_lock:
             if self._running_row is not None and self._running_row.id == message_id:
                 return False
-            message: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=message_id)
+            message: Optional[ChannelMessageDAO] = await self._gateway.find_message(message_id=message_id)
             if (
                 message is None
                 or message.recipient_id != self._participant_id
@@ -413,7 +414,7 @@ class ChannelPoller:
 
     async def _recover_on_start(self) -> None:
         """Accept rows already in history; pause when other rows remain."""
-        pending: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        pending: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._participant_id,
         )
         if not pending:
@@ -448,7 +449,7 @@ class ChannelPoller:
         Returns:
             bool: ``True`` unless the sender is a known agent or system.
         """
-        sender: Optional[ParticipantDAO] = await self._gateway.get_participant(
+        sender: Optional[ParticipantDAO] = await self._gateway.find_participant(
             participant_id=message.sender_id
         )
         return sender is None or sender.is_operator
@@ -540,7 +541,7 @@ class ChannelPoller:
         (108.3 O2).
         """
         await self._note_display.show_owed()
-        rows: list[ChannelMessageDAO] = await self._gateway.pending_inbound(
+        rows: list[ChannelMessageDAO] = await self._gateway.list_pending_inbound_messages(
             recipient_id=self._participant_id,
         )
         for row in rows:
@@ -577,7 +578,7 @@ class ChannelPoller:
         Returns:
             bool: ``True`` while the row is neither accepted nor cancelled.
         """
-        current: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=message.id)
+        current: Optional[ChannelMessageDAO] = await self._gateway.find_message(message_id=message.id)
         return current is not None and current.accepted_at is None and current.cancelled_at is None
 
     def _session_idle(self) -> bool:
@@ -605,11 +606,16 @@ class ChannelPoller:
 
         Settlement maps the finished task to its effects: a run that never
         started cancels its row (``start_failed``); an aborted run pauses the
-        poller; every started run gets exactly one reply. When an effect
+        poller; every started run attempts exactly one reply. When an effect
         raises, the run task and row stay in place, so the next tick (or
         ``stop``) retries the settlement from the same finished task without
         rerunning the model. Each effect is idempotent (stable reply id,
         guarded cancel, pause), so a retry never duplicates one.
+
+        One reply failure is terminal rather than retried: a sender that has
+        closed and admits nobody (a finished workflow or child) refuses the
+        reply with ``RecipientClosedError``, which no retry can change. That
+        run settles without a reply and leaves a local diagnostic instead.
         """
         run_task: Optional["asyncio.Task[TurnOutcomeDAO]"] = self._run_task
         row: Optional[ChannelMessageDAO] = self._running_row
@@ -625,11 +631,39 @@ class ChannelPoller:
         else:
             if outcome.status == "aborted":
                 self._paused_reason = "aborted"
-            await self._replies.write(request=row, outcome=outcome)
+            try:
+                await self._replies.write(request=row, outcome=outcome)
+            except RecipientClosedError as error:
+                self._log_reply_refused_by_closed_sender(request=row, error=error)
         self._run_task = None
         self._running_row = None
         self._running_row_started = False
         self._boundary_inbox.release(message_id=row.id)
+
+    def _log_reply_refused_by_closed_sender(
+        self, *, request: ChannelMessageDAO, error: RecipientClosedError
+    ) -> None:
+        """Record locally that a finished run's reply was refused by its closed sender.
+
+        WHAT: Writes one warning naming the request, its sender and the reply
+            id that was not stored; message contents are never logged.
+        WHO: ``_settle_finished_run``, at the reply step only.
+        WHEN: Once per run, when the reply write raised ``RecipientClosedError``;
+            settlement cleanup runs right after it.
+
+        Args:
+            request (ChannelMessageDAO): The prompt row whose reply was refused.
+            error (RecipientClosedError): The refusal raised by the gateway.
+        """
+        try:
+            log_warning(
+                msg=(
+                    f"channel reply dropped: sender {error.participant_id} of request {request.id} "
+                    f"is closed; reply {ReplyWriter.reply_id_for(request_id=request.id)} was not stored"
+                )
+            )
+        except Exception:  # noqa: BLE001 -- a failed diagnostic must not block settlement
+            pass
 
     def _finished_run_outcome(self, *, run_task: "asyncio.Task[TurnOutcomeDAO]") -> Optional[TurnOutcomeDAO]:
         """Return how a finished run task ended, without re-awaiting it.

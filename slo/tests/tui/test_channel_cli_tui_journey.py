@@ -57,7 +57,7 @@ async def _wait_for_poller(*, app: SloTUI, session: SloAgentSession) -> None:
 
 
 async def _assert_tui_answered(*, gateway: ChannelGateway, agent_id: UUID) -> None:
-    rows: list[ChannelMessageDAO] = await gateway.conversation(agent_session_id=agent_id)
+    rows: list[ChannelMessageDAO] = await gateway.list_conversation_messages(agent_session_id=agent_id)
     prompts: list[ChannelMessageDAO] = [row for row in rows if row.message_type == "prompt"]
     replies: list[ChannelMessageDAO] = [row for row in rows if row.message_type == "reply"]
     assert [row.message_contents for row in prompts] == ["summarise today's changes"]

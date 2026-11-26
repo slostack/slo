@@ -338,7 +338,7 @@ class TestScheduleExecuteChannelJourney:
 
         gateway: ChannelGateway = await ChannelGateway.default()
         try:
-            return await gateway.pending_inbound(recipient_id=UUID(session_id))
+            return await gateway.list_pending_inbound_messages(recipient_id=UUID(session_id))
         finally:
             await gateway.close()
 

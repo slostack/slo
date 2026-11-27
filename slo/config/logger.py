@@ -291,12 +291,12 @@ LOGGING_CONFIG: dict = {
         },
     },
     "root": {
-        "level": "DEBUG",
+        "level": cfg("LOG_LEVEL"),
         "handlers": ["console"],
     },
     "loggers": {
-        "slo": {"level": "DEBUG", "propagate": True},
-        "uvicorn": {"level": "DEBUG", "propagate": True},
+        "slo": {"level": "NOTSET", "propagate": True},
+        "uvicorn": {"level": "NOTSET", "propagate": True},
         "uvicorn.error": {"level": "INFO", "propagate": True},
         "uvicorn.access": {"level": "INFO", "propagate": True},
         "httpx": {"level": "INFO", "propagate": True},
@@ -319,9 +319,14 @@ def capture_exc(error: Exception) -> None:
     return None
 
 
-def log_debug(msg: str, **kwargs) -> None:
-    if cfg("ENV") != "prod":
-        log.debug(msg, stacklevel=2, extra=kwargs)
+def log_debug(msg: str, **kwargs: object) -> None:
+    """Emit safe debug metadata when the configured logger level permits it.
+
+    Args:
+        msg (str): Safe application diagnostic message.
+        **kwargs (object): Allowlisted structured context, never raw payloads.
+    """
+    log.debug(msg, stacklevel=2, extra=kwargs)
 
 
 def log_info(msg: str, **kwargs) -> None:

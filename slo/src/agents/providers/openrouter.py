@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import traceback
+from uuid import uuid4
 from contextvars import ContextVar
 from typing import Any, AsyncIterator, ClassVar, Iterator, Optional, Sequence, cast
 
@@ -21,7 +23,7 @@ from src.agents.model_catalog.dao import ModelCapabilitiesDAO
 from langchain_openai import ChatOpenAI
 from pydantic import Field, JsonValue
 
-from src.integrations.openrouter.exceptions import OpenRouterAPIError
+from src.integrations.openrouter.exceptions import OpenRouterAPIError, OpenRouterReasoningConflictDAO
 
 _OPENAI_SDK_LOGGER_NAME: str = "openai._base_client"
 _OPENROUTER_PRIVATE_REQUEST_LOG_DEPTH: ContextVar[int] = ContextVar(
@@ -319,7 +321,7 @@ class OpenRouterMessageCodec:
         """
         self.model_name = model_name
         self.details: list[dict[str, JsonValue]] = []
-        self.indexed: dict[int, dict[str, JsonValue]] = {}
+        self.indexed: dict[int, list[dict[str, JsonValue]]] = {}
         self.reasoning: Optional[str] = None
 
     def append(self, *, extension: ProviderMessageExtensionDAO) -> None:
@@ -345,41 +347,83 @@ class OpenRouterMessageCodec:
             self.details.append(validated_detail)
             return
         if type(index) is not int or index < 0:
-            raise OpenRouterAPIError(error_type="invalid_request")
-        target = self._indexed_target(index=index)
+            raise OpenRouterAPIError(
+                error_type="invalid_request", diagnostic_reason="reasoning_invalid_index"
+            )
+        target = self._indexed_target(index=index, detail=validated_detail)
         for key, value in validated_detail.items():
-            self._merge_field(target=target, key=key, value=value)
+            self._merge_field(target=target, key=key, value=value, incoming=validated_detail)
 
     @staticmethod
     def _validated_detail(*, detail: object) -> dict[str, JsonValue]:
         """Validate one opaque gateway detail as a JSON object before retaining it."""
         if not isinstance(detail, dict):
-            raise OpenRouterAPIError(error_type="invalid_request")
+            raise OpenRouterAPIError(
+                error_type="invalid_request", diagnostic_reason="reasoning_invalid_detail"
+            )
         try:
             return cast(dict[str, JsonValue], json.loads(json.dumps(detail, allow_nan=False)))
         except (TypeError, ValueError):
-            raise OpenRouterAPIError(error_type="invalid_request") from None
+            raise OpenRouterAPIError(
+                error_type="invalid_request", diagnostic_reason="reasoning_invalid_json"
+            ) from None
 
-    def _indexed_target(self, *, index: int) -> dict[str, JsonValue]:
-        """Return the stable accumulator mapping for one validated detail index."""
-        if index not in self.indexed:
-            self.indexed[index] = {}
-            self.details.append(self.indexed[index])
-        return self.indexed[index]
+    def _indexed_target(self, *, index: int, detail: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """Retain distinct documented variants without treating an index as globally unique.
+
+        OpenRouter's reasoning_details schema is a type-discriminated union.
+        Text and encrypted records can share an index (Gemini); they must not
+        overwrite each other. Only known distinct variants get separate slots:
+        absent/unknown types retain strict conflict handling rather than guessing.
+        IDs and other opaque fields remain stable metadata, not escape-hatch keys.
+        """
+        variants = ("reasoning.text", "reasoning.summary", "reasoning.encrypted")
+        indexed_details = self.indexed.setdefault(index, [])
+        if len(indexed_details) > 1 and "type" not in detail:
+            raise OpenRouterAPIError(
+                error_type="invalid_request", diagnostic_reason="reasoning_field_conflict"
+            )
+        for existing in indexed_details:
+            if existing.get("type") == detail.get("type"):
+                return existing
+            if existing.get("type") not in variants or detail.get("type") not in variants:
+                return existing
+        accumulated: dict[str, JsonValue] = {}
+        indexed_details.append(accumulated)
+        self.details.append(accumulated)
+        return accumulated
 
     @staticmethod
-    def _merge_field(*, target: dict[str, JsonValue], key: str, value: JsonValue) -> None:
+    def _merge_field(
+        *,
+        target: dict[str, JsonValue],
+        key: str,
+        value: JsonValue,
+        incoming: Optional[dict[str, JsonValue]] = None,
+    ) -> None:
         """Concatenate text fragments while requiring stable values to agree."""
         if key in {"text", "summary", "data"}:
             if not isinstance(value, str):
-                raise OpenRouterAPIError(error_type="invalid_request")
+                raise OpenRouterAPIError(
+                    error_type="invalid_request", diagnostic_reason="reasoning_invalid_fragment"
+                )
             existing: JsonValue | None = target.get(key)
             if existing is not None and not isinstance(existing, str):
-                raise OpenRouterAPIError(error_type="invalid_request")
+                raise OpenRouterAPIError(
+                    error_type="invalid_request", diagnostic_reason="reasoning_invalid_fragment"
+                )
             target[key] = (existing or "") + value
             return
         if key in target and target[key] != value:
-            raise OpenRouterAPIError(error_type="invalid_request")
+            raise OpenRouterAPIError(
+                error_type="invalid_request",
+                diagnostic_reason="reasoning_field_conflict",
+                reasoning_conflict=OpenRouterReasoningConflictDAO.build(
+                    field=key,
+                    existing=dict(target),
+                    incoming=dict(incoming) if incoming is not None else {key: value},
+                ),
+            )
         target[key] = value
 
     def build(self) -> ProviderMessageExtensionDAO:
@@ -400,9 +444,13 @@ class OpenRouterMessageCodec:
         try:
             encoded = json.dumps(extension.model_dump(), allow_nan=False, ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError, UnicodeError):
-            raise OpenRouterAPIError(error_type="invalid_request") from None
+            raise OpenRouterAPIError(
+                error_type="invalid_request", diagnostic_reason="reasoning_invalid_json"
+            ) from None
         if len(encoded) > 8 * 1024 * 1024:
-            raise OpenRouterAPIError(error_type="invalid_request")
+            raise OpenRouterAPIError(
+                error_type="invalid_request", diagnostic_reason="reasoning_metadata_too_large"
+            )
 
 
 class OpenRouterChatOpenAI(ChatOpenAI):
@@ -718,7 +766,9 @@ class OpenRouterChatOpenAI(ChatOpenAI):
             with self._private_request_log_redaction():
                 return super()._generate(*args, **kwargs)
         except Exception as error:
-            raise OpenRouterErrorNormalizer.normalize(error=error) from None
+            raise OpenRouterErrorNormalizer.diagnose(
+                error=error, operation="_generate", model_name=self.slo_model_name
+            ) from None
 
     async def _agenerate(self, *args: Any, **kwargs: Any) -> ChatResult:
         """Run one asynchronous request with private SDK request-option logging suppressed.
@@ -734,7 +784,9 @@ class OpenRouterChatOpenAI(ChatOpenAI):
             with self._private_request_log_redaction():
                 return await super()._agenerate(*args, **kwargs)
         except Exception as error:
-            raise OpenRouterErrorNormalizer.normalize(error=error) from None
+            raise OpenRouterErrorNormalizer.diagnose(
+                error=error, operation="_agenerate", model_name=self.slo_model_name
+            ) from None
 
     def _private_request_log_redaction(self) -> "_OpenRouterPrivateRequestLogScope":
         """Create the one-request OpenAI SDK logging redaction scope.
@@ -821,7 +873,12 @@ class OpenRouterChatOpenAI(ChatOpenAI):
                     yield chunk
             yield from self._final_extension_chunks()
         except Exception as error:
-            normalized = OpenRouterErrorNormalizer.normalize(error=error)
+            normalized = OpenRouterErrorNormalizer.diagnose(
+                error=error,
+                operation="_stream",
+                model_name=self.slo_model_name,
+                partial_output_committed=committed,
+            )
             normalized.partial_output_committed = committed
             raise normalized from None
         finally:
@@ -851,7 +908,12 @@ class OpenRouterChatOpenAI(ChatOpenAI):
             for chunk in self._final_extension_chunks():
                 yield chunk
         except Exception as error:
-            normalized = OpenRouterErrorNormalizer.normalize(error=error)
+            normalized = OpenRouterErrorNormalizer.diagnose(
+                error=error,
+                operation="_astream",
+                model_name=self.slo_model_name,
+                partial_output_committed=committed,
+            )
             normalized.partial_output_committed = committed
             raise normalized from None
         finally:
@@ -1162,6 +1224,64 @@ class OpenRouterChatOpenAI(ChatOpenAI):
 
 class OpenRouterErrorNormalizer:
     """Convert OpenRouter SDK and gateway error shapes to safe shared exceptions."""
+
+    @classmethod
+    def diagnose(
+        cls,
+        *,
+        error: BaseException,
+        operation: str,
+        model_name: str,
+        partial_output_committed: bool = False,
+    ) -> OpenRouterAPIError:
+        """Log safe original failure evidence before discarding the raw exception.
+
+        Stack locations include the failing converter/codec function but never
+        source lines, locals, exception messages, SDK bodies or response headers.
+        Explicit and implicit exception chains are bounded and cycle-safe.
+        The reference travels in the safe error text into terminal/session history.
+        """
+        normalized = cls.normalize(error=error)
+        if normalized.diagnostic_id is not None:
+            return normalized
+        diagnostic_id = uuid4().hex
+        exceptions: list[dict[str, object]] = []
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen and len(exceptions) < 8:
+            seen.add(id(current))
+            frames = [
+                {"file": frame.f_code.co_filename, "line": line, "function": frame.f_code.co_name}
+                for frame, line in traceback.walk_tb(current.__traceback__)
+            ][-32:]
+            exceptions.append(
+                {
+                    "type": f"{type(current).__module__}.{type(current).__qualname__}",
+                    "frames": frames,
+                }
+            )
+            current = current.__cause__ if current.__cause__ is not None else current.__context__
+        diagnostic = {
+            "diagnostic_id": diagnostic_id,
+            "operation": operation,
+            "model": model_name,
+            "partial_output_committed": partial_output_committed,
+            "status_code": normalized.status_code,
+            "error_type": normalized.error_type,
+            "diagnostic_reason": normalized.diagnostic_reason,
+            "reasoning_conflict": (
+                normalized.reasoning_conflict.model_dump()
+                if normalized.reasoning_conflict is not None
+                else None
+            ),
+            "limit_source": normalized.limit_source,
+            "retry_after_seconds": normalized.retry_after_seconds,
+            "exceptions": exceptions,
+        }
+        logging.getLogger(__name__).error("OpenRouter failure %s", json.dumps(diagnostic))
+        normalized.diagnostic_id = diagnostic_id
+        normalized.args = (f"{normalized.safe_message} Diagnostic ID: {diagnostic_id}",)
+        return normalized
 
     @classmethod
     def normalize(cls, *, error: BaseException) -> OpenRouterAPIError:

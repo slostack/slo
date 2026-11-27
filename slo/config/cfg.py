@@ -42,6 +42,7 @@ def is_staging() -> bool:
 APP_NAME = os.environ.get("SLO_APP_NAME", "slo")
 APP_DIR = os.environ.get("SLO_APP_DIR", None)
 LOG_FORMAT = os.environ.get("SLO_LOG_FORMAT", "json")
+LOG_LEVEL: str = os.environ.get("SLO_LOG_LEVEL", "INFO").strip().upper()
 
 # Provider keys
 ANTHROPIC_API_KEY = os.environ.get("SLO_ANTHROPIC_API_KEY", None)
@@ -357,6 +358,7 @@ __cfg__: dict[str, str | None] = {
     "MODEL_CATALOG_OVERRIDES_FILE": MODEL_CATALOG_OVERRIDES_FILE,
     "MAX_DETACHED_WORKFLOWS": str(MAX_DETACHED_WORKFLOWS),
     "LOG_FORMAT": LOG_FORMAT,
+    "LOG_LEVEL": LOG_LEVEL,
     "OAUTH_CALLBACK_HOST": OAUTH_CALLBACK_HOST,
     "OPENAI_API_KEY": OPENAI_API_KEY,
     "OPENROUTER_API_KEY": OPENROUTER_API_KEY,

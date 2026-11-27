@@ -350,7 +350,7 @@ class TestCredentialRedaction:
 class TestNoInboxImports:
     """O6 (static): ``WorkflowNotifier`` no longer uses the file inbox."""
 
-    async def test_notifier_module_has_no_history_inbox_import(self) -> None:
+    async def test_notifier_module_does_not_use_the_history_inbox(self) -> None:
         import inspect
 
         source: str = inspect.getsource(

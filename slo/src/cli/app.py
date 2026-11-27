@@ -11,7 +11,7 @@ from typer._click.core import Context as ClickContext
 
 from src.cli.channel_commands import channel_app
 from src.cli.plugin import plugin_app
-from src.cli.schedule.app import schedule_app
+from src.cli.schedule_commands import schedule_app
 from src.cli.typer_dispatch import TyperDispatch
 from src.cli.version import resolve_version
 

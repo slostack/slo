@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 from uuid import UUID, NAMESPACE_URL, uuid5
 
@@ -213,11 +212,6 @@ class ChannelPoller:
         agents and systems (a workflow that reported while the session was
         closed) never pause it (108.3 §6) — the same operator rule that
         admission and closure apply.
-
-        Then, before the first poll, a legacy file inbox left in the session's
-        history directory is imported once (108.6 section 5). It runs after
-        recovery, so the items it re-delivers (owed by the retired inbox,
-        never started by this session) never pause the poller.
         """
         if self._started:
             return
@@ -228,32 +222,8 @@ class ChannelPoller:
             durable_inbox=self._durable_inbox,
         )
         await self._recover_on_start()
-        await self._import_legacy_inbox()
         self._stopping = False
         self._task = asyncio.create_task(self._loop())
-
-    async def _import_legacy_inbox(self) -> None:
-        """Import the session's retired ``inbox/`` into the queue, when it has one (108.6).
-
-        Only a history-backed session has a session directory the retired
-        inbox could live in. An import failure is logged and never blocks the
-        poller: the importer is idempotent, so the next start retries it.
-        """
-        history_root: Optional[Path] = self._session.history_root
-        if not self._session.history_enabled or history_root is None:
-            return
-        # Imported here, not at module load: the importer reaches the
-        # scheduler's sender identity, whose package imports this module.
-        from src.channels.inbox_import import InboxImporter  # noqa: PLC0415
-
-        try:
-            await InboxImporter(
-                session_dir=history_root / self._session.session_id,
-                gateway=self._gateway,
-                agent_id=self._participant_id,
-            ).run()
-        except Exception as exc:  # noqa: BLE001 -- a legacy import must not block delivery
-            log_warning(msg=f"legacy inbox import failed; it is retried on the next start: {exc}")
 
     async def stop(self, *, reason: str) -> None:
         """Finish the current run, settle it, stop the loop, and close the agent.

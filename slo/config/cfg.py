@@ -99,7 +99,8 @@ PREFERENCES_FILE: Optional[str] = os.environ.get("SLO_PREFERENCES_FILE")
 PYENV_ROOT: Optional[str] = os.environ.get("PYENV_ROOT")
 PYTHON_VERSION: Optional[str] = os.environ.get("SLO_PYTHON_VERSION")
 
-# Schedules store root override
+# Schedules store root override. Since the V2 scheduler (111) the directory holds
+# the single `schedules.db` database; the name is kept for continuity.
 SCHEDULES_DIR: Optional[str] = os.environ.get("SLO_SCHEDULES_DIR")
 
 # Model catalog override file path override

@@ -1,9 +1,9 @@
 """Session ownership lease: which TUI process currently owns a session (108.6).
 
 The lease is a small ``owner.json`` file inside the session's history
-directory. It moved here from the retired file-inbox package: the scheduler
-still uses it to choose between "queue for the open TUI" (a channel prompt)
-and "run fresh headless", and the TUI still renews it while mounted.
+directory. It moved here from the retired file-inbox package: the mounted
+TUI renews it for the life of the app, so exactly one TUI runs the session's
+channel poller and receives scheduled prompts through the channel queue.
 """
 
 from __future__ import annotations
@@ -72,8 +72,8 @@ class SessionOwnershipLeaseStore:
         receives scheduled prompts through the channel queue (108.6).
     WHO: the mounted ``SloTUI`` acquires the lease at startup, renews it on a
         heartbeat interval for the life of the app, and releases it on
-        shutdown. The scheduler uses ``is_active`` to choose between queueing
-        a channel prompt for the open TUI and running a fresh headless turn.
+        shutdown, so a session with a live lease runs its queue in exactly
+        one window.
     WHEN/EXPIRY: each lease carries an ``expires_at`` (now + TTL). A TUI that
         crashes without releasing simply stops heartbeating, so its lease
         goes stale and expires — at which point another TUI may acquire the

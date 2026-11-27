@@ -10,11 +10,12 @@ from src.tui.components.chat_transcript.component import ChatTranscriptComponent
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from collections.abc import Iterator
 from textual.pilot import Pilot
+from uuid import UUID
 from src.agents.model_catalog.dao import ModelCatalogEntryDAO
 from src.auth.credential_dao import AuthType, ProviderName
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
@@ -36,10 +37,21 @@ from src.channels.dao import ChannelMessageDAO
 from src.channels.gateway import ChannelGateway
 from src.channels.repository import ChannelRepository
 from src.integrations.openrouter.client import OpenRouterAPIClient
-from src.scheduling.dao import OneShotTriggerDAO, ScheduleDefinitionDAO, ScheduleSessionPolicyDAO
-from src.scheduling.runtime.executor import ScheduleExecutor
-from src.scheduling.runtime.session_target_resolver import SessionTargetResolver
-from src.scheduling.store import ScheduleStore
+from src.schedules.dao import (
+    IntervalTriggerDAO,
+    NewScheduleDAO,
+    OneShotTriggerDAO,
+    ScheduleInvocationDAO,
+)
+from src.schedules.database import ScheduleDatabase
+from src.schedules.deliver_app_service import DeliverScheduleInvocationAppService
+from src.schedules.fresh_run import FreshRunInvoker, SubprocessFreshRunLauncher
+from src.schedules.invocation_repository import ScheduleInvocationRepository
+from src.schedules.repository import ScheduleRepository
+from src.schedules.service import ScheduleService
+from src.schedules.tick_app_service import ScheduleTickAppService
+from src.schedules.outcome_reconciler import InvocationOutcomeReconciler
+from src.schedules.channel_delivery import ScheduleChannelSender
 from src.tui.app import SloTUI
 
 
@@ -106,8 +118,6 @@ async def _wait_for_scheduled_turn(
     Returns:
         ChannelMessageDAO: The accepted scheduled row.
     """
-    from uuid import UUID
-
     for _ in range(600):
         await pilot.pause(delay=0.05)
         row = await gateway.get(message_id=UUID(str(message_id)))
@@ -118,12 +128,26 @@ async def _wait_for_scheduled_turn(
     raise AssertionError("mounted scheduled channel turn did not finish")
 
 
+class RecordingInvocationQueue:
+    """Test double recording tick enqueue calls; the deliver loop drains them."""
+
+    def __init__(self) -> None:
+        """Start with an empty call log."""
+        self.calls: list[tuple[UUID, UUID]] = []
+
+    async def enqueue_delivery(self, *, invocation_id: UUID, schedule_id: UUID) -> None:
+        """Record one enqueue call."""
+        self.calls.append((invocation_id, schedule_id))
+
+
 @pytest.mark.parametrize("gateway_failure", [False, True])
+@pytest.mark.parametrize("model_cwd", [False, True])
 async def test_active_schedule_channel_prompt_drives_mounted_prepared_openrouter_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     gateway_failure: bool,
+    model_cwd: bool,
     contained_writes: list[Path],
 ) -> None:
     """Queue via the active scheduler path, then consume it through the mounted session's poller."""
@@ -151,8 +175,6 @@ async def test_active_schedule_channel_prompt_drives_mounted_prepared_openrouter
     monkeypatch.setattr("src.agents.model_catalog.store._cfg", lambda *args, **kwargs: None)
     monkeypatch.setattr("src.agents.slo_agent.preferences.service._CFG_SLO_HOME", root)
     monkeypatch.setattr("src.agents.slo_agent.preferences.service._cfg", lambda *args, **kwargs: None)
-    monkeypatch.setattr("src.scheduling.store._CFG_SLO_HOME", root)
-    monkeypatch.setattr("src.scheduling.store._cfg", lambda *args, **kwargs: None)
 
     def responder(request: httpx.Request) -> httpx.Response:
         """Serve discovery and the two real SDK turns through only MockTransport."""
@@ -289,44 +311,90 @@ async def test_active_schedule_channel_prompt_drives_mounted_prepared_openrouter
                 async with app.run_test(size=(80, 24)) as pilot:
                     await pilot.pause()
                     assert await leases.is_active(session_id="scheduled-target")
-                    definition = ScheduleDefinitionDAO(
-                        schedule_id="scheduled-mounted",
-                        name="Scheduled mounted acceptance",
-                        name_key="scheduled-mounted-acceptance",
-                        trigger=OneShotTriggerDAO(run_at=datetime.now(tz=timezone.utc)),
-                        prompt="scheduled mounted prompt",
-                        cwd=str(root),
-                        model="openrouter:vendor/schedule-only",
-                        session_mode="continuous",
-                        session_policy=ScheduleSessionPolicyDAO(session_reference="scheduled-target"),
+                    schedules_db = ScheduleDatabase(db_path=schedules_root / "schedules.db")
+                    schedules_service = ScheduleService(
+                        database=schedules_db,
+                        schedules=ScheduleRepository(),
+                        invocations=ScheduleInvocationRepository(),
+                        session_history=history_store,
                     )
-                    assert definition.model != original_route, "scheduled and target routes must differ"
-                    ScheduleStore.create(definition=definition, initial_next_run_at=None)
+                    schedule_fields: dict[str, object] = {}
+                    if model_cwd:
+                        # D9: the schedule's model and cwd must never touch the
+                        # open session's route; they belong to fresh runs only.
+                        schedule_fields = {
+                            "model": "openrouter:vendor/schedule-only",
+                            "cwd": str(root),
+                        }
+                    created = await schedules_service.create(
+                        new_schedule=NewScheduleDAO(
+                            name="Scheduled mounted acceptance",
+                            prompt="scheduled mounted prompt",
+                            trigger=OneShotTriggerDAO(
+                                run_at=datetime.now(tz=timezone.utc) + timedelta(seconds=60)
+                            ),
+                            session_mode="continuous",
+                            session_reference="scheduled-target",
+                            **schedule_fields,  # type: ignore[arg-type]
+                        ),
+                        now=datetime.now(tz=timezone.utc),
+                    )
+                    assert created.session_reference == "scheduled-target"
+                    if model_cwd:
+                        assert created.model == "openrouter:vendor/schedule-only"
+                        assert created.cwd == str(root)
                     # The scheduler is another process in production: it reaches the
                     # same channels.db through its own gateway connection.
                     scheduler_gateway = ChannelGateway(repository=ChannelRepository(db_path=channels_db))
-                    executor = ScheduleExecutor(
-                        target_resolver=SessionTargetResolver(history_store=history_store),
-                        session_lease_store=leases,
-                        channel_gateway=scheduler_gateway,
+                    await scheduler_gateway.open()
+                    sender = ScheduleChannelSender(gateway=scheduler_gateway)
+                    reconciler = InvocationOutcomeReconciler(
+                        database=schedules_db,
+                        gateway=scheduler_gateway,
+                        invocations=ScheduleInvocationRepository(),
+                    )
+                    queue = RecordingInvocationQueue()
+                    tick = ScheduleTickAppService(
+                        database=schedules_db,
+                        schedules=ScheduleRepository(),
+                        schedule_service=schedules_service,
+                        invocations=ScheduleInvocationRepository(),
+                        queue=queue,
+                        reconciler=reconciler,
+                    )
+                    deliver = DeliverScheduleInvocationAppService(
+                        database=schedules_db,
+                        schedules=schedules_service,
+                        invocations=ScheduleInvocationRepository(),
+                        sender=sender,
+                        fresh_runs=FreshRunInvoker(launcher=SubprocessFreshRunLauncher()),
+                        now_provider=lambda: datetime.now(tz=timezone.utc),
                     )
                     try:
-                        assert await executor.execute(reference=definition.schedule_id) == 0
-                        report_path = next((schedules_root / definition.schedule_id / "runs").glob("*.json"))
-                        assert report_path.resolve().is_relative_to(root)
-                        report = json.loads(report_path.read_text(encoding="utf-8"))
-                        assert report["delivery_path"] == "session_channel"
-                        assert report["delivery_state"] == "queued"
+                        now = datetime.now(tz=timezone.utc)
+                        await schedules_service.trigger_now(reference=str(created.id), now=now)
+                        await tick.invoke(now=now, batch_limit=50)
+                        delivered: ScheduleInvocationDAO | None = None
+                        for invocation, _schedule_id in queue.calls:
+                            delivered = await deliver.invoke(invocation_id=invocation, now=now)
+                        assert delivered is not None
+                        assert delivered.status == "delivered"
+                        assert delivered.channel_message_id == delivered.id
                         assert not (history_root / "scheduled-target" / "inbox").exists()
                         accepted = await _wait_for_scheduled_turn(
-                            app=app, pilot=pilot, gateway=scheduler_gateway, message_id=report["run_id"]
+                            app=app,
+                            pilot=pilot,
+                            gateway=scheduler_gateway,
+                            message_id=str(delivered.id),
                         )
                     finally:
                         await scheduler_gateway.close()
+                        await schedules_db.close()
                     assert accepted.message_type == "prompt"
                     assert accepted.message_contents == "scheduled mounted prompt"
                     assert accepted.sender_name == "scheduler Scheduled mounted acceptance"
-                    # The schedule's own model route never replaces the open session's route.
+                    # The schedule's own model route never replaces the open session's route
+                    # (A17; and with model/cwd set on the schedule, the D9 assertion, LEG-A7).
                     assert session.active_model_name == original_route == route
                     transcript = app.query_one(ChatTranscriptComponent).logical_copy_text()
                     if gateway_failure:
@@ -370,9 +438,6 @@ async def test_active_schedule_channel_prompt_drives_mounted_prepared_openrouter
     expected = {
         history_root / "scheduled-target/session.json": route,
         history_root / "scheduled-target/transcript.md": "scheduled acceptance tool output",
-        schedules_root / "scheduled-mounted/schedule.md": "openrouter:vendor/schedule-only",
-        schedules_root / "scheduled-mounted/state.json": "session_channel",
-        report_path: "queued",
         root / "global/model_catalog_cache.v2.json": "vendor/scheduled-mounted",
     }
     for path, ordinary in expected.items():
@@ -387,16 +452,18 @@ async def test_active_schedule_channel_prompt_drives_mounted_prepared_openrouter
     assert private_reasoning not in public
     for path in root.rglob("*"):
         assert path.resolve().is_relative_to(root)
-        if path.is_file() and path.name.startswith("channels.db"):
-            # The SQLite queue (and its WAL) is binary: scan its raw bytes.
-            data = path.read_bytes()
-            assert raw_sentinel.encode() not in data
-            assert private_reasoning.encode() not in data
+        if not path.is_file():
             continue
-        if path.is_file():
-            contents = path.read_text(encoding="utf-8")
-            assert raw_sentinel not in contents
-            if path.name != "events.jsonl":
-                assert private_reasoning not in contents
-            public += contents
+        data = path.read_bytes()
+        # Binary files (SQLite queues, WAL files, locks) can't be decoded as
+        # UTF-8; scan their raw bytes so the containment assertions still hold.
+        assert raw_sentinel.encode() not in data
+        if path.name != "events.jsonl":
+            assert private_reasoning.encode() not in data
+        if path.name.startswith("channels.db"):
+            continue
+        try:
+            public += data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
     assert key_a not in public and key_b not in public and raw_sentinel not in public

@@ -411,8 +411,7 @@ drops the review and completion-check steps.
 |---|---|
 | [`tui-readme`](../../tui/tui-readme/SKILL.md) | Orientation for the Textual TUI family — read first |
 | [`build-textual-tuis`](../../tui/build-textual-tuis/SKILL.md) | Textual TUIs with explicit app/router/renderer/widget boundaries |
-| [`tui-scheduled-operations`](../../tui/tui-scheduled-operations/SKILL.md) | Operate scheduled tasks from an interactive TUI session |
-| [`tui-scheduled-workflows`](../../tui/tui-scheduled-workflows/SKILL.md) | Supervise dynamic workflows, recover stalled orchestrators, clean up monitors |
+| [`schedule-operations`](../../cli/schedule-operations/SKILL.md) | Create, list, show, edit, trigger, start, stop, delete and report Slo schedules through the `slo schedule` CLI |
 | [`slodiff`](../../tui/slodiff/SKILL.md) | Show the git diff (HEAD vs worktree) for one file as structured before/after content |
 
 ## Integration Tests

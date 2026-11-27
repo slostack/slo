@@ -14,6 +14,8 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
+from tests.poetry_archive import build_archives
+
 from src.agents.slo_agent.orchestrator.launch_tool import _build_argv
 from src.agents.slo_agent.orchestrator.relaunch import WorkflowRelauncher
 from src.agents.slo_agent.orchestrator.spawn_env import build_headless_child_env
@@ -58,14 +60,7 @@ def _install_checkout(*, root: Path, temporary: Path) -> Path:
         shutil.copytree(src=root / name, dst=source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("pyproject.toml", "README.md", "install.sh"):
         shutil.copyfile(src=root / name, dst=source / name)
-    subprocess.run(
-        args=[sys.executable, "-c", "from poetry.core.masonry.api import build_wheel; build_wheel('dist')"],
-        cwd=source,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    build_archives(source=source, formats=["wheel"], timeout=60)
     environment: Path = temporary / "venv"
     venv.EnvBuilder(system_site_packages=True, with_pip=False).create(env_dir=environment)
     interpreter: Path = environment / "bin" / "python"

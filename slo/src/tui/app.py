@@ -1422,8 +1422,9 @@ class SloTUI(App):
         The ownership lease (``owner.json``) and the durable workflow handles
         live in the session's history tree, so only a session with BOTH
         ``history_enabled`` set to ``True`` AND an on-disk ``Path`` history
-        root holds a lease the scheduler can see, or gets durable workflow
-        launch effects. Channel delivery itself does not depend on history.
+        root holds a lease that marks its owning TUI window, or gets durable
+        workflow launch effects. Channel delivery itself does not depend on
+        history.
 
         Returns:
             bool: True when history is enabled and rooted on disk.
@@ -1878,8 +1879,8 @@ class SloTUI(App):
             exclusive ``owner.json`` lease and published its heartbeat, so two
             TUIs never run the same row; a session another live TUI owns starts
             no poller. When the poller fails to start, the lease claim is
-            unwound (heartbeat stopped, lease released) so the scheduler stops
-            treating this window as the session's live queue owner.
+            unwound (heartbeat stopped, lease released) so the session is not
+            left owned by a TUI window that runs no queue.
         WHO: ``_finish_replacement_runtime``, for the initial mount and every
             replacement, after session delivery initialization.
 

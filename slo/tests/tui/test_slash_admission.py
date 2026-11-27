@@ -5,7 +5,9 @@ import pytest
 from src.tui.slash_router import SlashRouter
 
 
-@pytest.mark.parametrize("token", ["auth", "help", "quit", "exit", "q", "clear", "model", "code"])
+@pytest.mark.parametrize(
+    "token", ["auth", "help", "quit", "exit", "q", "clear", "model", "code", "schedules"]
+)
 def test_preparing_accepts_exact_existing_allowlist(token: str) -> None:
     """Preparation permits only the documented raw tokens, including arguments."""
     admission = SlashRouter.admit(line=f"/{token} argument", preparation_status="pending")

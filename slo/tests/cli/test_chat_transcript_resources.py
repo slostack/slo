@@ -10,6 +10,8 @@ import sys
 import tarfile
 import zipfile
 
+from tests.poetry_archive import build_archives
+
 
 def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Path) -> None:
     """Poetry archives retain CSS, and isolated import resolves extracted source only."""
@@ -20,18 +22,7 @@ def test_archives_contain_exact_component_css_and_extracted_import(tmp_path: Pat
         shutil.copytree(src=root / name, dst=source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("pyproject.toml", "README.md", "install.sh"):
         shutil.copyfile(src=root / name, dst=source / name)
-    subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from poetry.core.masonry.api import build_wheel, build_sdist; "
-            "build_wheel('dist'); build_sdist('dist')",
-        ],
-        cwd=source,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    build_archives(source=source, formats=["wheel", "sdist"])
     resources = (
         "src/tui/components/chat_transcript/css.tcss",
         "src/tui/components/workflow_progress/css.tcss",

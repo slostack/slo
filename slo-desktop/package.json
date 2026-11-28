@@ -1,0 +1,19 @@
+{
+  "name": "slo-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:web": "vite src/renderer --host 0.0.0.0 --port 9911 --strictPort",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "electron": "45.5.0",
+    "electron-vite": "6.0.0",
+    "typescript": "7.0.2"
+  }
+}

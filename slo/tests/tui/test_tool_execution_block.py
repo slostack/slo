@@ -132,7 +132,9 @@ class TestToolExecutionBlock:
         app: SloTUI = SloTUI(session=session)
 
         async with app.run_test() as pilot:
-            block: ToolExecutionBlock = await app.query_one(ChatTranscriptComponent).mount_tool_execution_block(
+            block: ToolExecutionBlock = await app.query_one(
+                ChatTranscriptComponent
+            ).mount_tool_execution_block(
                 tool_call_id="call_1",
                 tool_name="grep",
             )
@@ -140,7 +142,9 @@ class TestToolExecutionBlock:
             assert str(block._glyph.render()) == "◠"
             assert block._glyph.styles.color.hex == app.get_css_variables()["accent"]
             assert block._headline.styles.text_style.bold is not True
-            assert block.styles.background.hex.lower() == app.current_theme.surface.lower()
+            surface: str | None = app.current_theme.surface
+            assert surface is not None
+            assert block.styles.background.hex.lower() == surface.lower()
 
             block.update_result(tool_name="grep", output="first\nsecond\nthird")
             await pilot.pause()

@@ -74,11 +74,7 @@ def _contrast_ratio(*, foreground: str, background: str) -> float:
         return channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
 
     def _luminance(value: str) -> float:
-        return (
-            0.2126 * _channel(value[1:3])
-            + 0.7152 * _channel(value[3:5])
-            + 0.0722 * _channel(value[5:7])
-        )
+        return 0.2126 * _channel(value[1:3]) + 0.7152 * _channel(value[3:5]) + 0.0722 * _channel(value[5:7])
 
     first: float = _luminance(foreground)
     second: float = _luminance(background)
@@ -119,7 +115,10 @@ class TestSloDefaultThemeTokens:
 
         app: SloTUI = SloTUI(session=_build_theme_test_session())
         assert app.DEFAULT_THEME == "slo-dark"
-        assert {name for name in app.available_themes if name.startswith("slo-")} == {"slo-dark", "slo-default"}
+        assert {name for name in app.available_themes if name.startswith("slo-")} == {
+            "slo-dark",
+            "slo-default",
+        }
 
     def test_button_and_selection_tokens_are_readable(self) -> None:
         assert SLO_DEFAULT_THEME.variables["button-color-foreground"] == "#1a1b26"
@@ -172,10 +171,13 @@ class TestSloDefaultThemeTokens:
             ("auth-selection-foreground", "auth-selection-background"),
         )
         for foreground, background in pairs:
-            assert _contrast_ratio(
-                foreground=SLO_DEFAULT_THEME.variables[foreground],
-                background=SLO_DEFAULT_THEME.variables[background],
-            ) >= 4.5
+            assert (
+                _contrast_ratio(
+                    foreground=SLO_DEFAULT_THEME.variables[foreground],
+                    background=SLO_DEFAULT_THEME.variables[background],
+                )
+                >= 4.5
+            )
 
 
 class _AuthenticationSelectionHarness(App):

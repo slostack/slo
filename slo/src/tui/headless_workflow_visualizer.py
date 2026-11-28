@@ -64,6 +64,29 @@ if TYPE_CHECKING:
 
 __all__ = ["HeadlessWorkflowVisualizer"]
 
+
+def _required_theme_color(*, color: Optional[str], role: str) -> str:
+    """Return a semantic theme color the visualizer cannot render without.
+
+    Args:
+        color (Optional[str]): Color declared by ``SLO_DEFAULT_THEME``.
+        role (str): Semantic role name used in the failure message.
+
+    Returns:
+        str: The declared color.
+
+    Raises:
+        RuntimeError: If the default theme does not declare the role.
+    """
+    if color is None:
+        raise RuntimeError(f"SLO_DEFAULT_THEME must declare a {role} color")
+    return color
+
+
+_ACCENT_COLOR: str = _required_theme_color(color=SLO_DEFAULT_THEME.accent, role="accent")
+_SUCCESS_COLOR: str = _required_theme_color(color=SLO_DEFAULT_THEME.success, role="success")
+_ERROR_COLOR: str = _required_theme_color(color=SLO_DEFAULT_THEME.error, role="error")
+
 _STATUS_ICON: dict[str, str] = {
     "running": "◍",
     "completed": "●",
@@ -73,10 +96,10 @@ _STATUS_ICON: dict[str, str] = {
 }
 
 _STATUS_STYLE: dict[str, str] = {
-    "running": SLO_DEFAULT_THEME.accent,
-    "completed": SLO_DEFAULT_THEME.success,
-    "failed": SLO_DEFAULT_THEME.error,
-    "aborted": SLO_DEFAULT_THEME.error,
+    "running": _ACCENT_COLOR,
+    "completed": _SUCCESS_COLOR,
+    "failed": _ERROR_COLOR,
+    "aborted": _ERROR_COLOR,
     "pending": SLO_DEFAULT_THEME.variables["text-dim"],
 }
 
@@ -362,16 +385,14 @@ class HeadlessWorkflowVisualizer(App[None]):
             summary.update("Loading workflow …")
             return
         state_glyph: str = "●" if self._workflow_data.is_complete else "◍"
-        state_color: str = SLO_DEFAULT_THEME.success if self._workflow_data.is_complete else SLO_DEFAULT_THEME.accent
+        state_color: str = _SUCCESS_COLOR if self._workflow_data.is_complete else _ACCENT_COLOR
         state_text: Text = Text(state_glyph, style=state_color)
         state_text.append(
             " complete" if self._workflow_data.is_complete else " running",
             style=SLO_DEFAULT_THEME.variables["text-muted"],
         )
         if self._workflow_data.notice is not None:
-            summary.update(
-                Text.assemble(state_text, "   ", (self._workflow_data.notice, SLO_DEFAULT_THEME.error))
-            )
+            summary.update(Text.assemble(state_text, "   ", (self._workflow_data.notice, _ERROR_COLOR)))
             return
         counts: dict[str, int] = self._status_counts()
         total: int = len(self._workflow_data.children)
@@ -380,13 +401,13 @@ class HeadlessWorkflowVisualizer(App[None]):
         summary_parts.append("   ")
         summary_parts.append(f"{total} sub-agents", style=SLO_DEFAULT_THEME.variables["text-muted"])
         summary_parts.append("   ")
-        summary_parts.append("◍", style=SLO_DEFAULT_THEME.accent)
+        summary_parts.append("◍", style=_ACCENT_COLOR)
         summary_parts.append(f" {counts['running']}", style=SLO_DEFAULT_THEME.variables["text-dim"])
         summary_parts.append("   ")
-        summary_parts.append("●", style=SLO_DEFAULT_THEME.success)
+        summary_parts.append("●", style=_SUCCESS_COLOR)
         summary_parts.append(f" {counts['completed']}", style=SLO_DEFAULT_THEME.variables["text-dim"])
         summary_parts.append("   ")
-        summary_parts.append("✕", style=SLO_DEFAULT_THEME.error)
+        summary_parts.append("✕", style=_ERROR_COLOR)
         summary_parts.append(
             f" {counts['failed'] + counts['aborted']}",
             style=SLO_DEFAULT_THEME.variables["text-dim"],
@@ -443,9 +464,7 @@ class HeadlessWorkflowVisualizer(App[None]):
                 ListItem(Label(self._orchestrator_label(node=self._workflow_data.orchestrator)))
             )
         if self._workflow_data.notice is not None:
-            await list_view.append(
-                ListItem(Label(Text(self._workflow_data.notice, style=SLO_DEFAULT_THEME.error)))
-            )
+            await list_view.append(ListItem(Label(Text(self._workflow_data.notice, style=_ERROR_COLOR))))
         elif not self._workflow_data.children and self._workflow_data.orchestrator is None:
             await list_view.append(
                 ListItem(Label(Text("No sub-agents found", style=SLO_DEFAULT_THEME.variables["text-dim"])))
@@ -461,7 +480,10 @@ class HeadlessWorkflowVisualizer(App[None]):
         detail_log.clear()
         if not self._workflow_data:
             detail_log.write(
-                Text("Select a sub-agent to inspect its transcript.", style=SLO_DEFAULT_THEME.variables["text-dim"])
+                Text(
+                    "Select a sub-agent to inspect its transcript.",
+                    style=SLO_DEFAULT_THEME.variables["text-dim"],
+                )
             )
             return
         orchestrator: Optional[OrchestratorNodeDAO] = self._current_orchestrator()

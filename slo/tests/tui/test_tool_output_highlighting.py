@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage
-from textual.content import Content
+from textual.content import Content, Span
 
 from src.agents.providers.faux import FauxChatModel
 from src.agents.slo_agent.agent import SloAgent
@@ -22,6 +22,33 @@ from src.tui.widgets.tool_output_highlighter import (
     detect_output_language,
     language_for_path,
 )
+
+
+def _span_role(*, span: Span) -> str:
+    """Return the semantic role name a highlighter span carries.
+
+    Args:
+        span (Span): Span produced by ``code_spans``.
+
+    Returns:
+        str: The role name; highlighter spans never carry resolved ``Style`` objects.
+    """
+    assert isinstance(span.style, str)
+    return span.style
+
+
+def _expanded_content(*, block: ToolExecutionBlock) -> Content:
+    """Return the expanded body as the literal ``Content`` the block renders.
+
+    Args:
+        block (ToolExecutionBlock): Mounted tool block.
+
+    Returns:
+        Content: Expanded body content.
+    """
+    content = block._expanded_body.content
+    assert isinstance(content, Content)
+    return content
 
 
 class TestLanguageDetection:
@@ -46,7 +73,10 @@ class TestLanguageDetection:
 
     def test_write_output_is_plain(self) -> None:
         """``write`` returns a status line, never file content."""
-        assert detect_output_language(tool_name="write", tool_input={"path": "a.py"}, output="Wrote 3 bytes") is None
+        assert (
+            detect_output_language(tool_name="write", tool_input={"path": "a.py"}, output="Wrote 3 bytes")
+            is None
+        )
 
     def test_grep_uses_location_highlighting(self) -> None:
         """``grep`` match lines get their ``path:line:`` prefix highlighted."""
@@ -76,14 +106,16 @@ class TestCodeSpans:
         spans = code_spans(text=text, language="python", offset=10)
         by_role: dict[str, list[str]] = {}
         for span in spans:
-            by_role.setdefault(span.style, []).append(text[span.start - 10 : span.end - 10])
+            by_role.setdefault(_span_role(span=span), []).append(text[span.start - 10 : span.end - 10])
         assert "def" in by_role["markdown-code-keyword"]
         assert '"hi"' in "".join(by_role["markdown-code-string"])
 
     def test_diff_lines_get_line_roles(self) -> None:
         """Diff output colours added/removed/hunk lines."""
         text: str = "@@ -1 +1 @@\n-old\n+new\n"
-        roles: dict[str, str] = {text[s.start : s.end]: s.style for s in code_spans(text=text, language="diff")}
+        roles: dict[str, str] = {
+            text[s.start : s.end]: _span_role(span=s) for s in code_spans(text=text, language="diff")
+        }
         assert roles["-old"] == "markdown-code-diff-removed"
         assert roles["+new"] == "markdown-code-diff-added"
         assert roles["@@ -1 +1 @@"] == "markdown-code-diff-hunk"
@@ -161,7 +193,7 @@ class TestToolExecutionBlockHighlighting:
             block.update_result(tool_name="read", output="Error: file not found: a.py")
             await pilot.pause()
 
-            content = block._expanded_body.content
+            content = _expanded_content(block=block)
             text: str = str(content)
             output_start: int = text.index("output:\n")
             assert all(span.end <= output_start for span in content.spans)
@@ -176,10 +208,10 @@ class TestToolExecutionBlockHighlighting:
             block.update_tool_call(tool_name="read", tool_input={"path": "a.py"})
             block.update_result(tool_name="read", output="import os\n")
             await pilot.pause()
-            before = [repr(s.style) for s in block._expanded_body.content.spans]
+            before = [repr(s.style) for s in _expanded_content(block=block).spans]
 
             app.theme = SLO_DEFAULT_THEME.name if app.theme == SLO_DARK_THEME.name else SLO_DARK_THEME.name
             await pilot.pause()
-            after = [repr(s.style) for s in block._expanded_body.content.spans]
+            after = [repr(s.style) for s in _expanded_content(block=block).spans]
 
             assert before and after and before != after

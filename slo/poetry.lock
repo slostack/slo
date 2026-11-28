@@ -655,6 +655,17 @@ files = [
 markers = {main = "platform_system == \"Windows\"", dev = "platform_system == \"Windows\" or sys_platform == \"win32\""}
 
 [[package]]
+name = "cronsim"
+version = "2.9"
+description = "Cron expression parser and evaluator"
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+files = [
+    {file = "cronsim-2.9-py3-none-any.whl", hash = "sha256:fcee664c9a206ac06913d8fc4b41b5fc1bd9c38b8242b0d5cb14d21f142b8bda"},
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.2"
 description = "cryptography is a package which provides cryptographic recipes and primitives to Python developers."
@@ -987,6 +998,21 @@ groups = ["main"]
 files = [
     {file = "h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"},
     {file = "h11-0.16.0.tar.gz", hash = "sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1"},
+]
+
+[[package]]
+name = "honker"
+version = "0.5.0"
+description = "Durable queues, streams, pub/sub, and cron scheduler on SQLite. One file, zero servers."
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+files = [
+    {file = "honker-0.5.0-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:190a827be3485af2aef66320adbbcba2a3595a03e6c4afe3bcd7f26e3961de82"},
+    {file = "honker-0.5.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:e7d7a1c566d6f9b43abe2f17115d7859b57e922dccd73f2edf16d07fd77d85bd"},
+    {file = "honker-0.5.0-cp311-abi3-manylinux_2_38_aarch64.whl", hash = "sha256:ed99bd11a5dc47714b5484c8ba3dc12e10b6a871c610acff3488da822f3a34a4"},
+    {file = "honker-0.5.0-cp311-abi3-manylinux_2_38_x86_64.whl", hash = "sha256:c61cc173db699f5fbbc09f1821069416e8874075e16ee571d76c75a7be96e37e"},
+    {file = "honker-0.5.0-cp311-abi3-win_amd64.whl", hash = "sha256:62e78378b4212ad9c04a4dd51b5ca57ff3d4e259271170a88745db60c3179602"},
 ]
 
 [[package]]
@@ -4315,4 +4341,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.12"
-content-hash = "ae7f132b4b6c6aeba6c92f11dd8a6877424c86a287d8b81e2aa750b0b82db253"
+content-hash = "bbc856a1a4f151bb91be8f76250b8aaaeab4fa518217ec4997b1289df4a15cab"

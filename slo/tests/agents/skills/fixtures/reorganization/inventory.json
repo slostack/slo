@@ -4931,7 +4931,7 @@
     ],
     "description": "Operate generic scheduled tasks from an interactive TUI session, including delayed jobs, recurring in-session updates, and stop-on-request schedules.",
     "destination": "skills/tui/tui-scheduled-operations/SKILL.md",
-    "status": "retained"
+    "status": "removed"
   },
   {
     "tier": "bundled",
@@ -4962,7 +4962,7 @@
     ],
     "description": "Operate the scheduler from an interactive TUI session to supervise dynamic workflows, post recurring progress updates, recover stalled orchestrators, and clean up monitor schedules.",
     "destination": "skills/tui/tui-scheduled-workflows/SKILL.md",
-    "status": "retained"
+    "status": "removed"
   },
   {
     "tier": "bundled",

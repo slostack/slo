@@ -418,7 +418,9 @@ class ToolExecutionBlock(Vertical):
         self._arguments.update(self._argument_preview())
         self._state.update(state)
         self._glyph.update("✕" if self.has_class("-error") else "●" if self.has_class("-done") else "◠")
-        self._glyph.set_class(not self.has_class("-error") and not self.has_class("-done"), "tool-call-pending")
+        self._glyph.set_class(
+            not self.has_class("-error") and not self.has_class("-done"), "tool-call-pending"
+        )
         self._chevron.update("⌄" if self._expanded else "›")
 
     def _argument_preview(self) -> str:

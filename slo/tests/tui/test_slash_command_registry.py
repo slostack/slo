@@ -46,6 +46,7 @@ class TestSlashCommandRegistry:
             "steer",
             "auth",
             "workflows",
+            "schedules",
             "model",
             "reasoning",
             "theme",

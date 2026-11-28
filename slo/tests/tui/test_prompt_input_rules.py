@@ -122,9 +122,9 @@ class PaintedPromptFrame:
             if segment.text.strip()
         }
         assert top_colours == {expected_top}, f"top rule colours {top_colours!r} != {expected_top!r}"
-        assert bottom_colours == {expected_bottom}, (
-            f"bottom rule colours {bottom_colours!r} != {expected_bottom!r}"
-        )
+        assert bottom_colours == {
+            expected_bottom
+        }, f"bottom rule colours {bottom_colours!r} != {expected_bottom!r}"
 
 
 def _build_session(*, workdir: Path) -> SloAgentSession:

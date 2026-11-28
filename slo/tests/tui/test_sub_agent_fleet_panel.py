@@ -188,7 +188,9 @@ async def test_selected_row_uses_theme_band_and_stays_readable(theme_name: str, 
         statuses: list[str] = ["running", "completed", "failed", "aborted", "pending"]
         await session_list.extend(
             [
-                SubAgentFleetRow(row=_row(session_id=f"child-{i}", task_text="t", task_summary="Audit", status=s))
+                SubAgentFleetRow(
+                    row=_row(session_id=f"child-{i}", task_text="t", task_summary="Audit", status=s)
+                )
                 for i, s in enumerate(statuses)
             ]
         )
@@ -309,7 +311,9 @@ class TestSubAgentFleetRow:
 
         async with _RowHost(rows=[row]).run_test(size=(220, 10)) as pilot:
             await pilot.pause()
-            assert _painted(app=pilot.app, widget=row) == "◍ running    child-1: Review multilingual task detail"
+            assert (
+                _painted(app=pilot.app, widget=row) == "◍ running    child-1: Review multilingual task detail"
+            )
 
     @pytest.mark.asyncio
     async def test_apply_row_updates_label_in_place(self) -> None:

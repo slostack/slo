@@ -2096,22 +2096,19 @@ Slo ships with 100+ vendored skills under `skills/`. Starting with
 feature-29, users can add their **own** skills and workflows without
 touching the vendored tree.
 
-One of the vendored TUI skills is
-`skills/tui/tui-scheduled-workflows/SKILL.md`, which tells an interactive
-session how to use `slo schedule ...` to supervise dynamic workflows,
-post recurring progress updates back into the live TUI, and clean up the
-monitor schedule when the workflow ends.
-
-Another is `skills/tui/tui-scheduled-operations/SKILL.md`, which covers
-generic scheduled actions from the TUI such as repeated reminders,
-interval-based in-session output, delayed follow-ups, and schedules that
-run until the user explicitly stops them.
+One of the vendored CLI skills is
+`skills/cli/schedule-operations/SKILL.md`, which tells an interactive
+session how to use `slo schedule ...` to create, edit, trigger, start,
+stop, delete, inspect and report on scheduled prompts, and how to confirm
+with `slo schedule status` that the automatically started shared worker is
+healthy (the foreground `slo schedule worker` is for administration and
+debugging only).
 
 ### The vendored skill library
 
 Skills are vendored convention prompts that the agent reads on demand.
 
-- **Location:** `skills/<group>/<slug>/SKILL.md` — 187 skills across 14 groups:
+- **Location:** `skills/<group>/<slug>/SKILL.md` — 186 skills across 14 groups:
   `orientation/`, `design-and-analysis/`, `coding/`, `git-ops/`, `cli/`,
   `tui/`, `integration-tests/`, `frontend-vue/`, `presentation/`,
   `user-content/`, `engineering/`, `languages/`, `samples/`, and
@@ -2177,15 +2174,15 @@ such as "in the background" / "without blocking". A detach-qualified request
 routes to exactly one `launch_workflow` call; a detached orchestrator never
 calls `launch_workflow`.
 
-**Scheduled supervision from the TUI.** Load
-`skills/tui/tui-scheduled-workflows/SKILL.md` when a dynamic workflow
-launched from a TUI session also needs recurring monitoring or progress
-posted back to that session (continuous schedules, session-inbox delivery,
-stalled-orchestrator recovery, cleanup on completion or abort). Load
-`skills/tui/tui-scheduled-operations/SKILL.md` for generic scheduled
-behaviour (reminders, periodic checks, "print the time every 5 seconds until
-I ask you to stop"): interval, cron and one-shot schedules, targeting the
-live TUI session, and stopping on request.
+**Scheduled prompts from the TUI.** Load
+`skills/cli/schedule-operations/SKILL.md` when a session needs a recurring
+or delayed prompt (reminders, periodic checks, "print the time every 5
+seconds until I ask you to stop"): interval, cron and one-shot schedules,
+delivered to the live TUI session through the channel queue while it is
+mounted (or kept in its durable inbox until it reopens), run fresh headless
+when no session reference is set, and stopped on request. Creating the
+schedule starts the shared worker automatically; the skill verifies it with
+`slo schedule status`.
 
 **Orchestrator timeouts for slow test suites.** `spawn_sub_agents` is
 **blocking**: while a child runs, the orchestrator's own LangGraph stream
@@ -3385,7 +3382,7 @@ restart; metadata defaults to compact, with explicit detail opt-in.
 | `tui/visualizer_launcher.py::launch_async` | One destination decision; platform thread joined before cancellation escapes; Herdr delegates to session, never fallback after failure |
 | `tui/workflows/service.py`, `renderer.py` | One raw-result parser/service → typed effects → schedule callback; one shared typed outcome renderer; duplicate renderer parser/old launch callable removed |
 | `orchestrator/context_reader.py` | Single `OrchestratorContextReader.load` parser, shared by eligibility and `tui/workflow_visualizer_loader.py`; duplicate loader parser removed, no reverse TUI import |
-| `scheduling/runtime/subprocess_runner.py` | Copies inherited environment excluding exactly case-insensitive `HERDR_` prefix; child/detached/relaunch allowlist ownership unchanged |
+| `schedules/fresh_run.py` | Spawns one headless child per fresh invocation, copying the inherited environment minus case-insensitive `HERDR_` keys; allowlist ownership unchanged |
 
 Public reports contain fixed vocabulary and numeric telemetry only, not arbitrary
 model/provider/session labels, conversation, credentials, errors or private paths.
@@ -3497,9 +3494,10 @@ headless execution, `HeadlessRunner` retains run ownership (`auto_run=False`);
 its poller services boundary input and notes/notices. After a successful,
 un-aborted main run, the runner drains normal follow-up prompts up to its cap,
 then closes the participant. Children do not run follow-up turns.
-`ScheduleChannelSender` also writes through the gateway. `InboxImporter`
-idempotently imports the retired session file inbox on startup; it is a
-migration bridge, not a second live delivery transport.
+`ScheduleChannelSender` also writes through the gateway: each schedule
+sends its prompt as its own system sender on the shared ``scheduler``
+channel, and a closed interactive session keeps the row in its durable
+inbox until the session reopens (§ Scheduled prompts below).
 
 **Closure and restart.** Interactive agents register `durable_inbox=True`.
 Closing one atomically marks it closed and cancels pending operator-origin
@@ -3512,8 +3510,8 @@ not a guarantee that a recipient is currently running.
 On restart, the poller accepts pending rows whose `channel_message_id` already
 appears in session history. Remaining operator rows pause automatic runs until
 `/queue resume`; agent/system rows alone do not trigger that recovery pause.
-Legacy inbox import happens afterward. This prevents replay of known input;
-it is not reconstruction of an answer lost after acceptance.
+This prevents replay of known input; it is not reconstruction of an answer
+lost after acceptance.
 
 **Repository lifecycle, recovery and retention.** Each repository owns one
 connection and a dedicated single-worker executor, keeping SQLite work off the
@@ -3547,6 +3545,101 @@ if settlement cannot complete before shutdown. The proposed delivery-failures
 retry design is **not implemented** here; do not infer durable retry jobs,
 restart recovery of failed reply writes, or exactly-once platform delivery from
 message-ID deduplication.
+
+### 9.9 Scheduled prompts — `slo schedule`
+
+Schedules are SQLite rows under `$SLO_HOME/schedules/schedules.db` (one
+`BEGIN IMMEDIATE` transaction per command), fired by one shared Honker
+worker process per schedules directory, and delivered through the channel
+queue (§9.8).
+
+**Operational on create.** `slo schedule add` and `slo schedule start` save
+the schedule first, then start or reuse the shared worker and wait (up to
+30 s) until it answers a fresh health challenge with a ready engine. Success
+prints the schedule, its next due time and `Worker: healthy`; `--json` adds
+`"operational": true` and a `worker` object to the schedule fields. The worker
+runs detached in its own session with the creating command's own interpreter
+and code, so closing the terminal does not stop it; later commands from any
+terminal or session reuse it, and concurrent creators never start a second
+one. If the worker cannot be started or proved healthy, the command prints
+`schedule saved, but not operational: <cause>` with the saved id on stderr
+and exits 1 (`--json` reports `"operational": false`, the worker observation
+and `error`). Fix the cause and run `slo schedule start --schedule <id>` —
+never add the schedule again. An unusable worker control file (a symlink, a
+directory, a permission failure) is reported `blocked` the same way and is
+never followed or replaced. A live worker that stops answering, or answers
+while its engine no longer holds scheduler leadership or has not finished a
+tick pass within 60 s (four tick cadences, startup included), is reported
+unresponsive and is never replaced automatically; long fresh runs do not
+count against that limit. A dead one is restarted on the next `add`/`start`,
+and a stopping one is waited for. A manual foreground worker passes the same
+startup admission, so it can never start between an automatic start's last
+check and its launch. Fresh runs without `--cwd` start in the worker's
+working directory: your home directory for an automatically started worker.
+
+**Check health.** `slo schedule status [--schedule <id-or-name>] [--json]` is
+read-only: it never starts a worker. It reports the worker state (`healthy`,
+`starting`, `retiring`, `stopped`, `unresponsive` or `blocked`), its pid and last tick,
+and the next due time (of the given schedule, or the earliest enabled one).
+It exits 0 only when the worker is healthy. Healthy means the worker can fire
+due work; it does not prove a particular invocation ran — use `report`.
+
+**Create and manage.** `slo schedule add --name <name> --prompt "<text>"
+--interval-seconds <n>` (minimum 15), `--run-at <instant>` for a one-shot, or
+`--cron "<expr>"` (with `--tz <IANA zone>`, default `UTC`) for a recurring
+expression. `add` also takes `--session-mode fresh|continuous` (default
+`fresh`: run headless with no session), `--session-reference <id-or-name>`
+(continuous only), `--coalescing-mode latest_by_key`, `--coalescing-key <key>`,
+and `--cwd` / `--model` (applied to fresh headless runs only). The misfire
+grace (300 s) and interval anchor are not settable from the CLI.
+Edit with `slo schedule edit --schedule <id-or-name> ...`, read one with
+`slo schedule show --schedule ... [--json]`, and list with
+`slo schedule list [--disabled]`.
+
+**Drive a delivery now or change lifecycle.** `slo schedule trigger
+--schedule <id-or-name>` queues one pending invocation immediately;
+`slo schedule start --schedule ...` and `slo schedule stop --schedule ...`
+re-enable or pause a schedule;
+`slo schedule delete --schedule ... --yes` soft-deletes it and frees its
+name. `slo schedule report --schedule ... --days <1-90> [--json]` summarises
+a schedule's recent invocations. A report reference is tried as an id first
+(deleted schedules included), then as an active name, so a deleted schedule is
+reportable by id but not by name, and a UUID-shaped name still resolves.
+Refusals (unknown schedule, disabled trigger) print one diagnostic line and
+exit 1.
+
+**The worker (administration and debugging).** The shared worker runs a
+15-second tick, one delivery per schedule at a time and a 03:00 UTC
+retention purge. `slo schedule worker` runs that same worker in the
+foreground instead, for debugging or under your own supervisor; it is never
+needed for ordinary use and is refused while the shared worker runs (one
+worker per schedules directory). `--run-timeout-seconds` sets how old a
+still-`running` fresh invocation must be for worker start to fail it. There
+is no OS unit and no restart at boot: after a reboot, the next `add`/`start`
+starts the worker again. A schedules directory already used by an unreleased
+development build of this worker — the shared-file layout, or the hidden
+engine file written by a build without the worker lifetime lock — needs a
+one-time upgrade that is never confirmed automatically: `add`/`start` report
+`schedule saved, but not operational` naming the blocker and launch nothing.
+While an earlier worker's engine locks are visible, every start is refused,
+even a confirmed one, and its locks are never touched. Otherwise stop every
+earlier worker, then start once with
+`slo schedule worker --earlier-workers-stopped` (missing locks never prove an
+earlier worker stopped, and an earlier build must not be started on the
+directory again). That start records the admission in a private
+`.schedule-engine-admitted` file; later starts need no flag. New installs
+and upgrades from released builds need no flag.
+
+**Delivery rules.** A continuous schedule with a session reference sends its
+prompt to that session as a system sender; a closed interactive session keeps
+the row in its durable inbox until the session reopens. A continuous schedule
+without a reference runs one fresh headless turn per fire. A one-shot ends
+(delivered, misfired or failed) and disables itself in the same commit.
+
+**Old file schedules.** The retired per-schedule file store is gone from the
+code. Existing `$SLO_HOME/schedules/<id>/` folders are left untouched on
+disk — never deleted or migrated by the code — and schedules you still want
+should be recreated once with `slo schedule add` on the new CLI.
 
 ---
 
@@ -4196,7 +4289,6 @@ slo/
 │   │   ├── dao.py / schema.py / repository.py # Typed rows, migrations, serialized DB lifecycle
 │   │   ├── gateway.py                 # ChannelGateway — registration, routing and queue API
 │   │   ├── protocol.py / host.py       # ChannelAdapter contract and external adapter lifecycle
-│   │   ├── inbox_import.py            # Idempotent retired file-inbox import
 │   │   └── adapters/telegram/         # Telegram external adapter
 │   ├── cli/
 │   │   ├── channel_commands.py / channel_dispatch.py # `slo channel` operator surface

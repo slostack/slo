@@ -100,8 +100,7 @@ class SubAgentFleetRow(ListItem):
 
     def _apply_status_color(self, *, row: WorkflowSessionRowDAO) -> None:
         """Select a CSS status class; only the glyph receives its semantic color."""
-        for status_class in ("-running", "-completed", "-failed", "-aborted", "-idle"):
-            self.remove_class(status_class)
+        self.remove_class("-running", "-completed", "-failed", "-aborted", "-idle")
         status_class: str = {
             "running": "-running",
             "completed": "-completed",

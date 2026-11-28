@@ -235,9 +235,7 @@ class TestSlashRouterDispatch:
     @pytest.mark.asyncio
     async def test_theme_notice_is_admitted_before_model_preparation(self) -> None:
         """The informational theme command remains available while a model prepares."""
-        admission: SlashCommandAdmissionDAO = SlashRouter.admit(
-            line="/theme", preparation_status="pending"
-        )
+        admission: SlashCommandAdmissionDAO = SlashRouter.admit(line="/theme", preparation_status="pending")
         assert admission.action == "dispatch"
 
     @pytest.mark.asyncio

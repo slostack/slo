@@ -233,6 +233,14 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
         display_order=75,
     ),
     SlashCommandSpecDAO(
+        name="schedules",
+        description="list saved schedules; add 'disabled' for stopped ones",
+        argument_mode="enumerated",
+        usage="/schedules [disabled]",
+        argument_hint="disabled",
+        display_order=78,
+    ),
+    SlashCommandSpecDAO(
         name="model",
         description="list, refresh, or switch supported models",
         argument_mode="enumerated",

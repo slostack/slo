@@ -9,6 +9,7 @@ from typing import Optional
 from unittest.mock import patch
 
 from tests.state_isolation import (
+    INHERITED_RUNTIME_OVERRIDES,
     INHERITED_STATE_OVERRIDES,
     FakeHerdrFixture,
     FakeHerdrSpawnGuard,
@@ -191,6 +192,8 @@ def isolated_slo_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyt
     monkeypatch.setenv(name="SLO_AUTH_FILE", value=str(root / "global" / "authentication.json"))
     monkeypatch.setenv(name="HOME", value=str(root / "home"))
     for name in INHERITED_STATE_OVERRIDES:
+        monkeypatch.delenv(name=name, raising=False)
+    for name in INHERITED_RUNTIME_OVERRIDES:
         monkeypatch.delenv(name=name, raising=False)
     for module_name, attribute in SLO_HOME_BINDINGS:
         monkeypatch.setattr(target=importlib.import_module(module_name), name=attribute, value=root)

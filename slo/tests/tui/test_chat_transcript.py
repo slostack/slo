@@ -643,9 +643,11 @@ class TailNoticeTranscript(ChatTranscriptComponent):
 
     notice_sent: bool = False
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self, *, text: str, before: int | None = None, sender_name: str | None = None
+    ) -> UserMessageBlock:
         """Tail growth during AwaitMount must not change the stable prepend boundary."""
-        block = await super().mount_user_message_block(text=text, before=before)
+        block = await super().mount_user_message_block(text=text, before=before, sender_name=sender_name)
         if before is not None and not self.notice_sent:
             self.notice_sent = True
             await self.mount_transcript_line(content="concurrent tail", classes="tool-result")
@@ -797,9 +799,11 @@ class GatedProjectionTranscript(ChatTranscriptComponent):
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self, *, text: str, before: int | None = None, sender_name: str | None = None
+    ) -> UserMessageBlock:
         """Pause only the first echo after its real widget is mounted."""
-        block = await super().mount_user_message_block(text=text, before=before)
+        block = await super().mount_user_message_block(text=text, before=before, sender_name=sender_name)
         if text == "held":
             self.entered.set()
             await self.release.wait()

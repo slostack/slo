@@ -16,8 +16,6 @@ SLO_HOME_BINDINGS: tuple[tuple[str, str], ...] = (
     ("src.auth.credential_refresher", "_CFG_SLO_HOME"),
     ("src.cli.typer_dispatch", "_CFG_SLO_HOME"),
     ("src.integrations.connectors.store", "_CFG_SLO_HOME"),
-    ("src.scheduling.os.logs", "_CFG_SLO_HOME"),
-    ("src.scheduling.store", "_CFG_SLO_HOME"),
 )
 """Module-level SLO_HOME imports; an AST regression guard keeps this exhaustive."""
 
@@ -69,6 +67,28 @@ tests, but they are child-launch identity/follow-up knobs that must not leak
 into test-owned runs. Tests opt back in through their own
 ``monkeypatch.setenv``.
 """
+
+INHERITED_RUNTIME_OVERRIDES: tuple[str, ...] = (
+    "SLO_CHANNEL_PARENT_ID",
+    "SLO_CHANNEL_PARTICIPANT_NAME",
+    "SLO_CHANNEL_POLL_MS",
+    "SLO_CLAUDE_BRIDGE_ENABLED",
+    "SLO_CLAUDE_BRIDGE_EXECUTABLE",
+    "SLO_DETACHED_WORKFLOWS",
+    "SLO_HEADLESS_COOPERATIVE_ABORT_GRACE_SECONDS",
+    "SLO_HEADLESS_FOLLOWUP_TURNS",
+    "SLO_HEADLESS_HEARTBEAT_SECONDS",
+    "SLO_PARENT_PID",
+    "SLO_RESUME_SESSION",
+)
+"""Runtime mode controls a launching harness exports for its own children.
+
+A headless agent shell exports these to shape how ITS children run (pool
+child mode, follow-up caps, abort supervision, bridge routing). They must
+never leak into the suite: a leaked ``SLO_CHANNEL_PARENT_ID`` turns every
+plain headless run into a pool child, and a leaked follow-up cap silently
+disables follow-up turns. Tests that need a non-default value set it
+themselves through ``monkeypatch``."""
 
 
 def inherited_herdr_names() -> tuple[str, ...]:
@@ -147,6 +167,8 @@ def isolate_suite_slo_home() -> Path:
     """
     for name in inherited_herdr_names():
         del os.environ[name]
+    for name in INHERITED_RUNTIME_OVERRIDES:
+        os.environ.pop(name, None)
     os.environ["SLO_HERDR_DISABLED"] = "1"
     root: Path = Path(tempfile.mkdtemp(prefix="slo-test-home-")).resolve()
     os.environ["SLO_HOME"] = str(root)

@@ -84,19 +84,3 @@ def test_relocated_identity_and_group(name: str) -> None:
     assert registered[0].group == "orchestration"
     assert runtime[0].file_path == str(ROOT / location)
     assert not (SKILLS / "design-and-analysis" / name).exists()
-
-
-def test_excluded_tui_skills_preserve_body_except_repaired_reference() -> None:
-    """Retain base 7625be3 pins, normalizing only the authorized dangling-link repair."""
-    pins = {
-        "tui-scheduled-workflows": "ca00e36826f5e12d986df4079c3a6f10081b1a0cd92a174ab9b77d68290286de",
-        "tui-scheduled-operations": "9315d9d5bdd8a32cfed188bae4ff8edd86bf5d5023654cf46343897e6215a869",
-    }
-    for name, expected in pins.items():
-        text = (SKILLS / "tui" / name / "SKILL.md").read_text(encoding="utf-8")
-        if name == "tui-scheduled-workflows":
-            current = "skills/orchestration/headless-orchestration/SKILL.md"
-            obsolete = "skills/design-and-analysis/headless-orchestration/SKILL.md"
-            assert current in text and obsolete not in text
-            text = text.replace(current, obsolete)
-        assert hashlib.sha256(text.encode()).hexdigest() == expected

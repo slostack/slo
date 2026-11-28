@@ -10,8 +10,10 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from rich.color import Color
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.text import Text
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.headless_workflow_visualizer import (
@@ -141,6 +143,21 @@ class TestStatusCounts:
 # ---------------------------------------------------------------------------
 
 
+def _hex_at(*, label: Text, offset: int) -> str:
+    """Return the truecolor hex of one rendered label cell.
+
+    Args:
+        label (Text): Rendered child label.
+        offset (int): Character offset to inspect.
+
+    Returns:
+        str: Hex color; every label cell must carry an explicit color.
+    """
+    color: Optional[Color] = label.get_style_at_offset(console=Console(), offset=offset).color
+    assert color is not None
+    return color.get_truecolor().hex
+
+
 class TestChildLabelColour:
     """Only each sub-agent's status glyph is colored by its lifecycle state."""
 
@@ -149,22 +166,16 @@ class TestChildLabelColour:
         summary = ChildSessionSummaryDAO(session_id="abc12345", status="completed")
         label = HeadlessWorkflowVisualizer._child_label(child=summary)
         assert label.plain == "● abc12345 · completed"
-        assert label.get_style_at_offset(console=Console(), offset=0).color.get_truecolor().hex == "#9ece6a"
-        assert all(
-            label.get_style_at_offset(console=Console(), offset=offset).color.get_truecolor().hex == "#9aa5ce"
-            for offset in range(1, len(label.plain))
-        )
+        assert _hex_at(label=label, offset=0) == "#9ece6a"
+        assert all(_hex_at(label=label, offset=offset) == "#9aa5ce" for offset in range(1, len(label.plain)))
 
     def test_failed_label_colors_only_the_error_glyph(self) -> None:
         """Failed state retains muted metadata with one error status glyph."""
         summary = ChildSessionSummaryDAO(session_id="abc12345", status="failed")
         label = HeadlessWorkflowVisualizer._child_label(child=summary)
         assert label.plain == "✕ abc12345 · failed"
-        assert label.get_style_at_offset(console=Console(), offset=0).color.get_truecolor().hex == "#f7768e"
-        assert all(
-            label.get_style_at_offset(console=Console(), offset=offset).color.get_truecolor().hex == "#9aa5ce"
-            for offset in range(1, len(label.plain))
-        )
+        assert _hex_at(label=label, offset=0) == "#f7768e"
+        assert all(_hex_at(label=label, offset=offset) == "#9aa5ce" for offset in range(1, len(label.plain)))
 
 
 # ---------------------------------------------------------------------------

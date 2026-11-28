@@ -224,8 +224,7 @@ class ChannelGateway:
             the name and heartbeat and reopens it; a slot still held by a
             ``user`` (a scheduler sender stored before system registration
             existed) converts in place, keeping its id and its pending rows.
-        WHO: ``ScheduleChannelSender`` for every schedule fire and for every
-            legacy scheduler item the ``InboxImporter`` re-sends.
+        WHO: ``ScheduleChannelSender`` for every schedule fire.
         WHEN: Before each send; the upsert is a single atomic statement.
 
         A system sender is not an operator: a closed interactive session keeps

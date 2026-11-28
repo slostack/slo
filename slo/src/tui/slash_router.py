@@ -7,6 +7,9 @@ from unittest.mock import Mock
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from src.schedules.dao import ScheduleStateFilter, ScheduleSummaryDAO
+from src.schedules.rendering import ScheduleTableRenderer
+from src.schedules.service import ScheduleService
 from src.agents.slo_agent.preferences.dao import UserPreferencesDAO, UserPreferencesStoreCorruptError
 from src.agents.slo_agent.preferences.service import UserPreferencesStore
 from src.agents.slo_agent.sessions.dao import (
@@ -110,7 +113,9 @@ class SlashCommandResultDAO(BaseModel):
     toggle_theme: bool = Field(
         default=False, description="Whether the TUI toggles between the slo-dark and slo-default themes."
     )
-    refresh_title: bool = Field(default=False, description="Whether the TUI refreshes session title and usage.")
+    refresh_title: bool = Field(
+        default=False, description="Whether the TUI refreshes session title and usage."
+    )
     replace_session: bool = Field(default=False, description="Whether the TUI replaces its active session.")
     requested_session_name: Optional[str] = Field(
         default=None, description="Optional name for a replacement session."
@@ -135,14 +140,14 @@ class SlashCommandResultDAO(BaseModel):
     refresh_usage_status: bool = Field(
         default=False, description="Whether to repaint the cached usage status."
     )
-    git_diff_path: Optional[str] = Field(default=None, description="Repository-relative file path to open as a diff.")
+    git_diff_path: Optional[str] = Field(
+        default=None, description="Repository-relative file path to open as a diff."
+    )
     code_path: Optional[str] = Field(default=None, description="Raw local editor path intent.")
     dismissed_workflow_id: Optional[str] = Field(
         default=None, description="Workflow whose durable dismissal succeeded."
     )
-    resumed_workflow_id: Optional[str] = Field(
-        default=None, description="Workflow whose relaunch succeeded."
-    )
+    resumed_workflow_id: Optional[str] = Field(default=None, description="Workflow whose relaunch succeeded.")
     tui_visibility: Optional[WorkflowListVisibilityRequestDAO] = Field(
         default=None, description="Local workflow display intent."
     )
@@ -209,6 +214,7 @@ class SlashRouter:
             "/model",
             "/code",
             "/queue",
+            "/schedules",
             "/theme",
         }:
             return SlashCommandAdmissionDAO(action="dispatch")
@@ -221,11 +227,14 @@ class SlashRouter:
         line: str,
         session: SloAgentSession,
         workflow_resume_launcher: Optional[WorkflowResumeLauncher] = None,
+        schedule_service: Optional[ScheduleService] = None,
     ) -> SlashCommandResultDAO:
         """Route ``line`` (known to start with ``/``) to a handler.
 
         Args:
             workflow_resume_launcher: Optional process/capture boundary for workflow resume.
+            schedule_service: Optional schedule service; ``None`` builds the
+                default-path service (111.a.1 §6.10).
             line (str): The full input line including the leading slash.
             session (SloAgentSession): The session to apply commands to.
 
@@ -252,6 +261,8 @@ class SlashRouter:
             return await cls._handle_workflows(
                 rest=rest, session=session, resume_launcher=workflow_resume_launcher
             )
+        if command.name == "schedules":
+            return await cls._handle_schedules(rest=rest, schedule_service=schedule_service)
         handler: SlashHandler = cls._handler_for(command_name=command.name)
         return await handler(rest=rest, session=session)
 
@@ -385,6 +396,7 @@ class SlashRouter:
             "preferences": cls._handle_preferences,
             "plugins": cls._handle_plugins,
             "workflows": cls._handle_workflows,
+            "schedules": cls._handle_schedules,
         }
         return handlers[command_name]
 
@@ -1465,6 +1477,41 @@ class SlashRouter:
         return SlashCommandResultDAO(
             rendered=f"Saved preferences:\n{model_line}\n{reasoning_line}",
         )
+
+    @classmethod
+    async def _handle_schedules(
+        cls,
+        *,
+        rest: str,
+        schedule_service: Optional[ScheduleService] = None,
+    ) -> SlashCommandResultDAO:
+        """List schedules through the shared renderer (111.a.1 §6.10).
+
+        An argument other than ``disabled`` prints usage and reads nothing.
+        A ``None`` service builds the default-path service; the handler closes
+        only the service it built itself, leaving an injected service
+        caller-owned.
+
+        Args:
+            rest (str): Trailing argument text: empty, or ``disabled``.
+            schedule_service (Optional[ScheduleService]): Injected service for
+                tests and callers that own the lifecycle.
+
+        Returns:
+            SlashCommandResultDAO: The rendered table or usage text.
+        """
+        arguments: str = rest.strip()
+        if arguments not in ("", "disabled"):
+            return SlashCommandResultDAO(rendered="usage: /schedules [disabled]")
+        state: ScheduleStateFilter = "disabled" if arguments == "disabled" else "active"
+        owned_service: bool = schedule_service is None
+        service: ScheduleService = schedule_service or ScheduleService.at_default_path()
+        try:
+            summaries: list[ScheduleSummaryDAO] = await service.list_by_state(state=state)
+        finally:
+            if owned_service:
+                await service.close()
+        return SlashCommandResultDAO(rendered=ScheduleTableRenderer.render(schedules=summaries, state=state))
 
     @classmethod
     async def _handle_workflows(

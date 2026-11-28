@@ -69,11 +69,13 @@ class InvocationOutcomeReconciler:
         channel_message_id: Optional[UUID] = invocation.channel_message_id
         if channel_message_id is None:
             return False
-        channel_message: Optional[ChannelMessageDAO] = await self._gateway.get(message_id=channel_message_id)
+        channel_message: Optional[ChannelMessageDAO] = await self._gateway.find_message(
+            message_id=channel_message_id
+        )
         if channel_message is None:
             await self._mark_channel_row_gone(invocation_id=invocation.id, now=now)
             return True
-        reply: Optional[ChannelMessageDAO] = await self._gateway.reply_for(message_id=channel_message_id)
+        reply: Optional[ChannelMessageDAO] = await self._gateway.find_reply(message_id=channel_message_id)
         outcome: InvocationOutcomeDAO = InvocationOutcomeDAO(
             accepted_at=channel_message.accepted_at,
             cancelled_at=channel_message.cancelled_at,

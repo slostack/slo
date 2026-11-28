@@ -258,7 +258,7 @@ _DEFAULT_COMMANDS: list[SlashCommandSpecDAO] = [
     ),
     SlashCommandSpecDAO(
         name="theme",
-        description="toggle between slo-default and slo-dark themes",
+        description="toggle between slo-dark and slo-default themes",
         display_order=92,
     ),
     SlashCommandSpecDAO(

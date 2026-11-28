@@ -28,6 +28,7 @@ from src.auth.credential_store import CredentialStore
 from src.auth.oauth_provider import OAuthProvider
 from src.auth.provider_factory import OAuthFlowFactory
 from src.auth.providers.openai_codex_provider import OpenAICodexOAuthProvider
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.authentication import AuthenticationScreen
 from tests.tui.authentication._painted_output import (
     painted_link_targets,
@@ -171,6 +172,8 @@ class _Harness(App):
             oauth_factory (OAuthFlowFactory): Real factory instance resolving the local provider.
         """
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self._store: CredentialStore = store
         self._oauth_factory: OAuthFlowFactory = oauth_factory
 

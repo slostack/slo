@@ -19,7 +19,7 @@ class ShowQueuedDAO(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     rows: list[ChannelMessageDAO] = Field(
-        description="Pending prompt rows in display order; pending_inbound(S).",
+        description="Pending prompt rows in display order; list_pending_inbound_messages(S).",
     )
     paused: bool = Field(
         description="Whether the channel poller is paused; shows the resume hint.",

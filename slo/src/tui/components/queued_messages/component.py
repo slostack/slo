@@ -94,7 +94,7 @@ class QueuedMessagesComponent(Vertical):
         max-height: 12;
         margin: 0 1 0 1;
         padding: 0 1 0 1;
-        border: round $primary 30%;
+        border: solid $rule;
         background: $surface;
         display: none;
     }
@@ -114,8 +114,8 @@ class QueuedMessagesComponent(Vertical):
 
     QueuedMessagesComponent .queued-row-cancel {
         width: auto;
-        color: $error;
-        text-style: bold;
+        color: $text-dim;
+        text-style: none;
     }
 
     QueuedMessagesComponent .queued-overflow {
@@ -126,7 +126,7 @@ class QueuedMessagesComponent(Vertical):
 
     QueuedMessagesComponent .queued-paused {
         height: 1;
-        color: $warning;
+        color: $text-muted;
         text-style: italic;
     }
     """

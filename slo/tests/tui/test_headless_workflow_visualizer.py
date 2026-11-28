@@ -1331,15 +1331,16 @@ class TestVisualizerOrchestratorAndStreaming:
         assert "awaiting heartbeat" in label.plain
         assert "out" in label.plain
 
-    def test_child_row_shows_reaped_icon(self) -> None:
-        """Uses the reaped aborted icon for a swept orphan child."""
+    def test_child_row_shows_reaped_error_glyph(self) -> None:
+        """A swept orphan uses the error glyph while retaining reaped metadata."""
         from src.tui.headless_workflow_visualizer import HeadlessWorkflowVisualizer
 
         label = HeadlessWorkflowVisualizer._child_label(
             child=ChildSessionSummaryDAO(session_id="child", terminal_reason="reaped_orphan")
         )
 
-        assert "⊘ reaped" in label.plain
+        assert label.plain.startswith("✕ child · running")
+        assert "reaped_orphan" in label.plain
 
     def test_child_label_when_terminal_includes_exit_reason_and_terminator(self) -> None:
         """Terminal facts remain visible in the child-list row."""

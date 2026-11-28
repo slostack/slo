@@ -151,7 +151,7 @@ async def test_reply_row_is_copied_onto_the_invocation_row(
     now: datetime = _utc()
     row = await _insert_delivered(harness, now=now)
     agent_id: UUID = channel_participant_id_for_session(session_id=_SESSION_ID)
-    original: ChannelMessageDAO | None = await gateway.get(message_id=row.id)
+    original: ChannelMessageDAO | None = await gateway.find_message(message_id=row.id)
     assert original is not None
     reply_id: UUID = uuid4()
     stored: ChannelMessageDAO = await gateway.send(
@@ -232,7 +232,7 @@ async def test_settled_rows_are_not_selected_again(
     row = await _insert_delivered(harness, now=now)
     await gateway.accept(message_id=row.id)
     agent_id: UUID = channel_participant_id_for_session(session_id=_SESSION_ID)
-    original: ChannelMessageDAO | None = await gateway.get(message_id=row.id)
+    original: ChannelMessageDAO | None = await gateway.find_message(message_id=row.id)
     assert original is not None
     await gateway.send(
         new=NewMessageDAO(

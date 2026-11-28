@@ -510,10 +510,10 @@ async def test_concurrent_creates_enables_and_a_manual_worker_spawn_at_most_one_
         assert triggered.returncode == 0, triggered.stderr
         participant: UUID = channel_participant_id_for_session(session_id=_SESSION_ID)
         async with asyncio.timeout(60):
-            while not await gateway.pending_inbound(recipient_id=participant):
+            while not await gateway.list_pending_inbound_messages(recipient_id=participant):
                 await asyncio.sleep(0.2)
         await asyncio.sleep(1.0)
-        assert [row.id for row in await gateway.pending_inbound(recipient_id=participant)] == [
+        assert [row.id for row in await gateway.list_pending_inbound_messages(recipient_id=participant)] == [
             UUID(triggered.stdout.strip())
         ], "delivered exactly once"
     finally:
@@ -646,9 +646,9 @@ async def test_worker_survives_its_creator_and_queues_for_a_closed_session_until
 
         participant = channel_participant_id_for_session(session_id=_SESSION_ID)
         async with asyncio.timeout(60):
-            while not await gateway.pending_inbound(recipient_id=participant):
+            while not await gateway.list_pending_inbound_messages(recipient_id=participant):
                 await asyncio.sleep(0.2)
-        pending = await gateway.pending_inbound(recipient_id=participant)
+        pending = await gateway.list_pending_inbound_messages(recipient_id=participant)
         assert [row.id for row in pending] == [invocation_id]
         assert pending[0].accepted_at is None
         assert (await asyncio.to_thread(_health, roots=roots)).state == "healthy"
@@ -692,7 +692,7 @@ async def test_worker_survives_its_creator_and_queues_for_a_closed_session_until
         finally:
             await poller.stop(reason="test finished")
         assert runner.ran == [invocation_id], "accepted exactly once on reopening"
-        assert await gateway.pending_inbound(recipient_id=participant) == []
+        assert await gateway.list_pending_inbound_messages(recipient_id=participant) == []
     finally:
         await gateway.close()
 
@@ -1104,9 +1104,9 @@ async def test_prior_hidden_engine_worker_is_never_joined_or_robbed_until_confir
         assert triggered.returncode == 0, triggered.stderr
         participant: UUID = channel_participant_id_for_session(session_id=_SESSION_ID)
         async with asyncio.timeout(60):
-            while not await gateway.pending_inbound(recipient_id=participant):
+            while not await gateway.list_pending_inbound_messages(recipient_id=participant):
                 await asyncio.sleep(0.2)
-        assert [row.id for row in await gateway.pending_inbound(recipient_id=participant)] == [
+        assert [row.id for row in await gateway.list_pending_inbound_messages(recipient_id=participant)] == [
             UUID(triggered.stdout.strip())
         ], "the confirmed worker delivered the work exactly once"
     finally:

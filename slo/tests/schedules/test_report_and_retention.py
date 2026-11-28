@@ -772,7 +772,7 @@ async def test_purge_never_touches_channels_db(
             transaction=transaction,
         )
     await harness.service.delete(reference=str(created.id), now=now - timedelta(days=91))
-    channel_rows_before = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+    channel_rows_before = await gateway.list_pending_inbound_messages(recipient_id=UUID(_SESSION_ID))
     assert len(channel_rows_before) == 1
 
     retention = ScheduleRetentionService(
@@ -783,7 +783,7 @@ async def test_purge_never_touches_channels_db(
     result = await retention.purge(now=now)
 
     assert result.deleted_invocations == 1
-    channel_rows_after = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+    channel_rows_after = await gateway.list_pending_inbound_messages(recipient_id=UUID(_SESSION_ID))
     assert len(channel_rows_after) == 1
 
 

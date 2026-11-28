@@ -99,7 +99,9 @@ async def _prompts_for(*, gateway: ChannelGateway, session: SloAgentSession) -> 
         list[ChannelMessageDAO]: Prompt rows, oldest first.
     """
     agent_id: UUID = channel_participant_id_for_session(session_id=session.session_id)
-    conversation: list[ChannelMessageDAO] = await gateway.repository.conversation(agent_session_id=agent_id)
+    conversation: list[ChannelMessageDAO] = await gateway.repository.list_conversation_messages(
+        agent_session_id=agent_id
+    )
     return [row for row in conversation if row.message_type == "prompt"]
 
 
@@ -206,7 +208,8 @@ class TestQueueCancelCommands:
                 async def _survivor_replied() -> bool:
                     rows = await _prompts_for(gateway=gateway, session=scenario.session)
                     return (
-                        await gateway.reply_for(message_id=_row_named(rows=rows, text="three").id) is not None
+                        await gateway.find_reply(message_id=_row_named(rows=rows, text="three").id)
+                        is not None
                     )
 
                 await _wait_until_db(predicate=_survivor_replied, timeout_seconds=_QUEUE_SETTLE_SECONDS)
@@ -214,7 +217,7 @@ class TestQueueCancelCommands:
                 rows = await _prompts_for(gateway=gateway, session=scenario.session)
                 cancelled = _row_named(rows=rows, text="two")
                 survivor = _row_named(rows=rows, text="three")
-                assert await gateway.reply_for(message_id=cancelled.id) is None
+                assert await gateway.find_reply(message_id=cancelled.id) is None
         finally:
             await scenario.close()
 
@@ -338,7 +341,7 @@ async def _prompts_settled(*, scenario: _QueueScenario, texts: tuple[str, ...]) 
     gateway: ChannelGateway = scenario.gateway
     rows = await _prompts_for(gateway=gateway, session=scenario.session)
     for text in texts:
-        if await gateway.reply_for(message_id=_row_named(rows=rows, text=text).id) is None:
+        if await gateway.find_reply(message_id=_row_named(rows=rows, text=text).id) is None:
             return False
     return True
 
@@ -449,13 +452,13 @@ class TestPromptSentBeforeModelReadiness:
                                 gateway=gateway, session=session
                             )
                             return (
-                                len(rows) == 1 and await gateway.reply_for(message_id=rows[0].id) is not None
+                                len(rows) == 1 and await gateway.find_reply(message_id=rows[0].id) is not None
                             )
 
                         await _wait_until_db(predicate=_hello_replied, timeout_seconds=_QUEUE_SETTLE_SECONDS)
                         await pump_until(pilot=pilot, predicate=lambda: session.preparation_status == "ready")
                         rows: list[ChannelMessageDAO] = await _prompts_for(gateway=gateway, session=session)
-                        reply: Optional[ChannelMessageDAO] = await gateway.reply_for(message_id=rows[0].id)
+                        reply: Optional[ChannelMessageDAO] = await gateway.find_reply(message_id=rows[0].id)
         finally:
             catalog_release.set()
             await session.stop_channel_delivery(reason="test_done")

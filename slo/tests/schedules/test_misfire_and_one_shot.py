@@ -214,7 +214,7 @@ async def test_pending_invocation_delayed_beyond_grace_is_skipped(
 
     assert delivered.status == "skipped"
     assert delivered.skip_reason == "misfire"
-    assert await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID)) == []
+    assert await gateway.list_pending_inbound_messages(recipient_id=UUID(_SESSION_ID)) == []
 
 
 @pytest.mark.parametrize("late", [False, True])
@@ -262,5 +262,5 @@ async def test_forced_schedule_write_failure_rolls_back_the_delivery(
     # The channel write is its own commit: the on-time variant already sent
     # (crash-recovery replays it without a second send); the misfire variant
     # never sends.
-    pending_rows = await gateway.pending_inbound(recipient_id=UUID(_SESSION_ID))
+    pending_rows = await gateway.list_pending_inbound_messages(recipient_id=UUID(_SESSION_ID))
     assert len(pending_rows) == (0 if late else 1)

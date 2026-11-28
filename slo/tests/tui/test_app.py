@@ -429,7 +429,6 @@ class TestSloTUIActiveModelState:
                     replace_session=False,
                     requested_session_name=None,
                     rename_current_session_to=None,
-                    toggle_theme=False,
                 ),
             ):
                 with patch.object(app, "_refresh_title_bar") as mock_refresh_title_bar:
@@ -4120,3 +4119,24 @@ class TestCompactionAdvisedRendering:
             assert content in app.query_one(ChatTranscriptComponent).logical_copy_text()
             mock_project.assert_not_called()
             mock_compact.assert_not_called()
+
+
+class TestFooterShortcutColours:
+    """Footer shortcut keys follow the active theme's ``shortcut-key`` accent."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("theme_name", ["slo-dark", "slo-default"])
+    async def test_footer_keys_use_theme_shortcut_accent(self, theme_name: str) -> None:
+        """Clear, expand/collapse and the other footer keys paint in ``$shortcut-key``."""
+        from textual.widgets._footer import FooterKey
+
+        session: SloAgentSession = _build_session(responses=[AIMessage(content="unused")])
+        app: SloTUI = SloTUI(session=session)
+        async with app.run_test(size=(160, 30)) as pilot:
+            app.theme = theme_name
+            await pilot.pause()
+            keys: list[FooterKey] = list(app.query(FooterKey))
+            assert {"clear", "expand/collapse all"} <= {key.description for key in keys}
+            expected: str = app.current_theme.variables["shortcut-key"].lower()
+            for key in keys:
+                assert key.get_component_styles("footer-key--key").color.hex.lower() == expected

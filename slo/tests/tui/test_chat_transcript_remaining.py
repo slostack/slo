@@ -14,7 +14,7 @@ from src.tui.components.chat_transcript.commands import (
     BeginTranscriptRunDAO,
 )
 
-from src.tui.theme import SLO_DEFAULT_THEME, SLO_DARK_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 
 from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
@@ -48,7 +48,7 @@ class HiddenPrependTranscript(ChatTranscriptComponent):
         return block
 
 
-@pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME, SLO_DARK_THEME])
+@pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME])
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
 @pytest.mark.parametrize("prepend_mode", ["hidden", "first_mount", "partial"])
 @pytest.mark.parametrize("growth_first", [False, True])

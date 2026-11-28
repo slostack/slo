@@ -10,7 +10,7 @@ desktop app, …) to the queue. An external adapter is run by ``AdapterHost``
    ``/attach``, ``/detach``, ``/agents`` and ``/force``, and otherwise sends the
    text to the user's attached agent. When ``inbound`` returns a string the
    adapter sends that short text back to the user (help, errors).
-2. The host polls ``pending_outbound`` for this channel's users and calls
+2. The host polls ``list_pending_outbound_messages`` for this channel's users and calls
    ``deliver(message=…, user=…)`` for each row. ``True`` means the platform
    took the message and the host accepts the row; ``False`` (or an exception)
    leaves the row pending and the host retries with backoff (1 s → 60 s).

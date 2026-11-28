@@ -193,7 +193,7 @@ async def test_closed_interactive_session_keeps_scheduled_prompt_until_it_opens(
     delivered = await harness.deliver.invoke(invocation_id=invocation.id, now=now)
 
     participant = channel_participant_id_for_session(session_id=_SESSION_ID)
-    pending = await gateway.pending_inbound(recipient_id=participant)
+    pending = await gateway.list_pending_inbound_messages(recipient_id=participant)
     assert len(pending) == 1
     assert pending[0].id == delivered.id
     assert pending[0].accepted_at is None
@@ -226,9 +226,9 @@ async def test_closed_interactive_session_keeps_scheduled_prompt_until_it_opens(
     finally:
         await poller.stop(reason="test finished")
 
-    pending_after = await gateway.pending_inbound(recipient_id=participant)
+    pending_after = await gateway.list_pending_inbound_messages(recipient_id=participant)
     assert len(pending_after) == 0
-    stored = await gateway.get(message_id=delivered.id)
+    stored = await gateway.find_message(message_id=delivered.id)
     assert stored is not None
     assert stored.accepted_at is not None
 
@@ -255,7 +255,7 @@ async def test_closed_session_never_starts_headless_run(
     assert delivered.status == "delivered"
     assert delivered.skip_reason is None
     assert harness.fresh_runs.calls == [], "no headless run for a closed continuous session"
-    waiting = await harness.gateway.pending_inbound(
+    waiting = await harness.gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert [row.id for row in waiting] == [invocation.id], "exactly one row waits for the session"
@@ -297,6 +297,8 @@ async def test_continuous_without_reference_runs_fresh(
     assert first.recipient_session_id == first_session
     assert second.recipient_session_id == second_session
     assert (
-        await gateway.pending_inbound(recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID))
+        await gateway.list_pending_inbound_messages(
+            recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
+        )
         == []
     )

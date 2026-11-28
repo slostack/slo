@@ -119,6 +119,11 @@ class AssistantStreamThinkingBlock(Vertical):
         margin: 0 0 1 0;
         padding: 0 1;
         background: transparent;
+        border-left: solid $rule;
+    }
+
+    AssistantStreamThinkingBlock:hover {
+        border-left: solid $text-muted;
     }
 
     AssistantStreamThinkingBlock .assistant-thinking-body {

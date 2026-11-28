@@ -46,6 +46,7 @@ from textual.widgets import Footer, Header, ListView, ListItem, Label, RichLog
 
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.agents.slo_agent.orchestrator.dao import build_cleanup_summary
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.tree_export_format import TreeExportFormat
 from src.tui.workflows.dao import SessionProgressSnapshotDAO, WorkflowSessionKeyDAO, WorkflowSessionRowDAO
 from src.tui.workflows.transcript_renderer import WorkflowTranscriptRenderer
@@ -63,22 +64,43 @@ if TYPE_CHECKING:
 
 __all__ = ["HeadlessWorkflowVisualizer"]
 
+
+def _required_theme_color(*, color: Optional[str], role: str) -> str:
+    """Return a semantic theme color the visualizer cannot render without.
+
+    Args:
+        color (Optional[str]): Color declared by ``SLO_DEFAULT_THEME``.
+        role (str): Semantic role name used in the failure message.
+
+    Returns:
+        str: The declared color.
+
+    Raises:
+        RuntimeError: If the default theme does not declare the role.
+    """
+    if color is None:
+        raise RuntimeError(f"SLO_DEFAULT_THEME must declare a {role} color")
+    return color
+
+
+_ACCENT_COLOR: str = _required_theme_color(color=SLO_DEFAULT_THEME.accent, role="accent")
+_SUCCESS_COLOR: str = _required_theme_color(color=SLO_DEFAULT_THEME.success, role="success")
+_ERROR_COLOR: str = _required_theme_color(color=SLO_DEFAULT_THEME.error, role="error")
+
 _STATUS_ICON: dict[str, str] = {
-    "running": "⏳",
-    "completed": "✓",
-    "failed": "✗",
-    "aborted": "⊘",
-    "pending": "◌",
+    "running": "◍",
+    "completed": "●",
+    "failed": "✕",
+    "aborted": "✕",
+    "pending": "·",
 }
 
-# Rich style per status, mirroring the main TUI's success/warning/muted palette
-# so a glance at the sub-agent list reads the same as the orchestrator view.
 _STATUS_STYLE: dict[str, str] = {
-    "running": "yellow",
-    "completed": "green",
-    "failed": "red",
-    "aborted": "red",
-    "pending": "dim",
+    "running": _ACCENT_COLOR,
+    "completed": _SUCCESS_COLOR,
+    "failed": _ERROR_COLOR,
+    "aborted": _ERROR_COLOR,
+    "pending": SLO_DEFAULT_THEME.variables["text-dim"],
 }
 
 # Child-list panel width bounds and step (cells) for keyboard resizing.
@@ -154,7 +176,7 @@ class HeadlessWorkflowVisualizer(App[None]):
     #orchestrator-context-panel {
         height: 12;
         padding: 0 1;
-        border: round $accent;
+        border: solid $rule;
     }
     #orchestrator-context-panel.hidden {
         display: none;
@@ -167,7 +189,7 @@ class HeadlessWorkflowVisualizer(App[None]):
         width: 40;
         min-width: 22;
         height: 100%;
-        border-right: solid $accent;
+        border-right: solid $rule;
     }
     #child-list-panel ListView {
         height: 1fr;
@@ -187,7 +209,7 @@ class HeadlessWorkflowVisualizer(App[None]):
     #detail-log {
         height: 1fr;
         padding: 0 1;
-        border-bottom: dashed $accent;
+        border-bottom: solid $rule;
         background: $surface;
     }
     #diagnostics-log {
@@ -204,20 +226,20 @@ class HeadlessWorkflowVisualizer(App[None]):
     }
     #status-bar {
         height: 1;
-        background: $panel;
-        color: $text-muted;
+        background: $surface;
+        color: $text-dim;
         padding: 0 1;
         dock: bottom;
     }
     #panel-title {
-        background: $boost;
-        color: $accent;
-        text-style: bold;
+        background: $panel;
+        color: $text-muted;
+        text-style: none;
         padding: 0 1;
         height: 1;
     }
     #diag-title {
-        background: $boost;
+        background: $panel;
         color: $text-muted;
         padding: 0 1;
         height: 1;
@@ -239,6 +261,8 @@ class HeadlessWorkflowVisualizer(App[None]):
                 ``None`` constructs a default loader from ``config``.
         """
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self._config: HeadlessWorkflowVisualizerConfigDAO = config
         self._loader: WorkflowVisualizerLoader = loader or WorkflowVisualizerLoader(
             config=config,
@@ -311,7 +335,7 @@ class HeadlessWorkflowVisualizer(App[None]):
         try:
             self._workflow_data = await self._load_snapshot()
         except Exception as exc:  # noqa: BLE001
-            self._update_status_bar(f"[red]Load error: {exc}[/red]")
+            self._update_status_bar(f"Load error: {exc}")
             return
         self._last_refresh = datetime.now()
         self._update_app_header()
@@ -353,36 +377,46 @@ class HeadlessWorkflowVisualizer(App[None]):
     def _rebuild_summary_bar(self) -> None:
         """Rebuild the top workflow-summary bar from the current data snapshot.
 
-        Shows the overall run state followed by a coloured tally of sub-agents
-        by status (running / completed / failed) so the operator sees fleet
-        health at a glance, mirroring the main TUI's status palette. An
-        unavailable group shows its fixed notice instead of a misleading empty tally.
+        Lifecycle colors belong to status glyphs; labels and counts stay muted.
+        An unavailable group shows its fixed notice instead of a misleading empty tally.
         """
         summary: Label = self.query_one("#workflow-summary", Label)
         if self._workflow_data is None:
             summary.update("Loading workflow …")
             return
-        state_markup: str = (
-            "[green]● complete[/green]" if self._workflow_data.is_complete else "[yellow]● running[/yellow]"
+        state_glyph: str = "●" if self._workflow_data.is_complete else "◍"
+        state_color: str = _SUCCESS_COLOR if self._workflow_data.is_complete else _ACCENT_COLOR
+        state_text: Text = Text(state_glyph, style=state_color)
+        state_text.append(
+            " complete" if self._workflow_data.is_complete else " running",
+            style=SLO_DEFAULT_THEME.variables["text-muted"],
         )
         if self._workflow_data.notice is not None:
-            summary.update(
-                Text.assemble(Text.from_markup(state_markup), "   ", (self._workflow_data.notice, "red"))
-            )
+            summary.update(Text.assemble(state_text, "   ", (self._workflow_data.notice, _ERROR_COLOR)))
             return
         counts: dict[str, int] = self._status_counts()
         total: int = len(self._workflow_data.children)
-        parts: list[str] = [
-            state_markup,
-            f"[bold]{total}[/bold] sub-agents",
-            f"[yellow]⏳ {counts['running']}[/yellow]",
-            f"[green]✓ {counts['completed']}[/green]",
-            f"[red]✗ {counts['failed'] + counts['aborted']}[/red]",
-        ]
+        summary_parts: Text = Text()
+        summary_parts.append_text(state_text)
+        summary_parts.append("   ")
+        summary_parts.append(f"{total} sub-agents", style=SLO_DEFAULT_THEME.variables["text-muted"])
+        summary_parts.append("   ")
+        summary_parts.append("◍", style=_ACCENT_COLOR)
+        summary_parts.append(f" {counts['running']}", style=SLO_DEFAULT_THEME.variables["text-dim"])
+        summary_parts.append("   ")
+        summary_parts.append("●", style=_SUCCESS_COLOR)
+        summary_parts.append(f" {counts['completed']}", style=SLO_DEFAULT_THEME.variables["text-dim"])
+        summary_parts.append("   ")
+        summary_parts.append("✕", style=_ERROR_COLOR)
+        summary_parts.append(
+            f" {counts['failed'] + counts['aborted']}",
+            style=SLO_DEFAULT_THEME.variables["text-dim"],
+        )
         cleanup: Optional[str] = self._cleanup_summary()
         if cleanup is not None:
-            parts.append(cleanup)
-        summary.update("   ".join(parts))
+            summary_parts.append("   ")
+            summary_parts.append(cleanup, style=SLO_DEFAULT_THEME.variables["text-dim"])
+        summary.update(summary_parts)
 
     def _cleanup_summary(self) -> Optional[str]:
         """Return recorded fleet cleanup text for the summary bar when available."""
@@ -421,16 +455,20 @@ class HeadlessWorkflowVisualizer(App[None]):
         list_view: ListView = self.query_one("#child-list", ListView)
         await list_view.clear()
         if not self._workflow_data:
-            await list_view.append(ListItem(Label("[dim]No sub-agents found[/dim]")))
+            await list_view.append(
+                ListItem(Label(Text("No sub-agents found", style=SLO_DEFAULT_THEME.variables["text-dim"])))
+            )
             return
         if self._workflow_data.orchestrator is not None:
             await list_view.append(
                 ListItem(Label(self._orchestrator_label(node=self._workflow_data.orchestrator)))
             )
         if self._workflow_data.notice is not None:
-            await list_view.append(ListItem(Label(Text(self._workflow_data.notice, style="red"))))
+            await list_view.append(ListItem(Label(Text(self._workflow_data.notice, style=_ERROR_COLOR))))
         elif not self._workflow_data.children and self._workflow_data.orchestrator is None:
-            await list_view.append(ListItem(Label("[dim]No sub-agents found[/dim]")))
+            await list_view.append(
+                ListItem(Label(Text("No sub-agents found", style=SLO_DEFAULT_THEME.variables["text-dim"])))
+            )
             return
         for child in self._workflow_data.children:
             await list_view.append(ListItem(Label(self._child_label(child=child))))
@@ -441,7 +479,12 @@ class HeadlessWorkflowVisualizer(App[None]):
         detail_log: RichLog = self.query_one("#detail-log", RichLog)
         detail_log.clear()
         if not self._workflow_data:
-            detail_log.write("[dim]Select a sub-agent to inspect its transcript.[/dim]")
+            detail_log.write(
+                Text(
+                    "Select a sub-agent to inspect its transcript.",
+                    style=SLO_DEFAULT_THEME.variables["text-dim"],
+                )
+            )
             return
         orchestrator: Optional[OrchestratorNodeDAO] = self._current_orchestrator()
         if orchestrator is not None:
@@ -449,7 +492,7 @@ class HeadlessWorkflowVisualizer(App[None]):
             return
         child: Optional[ChildSessionSummaryDAO] = self._current_child()
         if child is None:
-            detail_log.write("[dim]No sub-agent selected.[/dim]")
+            detail_log.write(Text("No sub-agent selected.", style=SLO_DEFAULT_THEME.variables["text-dim"]))
             return
         if self._detail_view == "invocation":
             spawn = self._loader.load_spawn_context(
@@ -643,9 +686,9 @@ class HeadlessWorkflowVisualizer(App[None]):
         table.add_row("Model", ctx.model or "(unset)")
         table.add_row("Recorded", ctx.recorded_at)
         log.write(table)
-        log.write(Text("─ System Prompt ─", style="bold dim"))
+        log.write(Text("─ System Prompt ─", style="dim"))
         log.write(Text(ctx.system_prompt[:300] or "(empty)", style="dim italic"))
-        log.write(Text("─ User Prompt ─", style="bold dim"))
+        log.write(Text("─ User Prompt ─", style="dim"))
         log.write(Text(ctx.user_prompt or "(empty)"))
 
     @staticmethod
@@ -670,9 +713,9 @@ class HeadlessWorkflowVisualizer(App[None]):
         table.add_row("Timeout", f"{spawn.inactivity_timeout_seconds:.1f}s")
         table.add_row("CWD", spawn.cwd or "(inherited)")
         detail_log.write(table)
-        detail_log.write(Text("─ Prompt ─", style="bold dim"))
+        detail_log.write(Text("─ Prompt ─", style="dim"))
         detail_log.write(Text(spawn.prompt))
-        detail_log.write(Text("─ System Prompt ─", style="bold dim"))
+        detail_log.write(Text("─ System Prompt ─", style="dim"))
         sys_preview: str = spawn.system_prompt[:300]
         if len(spawn.system_prompt) > 300:
             sys_preview += "…"
@@ -696,7 +739,12 @@ class HeadlessWorkflowVisualizer(App[None]):
         if snapshot.notice:
             detail_log.write(Text(snapshot.notice, style="dim"))
         if not snapshot.entries:
-            detail_log.write(f"[dim]No transcript entries for {row.key.session_id}.[/dim]")
+            detail_log.write(
+                Text(
+                    f"No transcript entries for {row.key.session_id}.",
+                    style=SLO_DEFAULT_THEME.variables["text-dim"],
+                )
+            )
             return
         for entry in snapshot.entries:
             self._write_detail_entry(detail_log=detail_log, entry=entry)
@@ -758,16 +806,17 @@ class HeadlessWorkflowVisualizer(App[None]):
     @staticmethod
     def _orchestrator_label(*, node: OrchestratorNodeDAO) -> Text:
         """Format the first list row for the visualizer's orchestrator node."""
-        icon: str = _STATUS_ICON.get(node.state, "?")
-        style: str = _STATUS_STYLE.get(node.state, "")
-        return Text(f"{icon} orchestrator · {node.state} · {node.phase}", style=style)
+        icon: str = _STATUS_ICON.get(node.state, "·")
+        glyph_style: str = _STATUS_STYLE.get(node.state, "#565f89")
+        label: Text = Text(icon, style=glyph_style)
+        label.append(f" orchestrator · {node.state} · {node.phase}", style="#9aa5ce")
+        return label
 
     @staticmethod
     def _child_label(*, child: ChildSessionSummaryDAO) -> Text:
         """Format the list-item label for one child session with prompt preview.
 
-        The status icon and session id are coloured by status (green completed,
-        yellow running, red failed/aborted) so the list reads at a glance.
+        The status glyph carries lifecycle color; session and metadata text stay muted.
 
         Args:
             child (ChildSessionSummaryDAO): Child session summary.
@@ -777,11 +826,12 @@ class HeadlessWorkflowVisualizer(App[None]):
                 when available.
         """
         is_reaped: bool = child.terminal_reason == "reaped_orphan"
-        icon: str = "⊘ reaped" if is_reaped else _STATUS_ICON.get(child.status, "?")
+        icon: str = _STATUS_ICON.get("aborted" if is_reaped else child.status, "·")
         short_id: str = child.session_id[:8]
         task_suffix: str = f" ({child.task_id[:8]})" if child.task_id else ""
-        style: str = _STATUS_STYLE.get("aborted" if is_reaped else child.status, "")
-        label: Text = Text(f"{icon} {short_id}{task_suffix} · {child.status}", style=style)
+        style: str = _STATUS_STYLE.get("aborted" if is_reaped else child.status, "#565f89")
+        label: Text = Text(icon, style=style)
+        label.append(f" {short_id}{task_suffix} · {child.status}", style="#9aa5ce")
         if child.liveness_state:
             activity_age: str = HeadlessWorkflowVisualizer._activity_age(last_stdout_at=child.last_stdout_at)
             phase: str = child.heartbeat_phase or "awaiting heartbeat"
@@ -848,11 +898,11 @@ class HeadlessWorkflowVisualizer(App[None]):
         """
         t = Text()
         if entry.kind == "user":
-            t.append("## User\n", style="bold")
+            t.append("## User\n", style="dim")
             if entry.content:
                 t.append(entry.content + "\n")
         elif entry.kind == "assistant":
-            t.append("## Assistant\n", style="bold")
+            t.append("## Assistant\n", style="dim")
             if entry.reasoning:
                 t.append("> *reasoning*\n", style="dim")
                 t.append(entry.reasoning[:2000] + "\n", style="dim italic")
@@ -865,7 +915,7 @@ class HeadlessWorkflowVisualizer(App[None]):
                 t.append(entry.content[:2000] + "\n", style="dim italic")
         elif entry.kind == "tool":
             tool_name: str = entry.tool_name or "unnamed"
-            t.append(f"### `{tool_name}`\n", style="bold")
+            t.append(f"### `{tool_name}`\n", style="")
             if entry.output:
                 t.append(f"```\n{str(entry.output)[:500]}\n```\n")
         else:
@@ -911,13 +961,13 @@ class HeadlessWorkflowVisualizer(App[None]):
         return t
 
     def _update_status_bar(self, message: str) -> None:
-        """Set the status bar to an arbitrary rich-markup message.
+        """Set literal status text without interpreting model or filesystem content.
 
         Args:
-            message (str): Rich-markup status text.
+            message (str): Plain status text.
         """
         status: Label = self.query_one("#status-bar", Label)
-        status.update(message)
+        status.update(Text(message))
 
     def _update_status_bar_from_data(self) -> None:
         """Rebuild the status bar from the current workflow data snapshot."""

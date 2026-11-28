@@ -105,7 +105,7 @@ async def _read_every_row(*, gateway: ChannelGateway, agent_id: UUID) -> list[Ch
     """
     rows: list[ChannelMessageDAO] = []
     while True:
-        page: list[ChannelMessageDAO] = await gateway.conversation(
+        page: list[ChannelMessageDAO] = await gateway.list_conversation_messages(
             agent_session_id=agent_id, after_index=rows[-1].message_index if rows else 0, limit=_PAGE_SIZE
         )
         if not page:

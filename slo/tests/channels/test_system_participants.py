@@ -47,7 +47,7 @@ class TestRegisterSystem:
             other: ParticipantDAO = await gateway.register_system(
                 channel_id=channel.id, name="scheduler Weekly", external_ref="sched-2"
             )
-            stored: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=first.id)
+            stored: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=first.id)
 
             assert again.id == first.id
             assert other.id != first.id
@@ -91,7 +91,9 @@ class TestRegisterSystem:
             later: ChannelMessageDAO = await gateway.send(
                 new=NewMessageDAO(sender_id=converted.id, recipient_id=session_id, message_contents="run 2")
             )
-            pending: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=session_id)
+            pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=session_id
+            )
 
             assert converted.id == legacy.id
             assert converted.kind == "system"

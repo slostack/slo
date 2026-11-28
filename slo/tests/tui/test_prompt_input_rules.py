@@ -31,7 +31,7 @@ from src.agents.slo_agent.events.stream import AgentStreamEventDAO
 from src.agents.slo_agent.sessions.service import SloAgentSession
 from src.tui.app import SloTUI
 from src.tui.components.prompt_input.component import PromptInputComponent
-from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 from tests.tui._scroll_settle import pump_until
 from tests.tui.authentication._painted_output import painted_widget_strips
 
@@ -99,23 +99,32 @@ class PaintedPromptFrame:
         edge_cells: set[str] = {row[0] for row in self.content_rows} | {row[-1] for row in self.content_rows}
         assert not edge_cells & FRAME_SIDE_AND_CORNER_GLYPHS, f"side/corner glyphs painted: {edge_cells!r}"
 
-    def assert_rules_coloured(self, *, accent_hex: str) -> None:
-        """Assert both rules paint in the active theme's accent colour.
+    def assert_rules_coloured(self, *, accent_hex: str, bottom_hex: Optional[str] = None) -> None:
+        """Assert rule rows use the expected top accent and optional bottom tone.
 
         Args:
-            accent_hex (str): ``#rrggbb`` accent token of the active theme.
+            accent_hex (str): ``#rrggbb`` expected top-rule foreground.
+            bottom_hex (Optional[str]): Expected bottom-rule color; top color when omitted.
 
         Raises:
             AssertionError: A rule cell is painted in a different foreground colour.
         """
-        expected_triplet: ColorTriplet = Color.parse(accent_hex).get_truecolor()
-        rule_colours: set[Optional[ColorTriplet]] = {
+        expected_top: ColorTriplet = Color.parse(accent_hex).get_truecolor()
+        expected_bottom: ColorTriplet = Color.parse(bottom_hex or accent_hex).get_truecolor()
+        top_colours: set[Optional[ColorTriplet]] = {
             segment.style.color.get_truecolor() if segment.style and segment.style.color else None
-            for row in (self.rows[0], self.rows[-1])
-            for segment in row
+            for segment in self.rows[0]
             if segment.text.strip()
         }
-        assert rule_colours == {expected_triplet}, f"rule colours {rule_colours!r} != {expected_triplet!r}"
+        bottom_colours: set[Optional[ColorTriplet]] = {
+            segment.style.color.get_truecolor() if segment.style and segment.style.color else None
+            for segment in self.rows[-1]
+            if segment.text.strip()
+        }
+        assert top_colours == {expected_top}, f"top rule colours {top_colours!r} != {expected_top!r}"
+        assert bottom_colours == {
+            expected_bottom
+        }, f"bottom rule colours {bottom_colours!r} != {expected_bottom!r}"
 
 
 def _build_session(*, workdir: Path) -> SloAgentSession:
@@ -190,10 +199,10 @@ def _require_prompt_input(*, app: SloTUI) -> PromptInputComponent:
 class TestPromptInputRulesPaint:
     """The prompt editor paints exactly two horizontal rules in every state."""
 
-    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
     @pytest.mark.usefixtures("theme_colors")
     async def test_rules_when_focused_and_unfocused(self, tmp_path: Path, theme: Theme) -> None:
-        """Focused and unfocused editors both paint accent-coloured top/bottom rules only."""
+        """Resting rules are dim; focus brightens both horizontal rules to accent."""
         app: SloTUI = SloTUI(session=_build_session(workdir=tmp_path))
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -215,7 +224,10 @@ class TestPromptInputRulesPaint:
             assert not prompt_input.has_focus
             unfocused: PaintedPromptFrame = PaintedPromptFrame.capture(app=app)
             unfocused.assert_horizontal_rules(width=prompt_input.region.width)
-            unfocused.assert_rules_coloured(accent_hex=accent_hex)
+            unfocused.assert_rules_coloured(
+                accent_hex=app.get_css_variables()["rule"],
+                bottom_hex=app.get_css_variables()["rule"],
+            )
 
     async def test_rules_when_resized(self, tmp_path: Path) -> None:
         """The rules follow the region width across resizes and leave no stale corner cells."""

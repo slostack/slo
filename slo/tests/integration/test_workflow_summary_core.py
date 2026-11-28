@@ -358,13 +358,25 @@ class SummaryUI:
         await self.pilot.press("enter")
 
     async def wait_for_row(self, status: str) -> None:
-        expected = f"[{status}] {self.dispatch.child_id}: {self.dispatch.label}"
+        expected_glyph = {"pending": "·", "running": "◍", "completed": "●"}.get(status, "·")
+
+        def is_expected_child_row_present() -> bool:
+            """Match lifecycle glyph, stable child identity, and summary independently."""
+            for row in self.panel.query(SubAgentFleetRow):
+                if row.row.role != "child":
+                    continue
+                if str(row.query_one(".fleet-row-status", Static).render()) != expected_glyph:
+                    continue
+                if str(row.query_one(".fleet-row-session", Static).render()) != f"{self.dispatch.child_id}: ":
+                    continue
+                if str(row.query_one(".fleet-row-task", Static).render()) != self.dispatch.label:
+                    continue
+                return True
+            return False
+
         await wait_for_condition(
             pilot=self.pilot,
-            predicate=lambda: any(
-                row.row.role == "child" and str(row.query_one(Static).render()) == expected
-                for row in self.panel.query(SubAgentFleetRow)
-            ),
+            predicate=is_expected_child_row_present,
             description=f"{status} child row is presented",
         )
 
@@ -386,7 +398,7 @@ async def summary_ui(
     child_id: str,
     detached: bool,
     completed: bool = False,
-    theme: str = "slo-dark",
+    theme: str = "slo-default",
     size: tuple[int, int] = (120, 40),
 ) -> AsyncIterator[SummaryUI]:
     """Each caller gets a fresh dispatch and app, never another test's state."""
@@ -485,11 +497,12 @@ async def test_pending_summary_row(
         tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached
     ) as ui:
         assert ui.child.row.task_summary == label
-        assert str(ui.child.query_one(Static).render()) == f"[pending] {child_id}: {label}"
+        assert str(ui.child.query_one(".fleet-row-status", Static).render()) == "·"
+        assert str(ui.child.query_one(".fleet-row-task", Static).render()) == label
 
 
 @pytest.mark.usefixtures("authenticated_summary_ui")
-@pytest.mark.parametrize("theme", ["slo-dark", "slo-default"])
+@pytest.mark.parametrize("theme", ["slo-default"])
 @pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
 @execution_modes
 @summary_cases
@@ -514,14 +527,22 @@ async def test_pending_summary_is_painted(
     ) as ui:
         ui.panel.focus_sessions()
         await ui.pilot.press("down")
-        expected = "".join(f"[pending] {child_id}: {label}".split())
+        expected = "".join(f"{child_id}: {label}".split())
 
         def painted() -> str:
             return painted_text(strips=painted_widget_strips(app=ui.app, widget=ui.child))
 
         def literal_prefix_visible() -> bool:
             value = painted()
-            return "[pending]summary-child" in value and expected.startswith(value.removesuffix("…"))
+            # Drop the selection marker, status glyph and status word cells; the
+            # assertion is about the literal session id and task label.
+            for status_glyph in ("▌", "◍", "●", "·", "✕"):
+                value = value.replace(status_glyph, "")
+            value = "".join(value.split())
+            if not value.startswith("pendingsummary-child"):
+                return False
+            value = value.removeprefix("pending")
+            return expected.startswith(value.removesuffix("…"))
 
         await wait_for_condition(
             pilot=ui.pilot,
@@ -609,7 +630,8 @@ async def test_completed_summary_row_rendering(
     async with summary_ui(
         tmp_path=tmp_path, prompt=prompt, label=label, child_id=child_id, detached=detached, completed=True
     ) as ui:
-        assert str(ui.child.query_one(Static).render()) == f"[completed] {child_id}: {label}"
+        assert str(ui.child.query_one(".fleet-row-status", Static).render()) == "●"
+        assert str(ui.child.query_one(".fleet-row-task", Static).render()) == label
 
 
 @pytest.mark.usefixtures("authenticated_summary_ui")

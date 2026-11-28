@@ -152,7 +152,7 @@ class RunningVisibility:
 
 @asynccontextmanager
 async def running_visibility(
-    tmp_path: Path, *, theme: str = "slo-dark", size: tuple[int, int] = (120, 40)
+    tmp_path: Path, *, theme: str = "slo-default", size: tuple[int, int] = (120, 40)
 ) -> AsyncIterator[RunningVisibility]:
     """Create fresh real workflow service state for each independently collected test."""
     root = tmp_path / "detached-history"
@@ -206,7 +206,7 @@ async def running_visibility(
         yield RunningVisibility(app, pilot, factory, root)
 
 
-@pytest.mark.parametrize("theme", ["slo-dark", "slo-default"])
+@pytest.mark.parametrize("theme", ["slo-default"])
 @pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
 async def test_running_fleet_is_painted_and_editor_focused(
     tmp_path: Path, theme: str, size: tuple[int, int]

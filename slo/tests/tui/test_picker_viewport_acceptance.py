@@ -8,10 +8,17 @@ from textual.app import App, ComposeResult
 
 from src.tui.slash_suggestion_engine import SlashSuggestionRowDAO, SlashSuggestionStateDAO
 from src.tui.widgets.slash_suggestion_menu import SlashSuggestionMenu
+from src.tui.theme import SLO_DEFAULT_THEME
 
 
 class PickerApp(App[None]):
     """Mount the production menu without sessions, credentials or persistence."""
+
+    def __init__(self) -> None:
+        """Register the semantic theme variables used by the real menu CSS."""
+        super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
 
     def compose(self) -> ComposeResult:
         """Yield the production viewport for pilot-driven paint assertions."""

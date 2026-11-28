@@ -192,16 +192,20 @@ class FakeHost:
         self.thinking_blocks: list[FakeThinkingBlock] = []
         self.tool_blocks: dict[str, FakeToolBlock] = {}
         self.user_blocks: list[FakeUserBlock] = []
+        self.user_senders: list[str | None] = []
         self.mount_order: list[str] = []
         self.separators: int = 0
         self.lines: list[tuple[str, str]] = []
         self.recorded: list[tuple[str, str]] = []
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> FakeUserBlock:
-        """Return a real user widget while recording logical mount order."""
+    async def mount_user_message_block(
+        self, *, text: str, before: int | None = None, sender_name: str | None = None
+    ) -> FakeUserBlock:
+        """Return a real user widget while recording logical mount order and sender."""
         del before
-        block = FakeUserBlock(text=text)
+        block = FakeUserBlock(text=text, sender_name=sender_name)
         self.user_blocks.append(block)
+        self.user_senders.append(sender_name)
         self.mount_order.append("user")
         return block
 
@@ -1333,6 +1337,17 @@ class TestUserTurn:
         assert ("> hello **world**", "user-line") in host.recorded
 
     @pytest.mark.asyncio
+    async def test_named_sender_reaches_user_block_and_line(self) -> None:
+        """An external sender label is mounted on the block and kept in the logical line."""
+        host = FakeHost()
+        projector = TranscriptProjectionAdapter.register(host=host)
+
+        await projector.handle(event=ProjectUserTurnDAO(text="ping", sender_name="orchestrator wf-1"))
+
+        assert host.user_senders == ["orchestrator wf-1"]
+        assert ("> [orchestrator wf-1] ping", "user-line") in host.recorded
+
+    @pytest.mark.asyncio
     async def test_first_turn_has_no_separator_second_turn_does(self) -> None:
         host = FakeHost()
         projector = TranscriptProjectionAdapter.register(host=host)
@@ -1608,9 +1623,11 @@ class TestProjectReplayNote:
             recorded_before.append(before)
             return await original_separator(before=before)
 
-        async def _record_user_mount(*, text: str, before: int | None = None) -> FakeUserBlock:
+        async def _record_user_mount(
+            *, text: str, before: int | None = None, sender_name: str | None = None
+        ) -> FakeUserBlock:
             recorded_before.append(before)
-            return await original_mount(text=text, before=before)
+            return await original_mount(text=text, before=before, sender_name=sender_name)
 
         host.mount_turn_separator_if_needed = _record_separator  # type: ignore[method-assign]
         host.mount_user_message_block = _record_user_mount  # type: ignore[method-assign]

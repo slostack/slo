@@ -262,3 +262,23 @@ class ChannelMessageDAO(BaseModel):
     coalesce_key: Optional[str] = Field(
         description="Key under which a newer pending message replaced this one, if any."
     )
+
+    def is_sender_or_recipient(self, *, participant_id: UUID) -> bool:
+        """Return whether ``participant_id`` is this row's sender or recipient.
+
+        Pure membership check only: it says nothing about whether the row may
+        still be acted on. Pending state (neither accepted nor cancelled) and
+        force's prompt-only rule stay in the repository's guarded SQL updates;
+        the gateway's ``by=None`` internal-system cancellation bypass stays in
+        the gateway. The predicate therefore returns ``True`` for the sender
+        and the recipient of accepted, cancelled and non-prompt rows too.
+        The gateway delegates this membership check here so the rule lives on
+        the row it governs (one owner, no duplicated literal).
+
+        Args:
+            participant_id (UUID): The acting participant.
+
+        Returns:
+            bool: ``True`` when the actor is this row's sender or recipient.
+        """
+        return participant_id in (self.sender_id, self.recipient_id)

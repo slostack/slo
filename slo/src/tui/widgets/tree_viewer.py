@@ -24,35 +24,35 @@ class SessionTreeViewer(Tree):
         max-height: 50;
         padding: 0 1;
         margin: 1 0;
-        border: solid $primary;
+        border: solid $rule;
     }
     SessionTreeViewer .tree-node-session {
-        color: $primary;
-        text-style: bold;
+        color: $text-muted;
+        text-style: none;
     }
     SessionTreeViewer .tree-node-turn {
-        color: $primary;
-        text-style: bold;
+        color: $text-muted;
+        text-style: none;
     }
     SessionTreeViewer .tree-node-user {
         color: $text;
     }
     SessionTreeViewer .tree-node-assistant {
-        color: $success;
+        color: $text;
     }
     SessionTreeViewer .tree-node-thinking {
         color: $text-muted;
     }
     SessionTreeViewer .tree-node-tool {
-        color: $warning;
+        color: $text;
     }
     SessionTreeViewer .tree-node-steering {
         color: $warning;
         text-style: italic;
     }
     SessionTreeViewer .tree-node-compaction {
-        color: $error;
-        text-style: bold;
+        color: $text-muted;
+        text-style: none;
     }
     SessionTreeViewer .tree-node-lifecycle {
         color: $text-muted;

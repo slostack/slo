@@ -267,15 +267,8 @@ class SloTUI(App):
         ),
     ]
 
-    DEFAULT_THEME: str = SLO_DARK_THEME.name  # slo boots into the slo-dark (near-black/green) palette
-    """Textual theme applied on construction.
-
-    Defaults to the slo-dark theme (near-black/green) — the visual
-    signature that distinguishes slo from poe-harness. Runtime theme
-    switches via the command palette stay coherent because both themes
-    are registered in ``__init__`` immediately after ``super().__init__()``
-    initialises ``_registered_themes``.
-    """
+    DEFAULT_THEME: str = SLO_DARK_THEME.name
+    """The Textual theme applied on install and at startup (slo-dark, near-black/green)."""
 
     def __init__(
         self,
@@ -338,8 +331,8 @@ class SloTUI(App):
         self._workflow_visibility_lock: asyncio.Lock = asyncio.Lock()
         self._workflow_observation_close_task: Optional[asyncio.Task[None]] = None
         self._browser_host: BrowserHost = browser_host or BrowserHost.current()
-        self.register_theme(SLO_DEFAULT_THEME)
         self.register_theme(SLO_DARK_THEME)
+        self.register_theme(SLO_DEFAULT_THEME)
         self.theme = self.DEFAULT_THEME
         self._session: SloAgentSession = session
         self._preparation_task: Optional[asyncio.Task[None]] = None
@@ -719,13 +712,11 @@ class SloTUI(App):
         return CredentialResolver.resolve(provider=provider) is not None
 
     async def _toggle_theme(self) -> None:
-        """Toggle the active theme between slo-default and slo-dark.
+        """Toggle the active theme between slo-dark and slo-default.
 
-        If the current theme is neither of the two, switches to slo-default.
+        If the current theme is neither of the two, switches to slo-dark.
         """
-        next_theme: str = (
-            SLO_DARK_THEME.name if self.theme == SLO_DEFAULT_THEME.name else SLO_DEFAULT_THEME.name
-        )
+        next_theme: str = SLO_DEFAULT_THEME.name if self.theme == SLO_DARK_THEME.name else SLO_DARK_THEME.name
         self.theme = next_theme
         if self._chat_transcript is not None:
             await self._chat_transcript.handle(
@@ -1047,7 +1038,7 @@ class SloTUI(App):
         if not self._replacement_delivery_safe or not self._session_is_history_backed():
             return
         try:
-            self._build_session_delivery(session=session)
+            self._create_session_ownership_lease_store_if_missing(session=session)
         except Exception:
             await self._rollback_session_delivery(session=session, owner_id=owner_id, timers=())
             await self._write_lifecycle_notice(
@@ -1153,11 +1144,22 @@ class SloTUI(App):
             return
         await self._close_workflow_observation()
 
-    def _build_session_delivery(self, *, session: SloAgentSession) -> None:
-        """Build inert delivery collaborators before initialization captures ownership.
+    def _create_session_ownership_lease_store_if_missing(self, *, session: SloAgentSession) -> None:
+        """Create the retained session ownership lease store when absent.
+
+        Constructs only the in-memory store object: it binds the resolved
+        session-history root and creates one asyncio lock, then assigns the
+        store to ``self._lease_store``; an existing store is kept untouched.
+        No ``owner.json`` file or history directory is written, no lease is
+        acquired, no message is delivered, and no timer or task is started —
+        those remain the caller's responsibility.
+
+        WHO: ``_initialize_session_delivery`` alone, before it captures the
+            initialization binding; guard order is runtime-may-start, then
+            session-history-backed, then this create-if-missing step.
 
         Args:
-            session: Session whose unchanged history root owns delivery.
+            session: Session whose unchanged history root binds the store.
         """
         if not self._runtime_may_start(session=session):
             return
@@ -2803,6 +2805,8 @@ class SloTUI(App):
             await old_session.stop_channel_delivery(reason="session_closed")
         except Exception as exc:  # noqa: BLE001 — replacement must continue
             log_error(msg=f"channel delivery stop on /new failed: {exc}")
+        if self._channel_adapter is not None:
+            await self._channel_adapter.stop()
         self._stop_delivery_timers()
         await self._release_replaced_session_lease(session=old_session)
         self._workflow_renderer = None
@@ -2922,6 +2926,11 @@ class SloTUI(App):
                 content="New session selected; some UI state could not refresh.", classes="tool-result"
             )
         if self._runtime_may_start(session=session):
+            if self._channel_adapter is not None:
+                try:
+                    await self._channel_adapter.rebind_operator_to_current_session()
+                except Exception as exc:  # noqa: BLE001 — replacement must continue
+                    log_error(msg=f"channel operator rebind on /new failed: {exc}")
             await self._finish_replacement_runtime()
 
     async def _finish_replacement_runtime(self) -> None:

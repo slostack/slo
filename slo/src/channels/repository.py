@@ -194,7 +194,7 @@ class ChannelRepository:
             ).fetchall()
             return {str(table_row["name"]) for table_row in table_rows}
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def user_version(self) -> int:
         """Return ``PRAGMA user_version`` (test support).
@@ -207,7 +207,7 @@ class ChannelRepository:
             version_row: sqlite3.Row = connection.execute("PRAGMA user_version").fetchone()
             return int(version_row["user_version"])
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def journal_mode(self) -> str:
         """Return the active journal mode (test support).
@@ -220,7 +220,7 @@ class ChannelRepository:
             journal_row: sqlite3.Row = connection.execute("PRAGMA journal_mode").fetchone()
             return str(journal_row["journal_mode"])
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def upsert_channel(self, *, channel: ChannelDAO) -> ChannelDAO:
         """Insert or refresh one channel row.
@@ -246,14 +246,14 @@ class ChannelRepository:
                     str(channel.id),
                     channel.kind,
                     channel.name,
-                    _stamp(channel.created_at),
-                    _stamp(channel.last_seen_at),
+                    _format_utc_timestamp(channel.created_at),
+                    _format_utc_timestamp(channel.last_seen_at),
                 ),
             )
             connection.commit()
             return channel
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
     async def upsert_participant(self, *, participant: ParticipantDAO) -> ParticipantDAO:
         """Insert or refresh one participant row.
@@ -290,24 +290,24 @@ class ChannelRepository:
                     str(participant.channel_id) if participant.channel_id is not None else None,
                     participant.external_ref,
                     participant.status,
-                    _stamp(participant.last_seen_at),
-                    _stamp(participant.created_at),
+                    _format_utc_timestamp(participant.last_seen_at),
+                    _format_utc_timestamp(participant.created_at),
                     1 if participant.durable_inbox else 0,
                 ),
             )
             connection.commit()
             return participant
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
-    async def get_participant(self, *, participant_id: UUID) -> Optional[ParticipantDAO]:
+    async def find_participant(self, *, participant_id: UUID) -> Optional[ParticipantDAO]:
         """Return one participant by id.
 
         Args:
             participant_id (UUID): Id to look up.
 
         Returns:
-            Optional[ParticipantDAO]: The stored row, or ``None``.
+            Optional[ParticipantDAO]: The stored participant, or ``None``.
         """
 
         def _query(connection: sqlite3.Connection) -> Optional[ParticipantDAO]:
@@ -317,9 +317,9 @@ class ChannelRepository:
             ).fetchone()
             return _participant_from_row(row=participant_row) if participant_row is not None else None
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def participant_by_external_ref(
+    async def find_participant_by_external_ref(
         self, *, channel_id: UUID, external_ref: str
     ) -> Optional[ParticipantDAO]:
         """Return the participant occupying a channel's external-ref slot.
@@ -340,7 +340,7 @@ class ChannelRepository:
             ).fetchone()
             return _participant_from_row(row=participant_row) if participant_row is not None else None
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def claim_system_slot(self, *, participant: ParticipantDAO) -> ParticipantDAO:
         """Store a system participant in its ``(channel_id, external_ref)`` slot, atomically.
@@ -388,14 +388,14 @@ class ChannelRepository:
                     participant.name,
                     str(participant.channel_id),
                     participant.external_ref,
-                    _stamp(participant.last_seen_at),
-                    _stamp(participant.created_at),
+                    _format_utc_timestamp(participant.last_seen_at),
+                    _format_utc_timestamp(participant.created_at),
                 ),
             ).fetchone()
             connection.commit()
             return _participant_from_row(row=participant_row)
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
     async def heartbeat(self, *, participant_id: UUID) -> None:
         """Refresh a participant's ``last_seen_at`` (poller heartbeat).
@@ -407,23 +407,24 @@ class ChannelRepository:
         def _write(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "UPDATE participants SET last_seen_at = ? WHERE id = ?",
-                (_stamp(utc_now()), str(participant_id)),
+                (_format_utc_timestamp(utc_now()), str(participant_id)),
             )
             connection.commit()
 
-        await self._run(_write)
+        await self._execute_database_operation(_write)
 
-    async def insert_message(self, *, new: NewMessageDAO) -> ChannelMessageDAO:
-        """Insert one message row with the next gapless index.
+    async def queue_message(self, *, new_message: NewMessageDAO) -> ChannelMessageDAO:
+        """Admit one message into the recipient's queue with the next gapless index.
 
         Runs inside ``BEGIN IMMEDIATE`` so concurrent writers serialize. A
-        second insert with an existing id returns the already-stored row
-        (idempotent retry). ``agent_session_id`` is the receiving agent when
-        there is one, otherwise the sending agent (overview §2.4). The index
-        is ``MAX+1`` for the conversation.
+        second admission with an existing id returns the already-stored row
+        (idempotent retry), checked before any participant validation.
+        ``agent_session_id`` is the receiving agent when there is one,
+        otherwise the sending agent (overview §2.4). The index is ``MAX+1``
+        for the conversation.
 
         Args:
-            new (NewMessageDAO): Sender-supplied message data.
+            new_message (NewMessageDAO): Sender-supplied message data.
 
         Returns:
             ChannelMessageDAO: The stored row.
@@ -440,25 +441,25 @@ class ChannelRepository:
         def _write(connection: sqlite3.Connection) -> ChannelMessageDAO:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                stored_message: Optional[ChannelMessageDAO] = self._get_sync(
-                    connection=connection, message_id=new.id
+                stored_message: Optional[ChannelMessageDAO] = self._find_message_sync(
+                    connection=connection, message_id=new_message.id
                 )
                 if stored_message is not None:
                     connection.commit()
                     return stored_message
 
-                sender: Optional[ParticipantDAO] = self._get_participant_sync(
-                    connection=connection, participant_id=new.sender_id
+                sender: Optional[ParticipantDAO] = self._find_participant_sync(
+                    connection=connection, participant_id=new_message.sender_id
                 )
                 if sender is None:
-                    raise UnknownParticipantError(participant_id=new.sender_id)
-                recipient: Optional[ParticipantDAO] = self._get_participant_sync(
-                    connection=connection, participant_id=new.recipient_id
+                    raise UnknownParticipantError(participant_id=new_message.sender_id)
+                recipient: Optional[ParticipantDAO] = self._find_participant_sync(
+                    connection=connection, participant_id=new_message.recipient_id
                 )
                 if recipient is None:
-                    raise UnknownParticipantError(participant_id=new.recipient_id)
+                    raise UnknownParticipantError(participant_id=new_message.recipient_id)
                 if not recipient.admits_message_from(sender=sender):
-                    raise RecipientClosedError(participant_id=new.recipient_id)
+                    raise RecipientClosedError(participant_id=new_message.recipient_id)
 
                 agent_session_id: UUID = recipient.conversation_session_id(sender=sender)
                 next_message_index: int = self._next_message_index(
@@ -467,30 +468,30 @@ class ChannelRepository:
                 created_at: datetime = utc_now()
                 self._supersede_pending_message(
                     connection=connection,
-                    new_message=new,
+                    new_message=new_message,
                     recipient=recipient,
                     sender=sender,
                     created_at=created_at,
                 )
                 channel_message: ChannelMessageDAO = ChannelMessageDAO(
-                    id=new.id,
+                    id=new_message.id,
                     agent_session_id=agent_session_id,
                     sender_id=sender.id,
                     sender_name=sender.name,
                     recipient_id=recipient.id,
                     recipient_name=recipient.name,
-                    sent_at=new.sent_at,
+                    sent_at=new_message.sent_at,
                     accepted_at=None,
-                    message_contents=new.message_contents,
+                    message_contents=new_message.message_contents,
                     created_at=created_at,
                     message_index=next_message_index,
-                    forced_at=created_at if new.force else None,
-                    message_type=new.message_type,
-                    in_reply_to_id=new.in_reply_to_id,
-                    channel_id=new.channel_id,
+                    forced_at=created_at if new_message.force else None,
+                    message_type=new_message.message_type,
+                    in_reply_to_id=new_message.in_reply_to_id,
+                    channel_id=new_message.channel_id,
                     cancelled_at=None,
                     cancel_reason=None,
-                    coalesce_key=new.coalesce_key,
+                    coalesce_key=new_message.coalesce_key,
                 )
                 self._insert_message_row(connection=connection, channel_message=channel_message)
                 connection.commit()
@@ -499,7 +500,7 @@ class ChannelRepository:
                 connection.rollback()
                 raise
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
     @staticmethod
     def _next_message_index(*, connection: sqlite3.Connection, agent_session_id: UUID) -> int:
@@ -531,7 +532,7 @@ class ChannelRepository:
               AND accepted_at IS NULL AND cancelled_at IS NULL
             """,
             (
-                _stamp(created_at),
+                _format_utc_timestamp(created_at),
                 str(recipient.id),
                 str(sender.id),
                 new_message.coalesce_key,
@@ -557,12 +558,16 @@ class ChannelRepository:
                 channel_message.sender_name,
                 str(channel_message.recipient_id),
                 channel_message.recipient_name,
-                _stamp(channel_message.sent_at),
+                _format_utc_timestamp(channel_message.sent_at),
                 None,
                 channel_message.message_contents,
-                _stamp(channel_message.created_at),
+                _format_utc_timestamp(channel_message.created_at),
                 channel_message.message_index,
-                _stamp(channel_message.forced_at) if channel_message.forced_at is not None else None,
+                (
+                    _format_utc_timestamp(channel_message.forced_at)
+                    if channel_message.forced_at is not None
+                    else None
+                ),
                 channel_message.message_type,
                 str(channel_message.in_reply_to_id) if channel_message.in_reply_to_id is not None else None,
                 str(channel_message.channel_id) if channel_message.channel_id is not None else None,
@@ -572,7 +577,7 @@ class ChannelRepository:
             ),
         )
 
-    async def pending_inbound(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
+    async def list_pending_inbound_messages(self, *, recipient_id: UUID) -> list[ChannelMessageDAO]:
         """Return unaccepted, uncancelled rows for one recipient (108.2 §4 ordering).
 
         Forced rows come first, then normal rows; each class stays FIFO by
@@ -595,9 +600,9 @@ class ChannelRepository:
             ).fetchall()
             return [_message_from_row(row=message_row) for message_row in message_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def pending_outbound(self, *, recipient_ids: list[UUID]) -> list[ChannelMessageDAO]:
+    async def list_pending_outbound_messages(self, *, recipient_ids: list[UUID]) -> list[ChannelMessageDAO]:
         """Return unaccepted, uncancelled rows addressed to any of the recipients.
 
         Args:
@@ -621,7 +626,7 @@ class ChannelRepository:
             ).fetchall()
             return [_message_from_row(row=message_row) for message_row in message_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def accept(self, *, message_id: UUID) -> bool:
         """Stamp ``accepted_at`` exactly once.
@@ -641,12 +646,12 @@ class ChannelRepository:
                 UPDATE messages SET accepted_at = ?
                 WHERE id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
                 """,
-                (_stamp(utc_now()), str(message_id)),
+                (_format_utc_timestamp(utc_now()), str(message_id)),
             )
             connection.commit()
             return update_cursor.rowcount == 1
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
     async def cancel(self, *, message_id: UUID, reason: str) -> bool:
         """Cancel a row that has not been accepted yet.
@@ -667,12 +672,12 @@ class ChannelRepository:
                 UPDATE messages SET cancelled_at = ?, cancel_reason = ?
                 WHERE id = ? AND accepted_at IS NULL AND cancelled_at IS NULL
                 """,
-                (_stamp(utc_now()), reason, str(message_id)),
+                (_format_utc_timestamp(utc_now()), reason, str(message_id)),
             )
             connection.commit()
             return update_cursor.rowcount == 1
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
     async def force(self, *, message_id: UUID) -> bool:
         """Stamp ``forced_at`` on a pending prompt row (108.2).
@@ -699,29 +704,29 @@ class ChannelRepository:
                 WHERE id = ? AND message_type = 'prompt'
                   AND accepted_at IS NULL AND cancelled_at IS NULL
                 """,
-                (_stamp(utc_now()), str(message_id)),
+                (_format_utc_timestamp(utc_now()), str(message_id)),
             )
             connection.commit()
             return update_cursor.rowcount == 1
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
-    async def get(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+    async def find_message(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
         """Return one message row by id.
 
         Args:
             message_id (UUID): Message to look up.
 
         Returns:
-            Optional[ChannelMessageDAO]: The stored row, or ``None``.
+            Optional[ChannelMessageDAO]: The stored message, or ``None``.
         """
 
         def _query(connection: sqlite3.Connection) -> Optional[ChannelMessageDAO]:
-            return self._get_sync(connection=connection, message_id=message_id)
+            return self._find_message_sync(connection=connection, message_id=message_id)
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def conversation(
+    async def list_conversation_messages(
         self,
         *,
         agent_session_id: UUID,
@@ -750,9 +755,31 @@ class ChannelRepository:
             ).fetchall()
             return [_message_from_row(row=message_row) for message_row in message_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def close_agent_atomic(self, *, participant_id: UUID, reason: str) -> int:
+    async def close_user(self, *, participant_id: UUID) -> None:
+        """Mark a user absent without settling any messages in either direction.
+
+        Called through the gateway when a channel adapter stops. Repeated
+        closure and unknown ids are harmless; agent lifecycle is separate.
+
+        Args:
+            participant_id (UUID): User participant whose adapter stopped.
+        """
+
+        def _write(connection: sqlite3.Connection) -> None:
+            """Persist user presence without modifying the durable inbox."""
+            connection.execute(
+                "UPDATE participants SET status = 'closed' WHERE id = ? AND kind = 'user'",
+                (str(participant_id),),
+            )
+            connection.commit()
+
+        await self._execute_database_operation(_write)
+
+    async def close_agent_and_cancel_ineligible_pending_messages(
+        self, *, participant_id: UUID, reason: str
+    ) -> int:
         """Close one agent participant and cancel its pending inbound rows atomically.
 
         Both writes happen in one ``BEGIN IMMEDIATE`` transaction (108.3 §2):
@@ -783,7 +810,7 @@ class ChannelRepository:
                     "UPDATE participants SET status = 'closed' WHERE id = ?",
                     (str(participant_id),),
                 )
-                closed_participant: Optional[ParticipantDAO] = self._get_participant_sync(
+                closed_participant: Optional[ParticipantDAO] = self._find_participant_sync(
                     connection=connection, participant_id=participant_id
                 )
                 if closed_participant is None:
@@ -798,7 +825,7 @@ class ChannelRepository:
                     """,
                     (str(participant_id),),
                 ).fetchall()
-                cancellation_stamp: str = _stamp(utc_now())
+                cancellation_stamp: str = _format_utc_timestamp(utc_now())
                 pending_cancellations: list[tuple[str, str, str]] = [
                     (cancellation_stamp, reason, str(sender_row["message_id"]))
                     for sender_row in sender_rows
@@ -819,7 +846,7 @@ class ChannelRepository:
                 connection.rollback()
                 raise
 
-        return await self._run(_write)
+        return await self._execute_database_operation(_write)
 
     async def count_participants(self) -> int:
         """Count stored participants.
@@ -834,7 +861,7 @@ class ChannelRepository:
             ).fetchone()
             return int(count_row["participant_count"])
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def list_agents(self, *, open_only: bool) -> list[ParticipantDAO]:
         """Return agent participants, most recently seen first (108.5 ``slo channel agents``).
@@ -857,7 +884,7 @@ class ChannelRepository:
             ).fetchall()
             return [_participant_from_row(row=participant_row) for participant_row in participant_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def agents_with_id_prefix(self, *, prefix: str) -> list[ParticipantDAO]:
         """Return every agent participant whose id text starts with ``prefix``.
@@ -882,7 +909,7 @@ class ChannelRepository:
             ).fetchall()
             return [_participant_from_row(row=participant_row) for participant_row in participant_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def channel_users(self, *, channel_id: UUID) -> list[ParticipantDAO]:
         """Return the user participants who talk through one channel.
@@ -904,9 +931,9 @@ class ChannelRepository:
             ).fetchall()
             return [_participant_from_row(row=participant_row) for participant_row in participant_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def get_channel(self, *, channel_id: UUID) -> Optional[ChannelDAO]:
+    async def find_channel(self, *, channel_id: UUID) -> Optional[ChannelDAO]:
         """Return one channel row by id.
 
         Args:
@@ -927,11 +954,11 @@ class ChannelRepository:
                 id=UUID(channel_row["id"]),
                 kind=channel_row["kind"],
                 name=channel_row["name"],
-                created_at=_parse(channel_row["created_at"]),
-                last_seen_at=_parse(channel_row["last_seen_at"]),
+                created_at=_parse_utc_timestamp(channel_row["created_at"]),
+                last_seen_at=_parse_utc_timestamp(channel_row["last_seen_at"]),
             )
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def last_message_index(self, *, agent_session_id: UUID) -> int:
         """Return the highest ``message_index`` of one conversation (0 when empty).
@@ -951,7 +978,7 @@ class ChannelRepository:
             ).fetchone()
             return int(message_index_row["message_index"])
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def heartbeat_channel(self, *, channel_id: UUID) -> None:
         """Refresh a channel's ``last_seen_at`` (adapter heartbeat, 108.5 host).
@@ -963,11 +990,11 @@ class ChannelRepository:
         def _write(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "UPDATE channels SET last_seen_at = ? WHERE id = ?",
-                (_stamp(utc_now()), str(channel_id)),
+                (_format_utc_timestamp(utc_now()), str(channel_id)),
             )
             connection.commit()
 
-        await self._run(_write)
+        await self._execute_database_operation(_write)
 
     async def column_names(self, *, table: str) -> list[tuple[str, str]]:
         """Return ``(name, declared_type)`` for one table's columns (test support).
@@ -989,7 +1016,7 @@ class ChannelRepository:
             column_rows: list[sqlite3.Row] = connection.execute(f"PRAGMA table_info({table})").fetchall()
             return [(str(column_row["name"]), str(column_row["type"])) for column_row in column_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     async def index_names(self) -> set[str]:
         """Return the names of indexes in the database (test support).
@@ -1004,9 +1031,9 @@ class ChannelRepository:
             ).fetchall()
             return {str(index_row["name"]) for index_row in index_rows}
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def recent_sent_messages(
+    async def list_recent_sent_messages(
         self,
         *,
         sender_id: UUID,
@@ -1038,9 +1065,9 @@ class ChannelRepository:
             ).fetchall()
             return [_message_from_row(row=message_row) for message_row in message_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def recent_notes_to(self, *, recipient_id: UUID, limit: int = 5) -> list[ChannelMessageDAO]:
+    async def list_recent_notes_to(self, *, recipient_id: UUID, limit: int = 5) -> list[ChannelMessageDAO]:
         """Return the newest ``note`` rows addressed to one participant, newest first.
 
         The workflow modal shows these for the agent it views (108.4 C3), for
@@ -1066,9 +1093,9 @@ class ChannelRepository:
             ).fetchall()
             return [_message_from_row(row=message_row) for message_row in message_rows]
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
-    async def reply_for(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
+    async def find_reply(self, *, message_id: UUID) -> Optional[ChannelMessageDAO]:
         """Return the earliest reply row answering one message, regardless of delivery state.
 
         Pending replies are returned so ``wait_for_reply`` can deliver them;
@@ -1092,7 +1119,7 @@ class ChannelRepository:
             ).fetchone()
             return _message_from_row(row=reply_row) if reply_row is not None else None
 
-        return await self._run(_query)
+        return await self._execute_database_operation(_query)
 
     # ---- internal ---------------------------------------------------------
 
@@ -1121,7 +1148,7 @@ class ChannelRepository:
                       WHERE dependent.in_reply_to_id = messages.id
                   )
                 """,
-                (_stamp(cutoff),),
+                (_format_utc_timestamp(cutoff),),
             )
             if delete_cursor.rowcount == 0:
                 return
@@ -1332,7 +1359,9 @@ class ChannelRepository:
             if self._worker is worker:
                 self._worker = None
 
-    def _get_sync(self, *, connection: sqlite3.Connection, message_id: UUID) -> Optional[ChannelMessageDAO]:
+    def _find_message_sync(
+        self, *, connection: sqlite3.Connection, message_id: UUID
+    ) -> Optional[ChannelMessageDAO]:
         """Read one message row on the worker thread (caller holds the lock).
 
         Args:
@@ -1340,7 +1369,7 @@ class ChannelRepository:
             message_id (UUID): Message to look up.
 
         Returns:
-            Optional[ChannelMessageDAO]: The stored row, or ``None``.
+            Optional[ChannelMessageDAO]: The stored message, or ``None``.
         """
         message_row: Optional[sqlite3.Row] = connection.execute(
             f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE id = ?",
@@ -1348,7 +1377,7 @@ class ChannelRepository:
         ).fetchone()
         return _message_from_row(row=message_row) if message_row is not None else None
 
-    def _get_participant_sync(
+    def _find_participant_sync(
         self, *, connection: sqlite3.Connection, participant_id: UUID
     ) -> Optional[ParticipantDAO]:
         """Read one participant row on the worker thread (caller holds the lock).
@@ -1358,7 +1387,7 @@ class ChannelRepository:
             participant_id (UUID): Participant to look up.
 
         Returns:
-            Optional[ParticipantDAO]: The stored row, or ``None``.
+            Optional[ParticipantDAO]: The stored participant, or ``None``.
         """
         participant_row: Optional[sqlite3.Row] = connection.execute(
             f"SELECT {_PARTICIPANT_COLUMNS} FROM participants WHERE id = ?",
@@ -1366,7 +1395,7 @@ class ChannelRepository:
         ).fetchone()
         return _participant_from_row(row=participant_row) if participant_row is not None else None
 
-    async def _run(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
+    async def _execute_database_operation(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
         """Run one SQLite operation admitted before any concurrent close.
 
         The lifecycle lock orders operation submission against close: operations
@@ -1391,11 +1420,15 @@ class ChannelRepository:
             worker: Optional[ThreadPoolExecutor] = self._worker
             if self._connection is None or worker is None:
                 raise RuntimeError("ChannelRepository is not open.")
-            operation_future: asyncio.Future[_T] = loop.run_in_executor(worker, self._run_locked, operation)
+            operation_future: asyncio.Future[_T] = loop.run_in_executor(
+                worker, self._execute_database_operation_with_connection_lock, operation
+            )
         return await operation_future
 
-    def _run_locked(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
-        """Run one submitted operation while owning the connection lock."""
+    def _execute_database_operation_with_connection_lock(
+        self, operation: Callable[[sqlite3.Connection], _T]
+    ) -> _T:
+        """Run one submitted operation while holding the connection lock."""
         with self._connection_lock:
             connection: Optional[sqlite3.Connection] = self._connection
             if connection is None:
@@ -1403,7 +1436,7 @@ class ChannelRepository:
             return operation(connection)
 
 
-def _stamp(value: datetime) -> str:
+def _format_utc_timestamp(value: datetime) -> str:
     """Format a UTC timestamp for storage.
 
     Args:
@@ -1417,7 +1450,7 @@ def _stamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def _parse(value: str) -> datetime:
+def _parse_utc_timestamp(value: str) -> datetime:
     """Parse a stored ISO-8601 timestamp back to UTC.
 
     Args:
@@ -1448,8 +1481,8 @@ def _participant_from_row(*, row: sqlite3.Row) -> ParticipantDAO:
         channel_id=UUID(row["channel_id"]) if row["channel_id"] is not None else None,
         external_ref=row["external_ref"],
         status=row["status"],
-        last_seen_at=_parse(row["last_seen_at"]),
-        created_at=_parse(row["created_at"]),
+        last_seen_at=_parse_utc_timestamp(row["last_seen_at"]),
+        created_at=_parse_utc_timestamp(row["created_at"]),
         durable_inbox=bool(row["durable_inbox"]),
     )
 
@@ -1470,16 +1503,16 @@ def _message_from_row(*, row: sqlite3.Row) -> ChannelMessageDAO:
         sender_name=row["sender_name"],
         recipient_id=UUID(row["recipient_id"]),
         recipient_name=row["recipient_name"],
-        sent_at=_parse(row["sent_at"]),
-        accepted_at=_parse(row["accepted_at"]) if row["accepted_at"] is not None else None,
+        sent_at=_parse_utc_timestamp(row["sent_at"]),
+        accepted_at=_parse_utc_timestamp(row["accepted_at"]) if row["accepted_at"] is not None else None,
         message_contents=row["message_contents"],
-        created_at=_parse(row["created_at"]),
+        created_at=_parse_utc_timestamp(row["created_at"]),
         message_index=int(row["message_index"]),
-        forced_at=_parse(row["forced_at"]) if row["forced_at"] is not None else None,
+        forced_at=_parse_utc_timestamp(row["forced_at"]) if row["forced_at"] is not None else None,
         message_type=row["message_type"],
         in_reply_to_id=UUID(row["in_reply_to_id"]) if row["in_reply_to_id"] is not None else None,
         channel_id=UUID(row["channel_id"]) if row["channel_id"] is not None else None,
-        cancelled_at=_parse(row["cancelled_at"]) if row["cancelled_at"] is not None else None,
+        cancelled_at=_parse_utc_timestamp(row["cancelled_at"]) if row["cancelled_at"] is not None else None,
         cancel_reason=row["cancel_reason"],
         coalesce_key=row["coalesce_key"],
     )

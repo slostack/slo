@@ -40,7 +40,7 @@ def _observe_mr116_selection(request: pytest.FixtureRequest) -> Iterator[None]:
     """
     target = (
         "tests/tui/test_selection_scroll_highlight.py::TestPilotVisibleSelection::"
-        "test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme[slo-dark-answer]"
+        "test_selection_paint_and_scroll_remain_native_for_every_visible_body_and_theme[slo-default-answer]"
     )
     if os.environ.get("SLO_TEST_SELECTION_OBSERVER") != "1" or request.node.nodeid != target:
         yield

@@ -335,7 +335,7 @@ async def test_trigger_then_tick_delivers_exactly_once(
             )
             assert delivered.status == "delivered"
             assert delivered.channel_message_id == invocation_id
-        rows = await gateway.pending_inbound(
+        rows = await gateway.list_pending_inbound_messages(
             recipient_id=channel_participant_id_for_session(session_id=session_id)
         )
         assert [row.id for row in rows] == [invocation_id]

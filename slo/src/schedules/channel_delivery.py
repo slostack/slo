@@ -89,7 +89,7 @@ class ScheduleChannelSender:
             Optional[ChannelMessageDAO]: The stored channel row, or None when the
                 send never happened.
         """
-        return await self._gateway.get(message_id=invocation_id)
+        return await self._gateway.find_message(message_id=invocation_id)
 
     async def _register_schedule_sender(self, *, schedule_id: str, schedule_name: str) -> ParticipantDAO:
         """Register the shared scheduler channel and this schedule's sender participant.

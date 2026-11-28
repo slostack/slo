@@ -1,14 +1,22 @@
-/* src/tui/components/prompt_input/css.tcss
- *
- * The prompt editor is framed only by two horizontal accent rules (top and
- * bottom); no side edges or corners, in focused and unfocused states.
- * Colours resolve through the active Textual theme via $surface / $accent.
- */
+/* Horizontal rules only; colours come from the theme's prompt-border tokens
+ * (slo-dark uses the user-message "You" colour, slo-default quiet rule/accent). */
 
-PromptInputComponent, PromptInputComponent:focus {
+PromptInputComponent {
     border: none;
-    border-top: solid $accent;
-    border-bottom: solid $accent;
+    border-top: solid $prompt-border;
+    border-bottom: solid $prompt-border;
+    background: $surface;
+    height: auto;
+    min-height: 3;
+    max-height: 17;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+PromptInputComponent:focus {
+    border: none;
+    border-top: solid $prompt-border-focus;
+    border-bottom: solid $prompt-border-focus;
     background: $surface;
     height: auto;
     min-height: 3;

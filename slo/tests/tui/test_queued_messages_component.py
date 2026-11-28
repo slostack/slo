@@ -20,6 +20,7 @@ from textual.app import App, ComposeResult
 from src.channels.dao import ChannelMessageDAO
 from src.channels.gateway import ChannelGateway
 from src.channels.repository import ChannelRepository
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.components.queued_messages.component import QueuedMessagesComponent
 from src.tui.components.queued_messages.commands import ClearQueuedDAO, ShowQueuedDAO
 
@@ -45,6 +46,8 @@ class _QueueHost(App):
                 component once the app (and its theme variables) exist.
         """
         super().__init__()
+        self.register_theme(SLO_DEFAULT_THEME)
+        self.theme = SLO_DEFAULT_THEME.name
         self._factory = factory
         self._cancelled: list[UUID] = []
 

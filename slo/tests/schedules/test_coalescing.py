@@ -168,7 +168,7 @@ async def test_newer_invocation_supersedes_older_pending_row_with_same_key(
     assert first.cancelled_at is not None
     assert first.cancel_reason == "superseded"
     assert second.cancelled_at is None
-    pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+    pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 1
@@ -200,7 +200,7 @@ async def test_no_supersede_without_key_or_after_acceptance(
     assert second.status == "delivered"
     assert first.cancelled_at is None
     assert second.cancelled_at is None
-    pending: list[ChannelMessageDAO] = await gateway.pending_inbound(
+    pending: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 2

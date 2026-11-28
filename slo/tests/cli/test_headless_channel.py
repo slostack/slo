@@ -176,9 +176,11 @@ class TestWorkflowModeFollowUps:
             exit_code: int = await runner.invoke(prompt="do the workflow")
 
             assert exit_code == 0
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=prompt.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
             assert stored is not None and stored.accepted_at is not None
-            replies: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            replies: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert len(replies) == 1
             reply: ChannelMessageDAO = replies[0]
             assert reply.message_type == "reply"
@@ -186,9 +188,9 @@ class TestWorkflowModeFollowUps:
             assert reply.message_contents == "follow-up answer"
             assert reply.sender_id == agent.id
             # W is closed and its pending rows are gone once the follow-ups ran.
-            closed = await gateway.get_participant(participant_id=agent.id)
+            closed = await gateway.find_participant(participant_id=agent.id)
             assert closed is not None and closed.status == "closed"
-            assert await gateway.pending_inbound(recipient_id=agent.id) == []
+            assert await gateway.list_pending_inbound_messages(recipient_id=agent.id) == []
             # The terminal notification used the LAST run's final text.
             assert [name for name, _kwargs in notifier.calls] == ["started", "completed"]
             assert notifier.calls[-1][1]["synthesis"] == "follow-up answer"
@@ -265,7 +267,7 @@ class TestSendCloseRace:
                 # Give the poller a tick to accept the row when it won the race.
                 await asyncio.sleep(0.02)
                 await poller.stop(reason=stop_reason)
-                stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=row.id)
+                stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=row.id)
                 assert stored is not None
                 assert stored.accepted_at is not None or (
                     stored.cancelled_at is not None and stored.cancel_reason == stop_reason
@@ -318,13 +320,13 @@ class TestSendCloseRaceAcrossConnections:
                 if sent is None:
                     outcomes["refused"] += 1
                     continue
-                stored: Optional[ChannelMessageDAO] = await sender_side.get(message_id=sent.id)
+                stored: Optional[ChannelMessageDAO] = await sender_side.find_message(message_id=sent.id)
                 assert stored is not None
                 assert stored.accepted_at is not None or (
                     stored.cancelled_at is not None and stored.cancel_reason == "recipient_closed"
                 ), f"iteration {iteration}: row left pending"
                 outcomes["cancelled_by_close"] += 1
-                assert await sender_side.pending_inbound(recipient_id=workflow_id) == []
+                assert await sender_side.list_pending_inbound_messages(recipient_id=workflow_id) == []
             assert sum(outcomes.values()) == 100
             assert outcomes["refused"] > 0 and outcomes["cancelled_by_close"] > 0, outcomes
         finally:
@@ -452,7 +454,7 @@ class TestFollowUpTurnIdentity:
             assert await runner.invoke(prompt="do the workflow") == 0
 
             assert await _user_message_channel_ids(session=session) == [str(prompt.id)]
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=prompt.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
             assert stored is not None and stored.accepted_at is not None
             lines: list[dict[str, object]] = [json.loads(line) for line in output.getvalue().splitlines()]
             marker_index: int = next(
@@ -491,9 +493,11 @@ class TestFollowUpTurnIdentity:
 
             assert exit_code == 1
             assert await _user_message_channel_ids(session=session) == [str(prompt.id)]
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=prompt.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
             assert stored is not None and stored.accepted_at is not None
-            replies: list[ChannelMessageDAO] = await gateway.pending_outbound(recipient_ids=[user.id])
+            replies: list[ChannelMessageDAO] = await gateway.list_pending_outbound_messages(
+                recipient_ids=[user.id]
+            )
             assert [reply.in_reply_to_id for reply in replies] == [prompt.id]
             assert replies[0].message_contents not in ("", "(no response)")
             assert [name for name, _kwargs in notifier.calls] == ["started", "failed"]
@@ -532,12 +536,12 @@ class TestFollowUpTurnIdentity:
             )
             assert await runner.invoke(prompt="do the workflow") == 0
 
-            stored: Optional[ChannelMessageDAO] = await gateway.get(message_id=prompt.id)
+            stored: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=prompt.id)
             assert stored is not None
             assert stored.accepted_at is None
             assert stored.cancel_reason == "start_failed"
             assert await _user_message_channel_ids(session=session) == []
-            assert await gateway.pending_outbound(recipient_ids=[user.id]) == []
+            assert await gateway.list_pending_outbound_messages(recipient_ids=[user.id]) == []
         finally:
             await gateway.close()
 
@@ -603,11 +607,13 @@ class TestFollowUpSupervision:
             exit_code: int = await asyncio.wait_for(run, timeout=10.0)
 
             assert exit_code == 2
-            stored_blocked: Optional[ChannelMessageDAO] = await gateway.get(message_id=blocked.id)
+            stored_blocked: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=blocked.id)
             assert stored_blocked is not None and stored_blocked.accepted_at is not None
-            stored_behind: Optional[ChannelMessageDAO] = await gateway.get(message_id=queued_behind.id)
+            stored_behind: Optional[ChannelMessageDAO] = await gateway.find_message(
+                message_id=queued_behind.id
+            )
             assert stored_behind is not None and stored_behind.cancel_reason == "aborted"
-            closed: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=agent.id)
+            closed: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=agent.id)
             assert closed is not None and closed.status == "closed"
             assert [name for name, _kwargs in notifier.calls] == ["started", "aborted"]
             status: dict[str, object] = json.loads(
@@ -717,12 +723,14 @@ class TestPoolChildChannelMode:
             run: asyncio.Task[int] = asyncio.create_task(runner.invoke(prompt="review the slice"))
             await asyncio.wait_for(model.second_call_entered.wait(), timeout=10.0)
 
-            child: Optional[ParticipantDAO] = await gateway.get_participant(
+            child: Optional[ParticipantDAO] = await gateway.find_participant(
                 participant_id=UUID(child_session_id)
             )
             assert child is not None and child.status == "open"
             assert child.name == f"review-1 (child of {str(parent.id)[:8]})"
-            notes: list[ChannelMessageDAO] = await gateway.pending_inbound(recipient_id=parent.id)
+            notes: list[ChannelMessageDAO] = await gateway.list_pending_inbound_messages(
+                recipient_id=parent.id
+            )
             assert [(note.message_type, note.sender_name, note.message_contents) for note in notes] == [
                 ("note", child.name, "question: is src/tui/widgets in scope?")
             ]
@@ -758,11 +766,11 @@ class TestPoolChildChannelMode:
             assert exit_code == 0
             assert len(model.recorded_contexts) == 3
             assert model.recorded_contexts[2].count("also check tests") == 1
-            stored_forced: Optional[ChannelMessageDAO] = await gateway.get(message_id=forced.id)
+            stored_forced: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=forced.id)
             assert stored_forced is not None and stored_forced.accepted_at is not None
-            stored_late: Optional[ChannelMessageDAO] = await gateway.get(message_id=late_normal.id)
+            stored_late: Optional[ChannelMessageDAO] = await gateway.find_message(message_id=late_normal.id)
             assert stored_late is not None and stored_late.cancel_reason == "recipient_closed"
-            closed: Optional[ParticipantDAO] = await gateway.get_participant(participant_id=child.id)
+            closed: Optional[ParticipantDAO] = await gateway.find_participant(participant_id=child.id)
             assert closed is not None and closed.status == "closed"
         finally:
             await gateway.close()

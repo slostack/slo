@@ -11,7 +11,7 @@ AbortConfirmationScreen {
     height: auto;
     max-height: 100%;
     background: $surface;
-    border: round $warning;
+    border: solid $warning;
     padding: 1 2;
 }
 
@@ -21,6 +21,11 @@ AbortConfirmationScreen {
 }
 
 #confirm-box .heading {
+    color: $warning;
+    text-style: bold;
+}
+
+#confirm-box #confirm-child {
     color: $accent;
     text-style: bold;
 }

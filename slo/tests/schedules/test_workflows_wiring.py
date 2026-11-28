@@ -288,7 +288,7 @@ async def test_scheduled_tick_delivers_under_engine(engine_stores: EngineStoresD
             row = None
             for _ in range(120):
                 await asyncio.sleep(0.5)
-                rows = await gateway.pending_inbound(recipient_id=recipient)
+                rows = await gateway.list_pending_inbound_messages(recipient_id=recipient)
                 if rows:
                     row = rows[0]
                     break
@@ -403,7 +403,7 @@ async def test_worker_delivery_resolves_session_name_and_persists_recipient(
     gateway = ChannelGateway(repository=ChannelRepository(db_path=tmp_path / "channels.db"))
     await gateway.open()
     try:
-        rows = await gateway.pending_inbound(recipient_id=UUID(session_id))
+        rows = await gateway.list_pending_inbound_messages(recipient_id=UUID(session_id))
         assert len(rows) == 1
         assert rows[0].message_contents == "named delivery prompt"
     finally:

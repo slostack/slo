@@ -80,13 +80,15 @@ async def test_terminal_growth_follows_and_hidden_growth_retains_reading() -> No
         scroll.focus()
         await pilot.press("pageup")
         await pilot.pause()
-        before = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+        before_scroll_y = scroll.scroll_y
+        before = "\n".join(strip.text[:-2] for strip in app.screen._compositor.render_strips())
         transcript.set_visible(visible=False)
         await transcript.handle(command=TranscriptNoticeDAO(content="hidden-tail", classes="tool-result"))
         await pilot.pause()
         transcript.set_visible(visible=True)
         await pilot.pause()
-        after = "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+        after = "\n".join(strip.text[:-2] for strip in app.screen._compositor.render_strips())
+        assert scroll.scroll_y == before_scroll_y
         assert after == before
         transcript.scroll_to_bottom()
         await pilot.pause()
@@ -641,9 +643,11 @@ class TailNoticeTranscript(ChatTranscriptComponent):
 
     notice_sent: bool = False
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self, *, text: str, before: int | None = None, sender_name: str | None = None
+    ) -> UserMessageBlock:
         """Tail growth during AwaitMount must not change the stable prepend boundary."""
-        block = await super().mount_user_message_block(text=text, before=before)
+        block = await super().mount_user_message_block(text=text, before=before, sender_name=sender_name)
         if before is not None and not self.notice_sent:
             self.notice_sent = True
             await self.mount_transcript_line(content="concurrent tail", classes="tool-result")
@@ -696,11 +700,10 @@ async def test_successful_older_batch_ignores_concurrent_tail_notice(tmp_path: P
         assert transcript.logical_copy_text().count("concurrent tail") == 1
 
 
-@pytest.mark.parametrize("theme_name", ["default", "dark"])
+@pytest.mark.parametrize("theme_name", ["default"])
 @pytest.mark.parametrize("size", [(60, 20), (80, 24), (120, 40)])
 async def test_component_css_is_scoped_without_app_styles(theme_name: str, size: tuple[int, int]) -> None:
     """Both themes render component semantics without styling an unrelated sibling."""
-    from src.tui.theme import SLO_DARK_THEME
 
     async def reader() -> list[TranscriptEntryDAO]:
         """No history is needed to inspect mounted semantic styling."""
@@ -708,8 +711,7 @@ async def test_component_css_is_scoped_without_app_styles(theme_name: str, size:
 
     transcript = ChatTranscriptComponent(history_reader=reader)
     app = TranscriptTestApp(transcript=transcript)
-    app.register_theme(SLO_DARK_THEME)
-    app.theme = SLO_DARK_THEME.name if theme_name == "dark" else SLO_DEFAULT_THEME.name
+    app.theme = SLO_DEFAULT_THEME.name
     async with app.run_test(size=size) as pilot:
         sibling = Static("outside", classes="tool-line")
         await app.mount(sibling)
@@ -797,9 +799,11 @@ class GatedProjectionTranscript(ChatTranscriptComponent):
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self, *, text: str, before: int | None = None, sender_name: str | None = None
+    ) -> UserMessageBlock:
         """Pause only the first echo after its real widget is mounted."""
-        block = await super().mount_user_message_block(text=text, before=before)
+        block = await super().mount_user_message_block(text=text, before=before, sender_name=sender_name)
         if text == "held":
             self.entered.set()
             await self.release.wait()

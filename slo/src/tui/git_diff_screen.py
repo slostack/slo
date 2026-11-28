@@ -18,7 +18,7 @@ class GitDiffScreen(Screen[None]):
 
     DEFAULT_CSS = """
     GitDiffScreen { layout: vertical; }
-    GitDiffScreen .git-diff-summary { width: 100%; height: auto; padding: 0 1; color: $text-muted; border-bottom: solid $accent; }
+    GitDiffScreen .git-diff-summary { width: 100%; height: auto; padding: 0 1; color: $text-muted; border-bottom: solid $border-hairline; }
     GitDiffScreen .git-diff-controls { width: 100%; height: auto; padding: 0 1; color: $text-muted; }
     GitDiffScreen #git-diff-scroll { width: 100%; height: 1fr; overflow-x: auto; overflow-y: auto; }
     GitDiffScreen .git-diff-view { width: 100%; height: auto; }

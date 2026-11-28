@@ -209,7 +209,7 @@ async def test_deliver_sends_the_prompt_and_marks_delivered(
     assert result.status == "delivered"
     assert result.channel_message_id == invocation_id
     assert result.delivered_at == now
-    pending = await gateway.pending_inbound(
+    pending = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 1
@@ -232,7 +232,7 @@ async def test_deliver_is_replayed_without_a_second_send(
     replayed = await deliver.invoke(invocation_id=invocation_id, now=now + timedelta(seconds=1))
 
     assert replayed.status == "delivered"
-    pending = await gateway.pending_inbound(
+    pending = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 1
@@ -255,7 +255,7 @@ async def test_crash_recovery_marks_delivered_without_a_second_send(
     result = await deliver.invoke(invocation_id=invocation_id, now=now + timedelta(seconds=1))
 
     assert result.status == "delivered"
-    pending = await gateway.pending_inbound(
+    pending = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 1
@@ -278,7 +278,7 @@ async def test_disabled_schedule_is_skipped_without_a_channel_row(
     assert result.status == "skipped"
     assert result.skip_reason == "schedule_disabled"
     assert result.channel_message_id is None
-    pending = await gateway.pending_inbound(
+    pending = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 0
@@ -327,7 +327,7 @@ async def test_fresh_session_mode_starts_a_fresh_run(
     assert result.status == "completed"
     assert result.run_exit_code == 0
     assert len(fresh_runs.calls) == 1
-    pending = await gateway.pending_inbound(
+    pending = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 0
@@ -382,7 +382,7 @@ async def test_unknown_session_reference_fails_without_a_channel_row(
 
     assert result.status == "failed"
     assert result.failure_reason == "unknown_session_reference"
-    pending = await gateway.pending_inbound(
+    pending = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(pending) == 0
@@ -697,7 +697,7 @@ async def test_session_name_resolves_to_session_id_before_send(
 
     assert result.status == "delivered"
     assert result.recipient_session_id == _SESSION_ID
-    rows = await gateway.pending_inbound(
+    rows = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(rows) == 1
@@ -725,7 +725,7 @@ async def test_late_redelivery_after_crash_marks_delivered_not_misfire(
     assert result.status == "delivered"
     assert result.skip_reason is None
     assert result.channel_message_id == invocation_id
-    rows = await gateway.pending_inbound(
+    rows = await gateway.list_pending_inbound_messages(
         recipient_id=channel_participant_id_for_session(session_id=_SESSION_ID)
     )
     assert len(rows) == 1, "no second channel row for the crashed send"
@@ -764,10 +764,10 @@ async def test_each_schedule_has_one_system_sender(harness: DeliverHarnessDAO) -
 
     gateway: ChannelGateway = harness.gateway
     repository = gateway.repository
-    first_participant = await repository.participant_by_external_ref(
+    first_participant = await repository.find_participant_by_external_ref(
         channel_id=SCHEDULER_CHANNEL_ID, external_ref=str(first.id)
     )
-    second_participant = await repository.participant_by_external_ref(
+    second_participant = await repository.find_participant_by_external_ref(
         channel_id=SCHEDULER_CHANNEL_ID, external_ref=str(second.id)
     )
     assert first_participant is not None

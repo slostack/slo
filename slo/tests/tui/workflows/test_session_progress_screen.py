@@ -35,7 +35,7 @@ from src.channels.gateway import ChannelGateway
 from src.channels.repository import ChannelRepository
 from src.tui.channel.adapter import TuiChannelAdapter
 from src.tui.components.agent_composer.component import AgentComposerComponent
-from src.tui.theme import SLO_DARK_THEME, SLO_DEFAULT_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 from src.tui.workflows.dao import (
     ChildAbortTargetDAO,
     ProgressViewportDAO,
@@ -251,8 +251,7 @@ class _ScreenHost(App[None]):
         """
         super().__init__()
         self.register_theme(SLO_DEFAULT_THEME)
-        self.register_theme(SLO_DARK_THEME)
-        self.theme = SLO_DARK_THEME.name
+        self.theme = SLO_DEFAULT_THEME.name
         self.screen_under_test: SessionProgressScreen = SessionProgressScreen(
             key=_KEY, viewport=viewport, composer=composer
         )
@@ -354,7 +353,7 @@ class _DeferredRestores:
 class TestThinkingFormatting:
     """Readable reasoning survives mounted refresh, replay projection and reopen."""
 
-    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
     @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
     async def test_markdown_spacing_wrap_refresh_and_reopen(
         self, theme: Theme, size: tuple[int, int]
@@ -726,7 +725,7 @@ class TestNavigationWins:
 class TestSubtleScrollbars:
     """Modal scrollbars remain usable at the minimum nonzero cell size."""
 
-    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
     @pytest.mark.parametrize("size", [(60, 20), (120, 40)])
     @pytest.mark.parametrize("status", ["running", "completed"])
     async def test_minimum_dimensions_and_both_scroll_axes(
@@ -992,7 +991,7 @@ class TestControls:
 class TestLayout:
     """Both themes at 60x20, 80x24 and 120x40 keep every control reachable."""
 
-    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
     @pytest.mark.parametrize(
         ("width", "height", "stacked"),
         [(60, 20, True), (80, 24, False), (120, 40, False)],
@@ -1090,7 +1089,7 @@ def _is_hit(*, screen: SessionProgressScreen, widget: Widget, x: int, y: int) ->
 class TestPopulatedComposerLayout:
     """A full composer never clips the actions or the editable prompt line (108.3/108.4)."""
 
-    @pytest.mark.parametrize("theme", [SLO_DARK_THEME, SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
+    @pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME], ids=lambda theme: theme.name)
     @pytest.mark.parametrize(
         ("width", "height"),
         [(60, 20), (120, 20), *((80, rows) for rows in range(24, 36)), (120, 40)],

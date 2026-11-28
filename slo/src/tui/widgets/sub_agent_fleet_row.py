@@ -1,14 +1,16 @@
 """One literal row of the workflow session list (feature 94 a.2).
 
-``SubAgentFleetRow`` is a native ``ListItem`` holding one ``Static`` label. The
-stored ``WorkflowSessionRowDAO``, never the rendered text, supplies identity, so
-visual clipping cannot change which session a selection opens. The row has no
-execution logic and no authority: it only paints ``[status] session_id: task``.
+``SubAgentFleetRow`` is a native ``ListItem`` holding separate status glyph,
+status word, session, and task cells. The status word (``running``,
+``completed``…) is always shown so lifecycle never depends on colour alone. The stored ``WorkflowSessionRowDAO``, never the rendered text,
+supplies identity, so visual clipping cannot change the selected session. The
+row has no execution authority; it restyles the existing session/task data only.
 """
 
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.containers import Horizontal
 from textual.widgets import ListItem, Static
 
 from src.agents.slo_agent.orchestrator.task_preview import TASK_SUMMARY_FALLBACK
@@ -34,11 +36,21 @@ class SubAgentFleetRow(ListItem):
         """
         super().__init__()
         self.row: WorkflowSessionRowDAO = row
-        self._label: Static = Static(markup=False)
+        self._status_glyph: Static = Static(markup=False, classes="fleet-row-status")
+        self._status_word: Static = Static(markup=False, classes="fleet-row-status-word")
+        self._session_id: Static = Static(markup=False, classes="fleet-row-session fleet-row-meta")
+        self._task_label: Static = Static(markup=False, classes="fleet-row-task fleet-row-label")
+        self._row_content: Horizontal = Horizontal(
+            self._status_glyph,
+            self._status_word,
+            self._session_id,
+            self._task_label,
+            classes="fleet-row-content",
+        )
 
     def compose(self) -> ComposeResult:
-        """Yield the literal label during Textual composition."""
-        yield self._label
+        """Yield the row's status, identity and task cells in one line."""
+        yield self._row_content
 
     def on_mount(self) -> None:
         """Paint the initial row after its label is mounted."""
@@ -54,10 +66,14 @@ class SubAgentFleetRow(ListItem):
             row (WorkflowSessionRowDAO): Same-key replacement snapshot row.
         """
         self.row = row
-        self._label.update(content=f"[{row.status}] {row.key.session_id}: {self._task_label(row=row)}")
+        self._status_glyph.update(content=self._status_glyph_for_row(row=row))
+        self._status_word.update(content=row.status)
+        self._session_id.update(content=row.key.session_id + ": ")
+        self._task_label.update(content=self._task_label_for_row(row=row))
+        self._apply_status_color(row=row)
 
     @staticmethod
-    def _task_label(*, row: WorkflowSessionRowDAO) -> str:
+    def _task_label_for_row(*, row: WorkflowSessionRowDAO) -> str:
         """Choose the parent label or the safe capped task preview.
 
         Args:
@@ -70,3 +86,25 @@ class SubAgentFleetRow(ListItem):
         if row.role == "orchestrator":
             return ORCHESTRATOR_LABEL + (" [retained batch]" if row.retained_batch else "")
         return row.task_summary or TASK_SUMMARY_FALLBACK
+
+    @staticmethod
+    def _status_glyph_for_row(*, row: WorkflowSessionRowDAO) -> str:
+        """Return the mock's compact glyph without changing lifecycle data."""
+        if row.status == "running":
+            return "◍"
+        if row.status == "completed":
+            return "●"
+        if row.status in {"failed", "aborted"}:
+            return "✕"
+        return "·"
+
+    def _apply_status_color(self, *, row: WorkflowSessionRowDAO) -> None:
+        """Select a CSS status class; only the glyph receives its semantic color."""
+        self.remove_class("-running", "-completed", "-failed", "-aborted", "-idle")
+        status_class: str = {
+            "running": "-running",
+            "completed": "-completed",
+            "failed": "-failed",
+            "aborted": "-aborted",
+        }.get(row.status, "-idle")
+        self.add_class(status_class)

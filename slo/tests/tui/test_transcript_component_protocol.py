@@ -38,12 +38,14 @@ class HeldUserTranscript(ChatTranscriptComponent):
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def mount_user_message_block(self, *, text: str, before: int | None = None) -> UserMessageBlock:
+    async def mount_user_message_block(
+        self, *, text: str, before: int | None = None, sender_name: str | None = None
+    ) -> UserMessageBlock:
         """Delay only the first user mount, preserving the real Textual host."""
         if text == "held":
             self.entered.set()
             await self.release.wait()
-        return await super().mount_user_message_block(text=text, before=before)
+        return await super().mount_user_message_block(text=text, before=before, sender_name=sender_name)
 
 
 async def empty_history() -> list[TranscriptEntryDAO]:

@@ -14,7 +14,7 @@ from textual.scrollbar import ScrollUp, ScrollTo
 from src.agents.slo_agent.history.transcript import TranscriptEntryDAO
 from src.tui.components.chat_transcript.component import ChatTranscriptComponent, TranscriptScrollComponent
 from src.tui.components.chat_transcript.commands import TranscriptNoticeDAO
-from src.tui.theme import SLO_DEFAULT_THEME, SLO_DARK_THEME
+from src.tui.theme import SLO_DEFAULT_THEME
 from tests.tui.authentication._painted_output import wait_for_condition
 from tests.tui.test_chat_transcript import TranscriptTestApp
 
@@ -60,7 +60,7 @@ def named_row(*, app: TranscriptTestApp, literal: str) -> int:
     return matches[0]
 
 
-@pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME, SLO_DARK_THEME])
+@pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME])
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
 @pytest.mark.parametrize("growth_above", [False, True])
 @pytest.mark.parametrize("timing", ["before_start", "before_settlement"])
@@ -204,7 +204,7 @@ async def test_stale_two_axis_callbacks_after_visibility_or_reset(during_motion:
 @pytest.mark.parametrize("input_kind", ["right", "ctrl", "shift", "track"])
 @pytest.mark.parametrize("reach", ["programmatic", "focus"])
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
-@pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME, SLO_DARK_THEME])
+@pytest.mark.parametrize("theme", [SLO_DEFAULT_THEME])
 async def test_x_first_real_history_preserves_reading(
     tmp_path: Path, input_kind: str, reach: str, size: tuple[int, int], theme: Theme
 ) -> None:

@@ -173,6 +173,32 @@ def _wait_for(*, predicate: Any, timeout_seconds: float, message: str) -> None:
     raise AssertionError(message)
 
 
+def _wait_until_reaped(*, pid: int, timeout_seconds: float, message: str) -> None:
+    """Wait (bounded) until this process's killed child has fully exited.
+
+    A SIGKILLed multi-threaded worker's leader turns zombie (so it no longer
+    counts as live) while its other threads are still tearing down and still
+    hold the lifetime flock. Only the wait status proves every thread exited
+    and every descriptor closed. ``subprocess`` may reap the dropped child
+    first; then it has exited too.
+
+    Args:
+        pid (int): A worker this test process launched.
+        timeout_seconds (float): The bound.
+        message (str): The failure message.
+    """
+    deadline: float = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if reaped_pid == pid:
+            return
+        time.sleep(0.05)
+    raise AssertionError(message)
+
+
 # OPS111-01, OPS111-02, OPS111-07 -------------------------------------------------
 
 
@@ -276,15 +302,15 @@ def test_concurrent_creators_and_a_manual_worker_share_one_owner(tmp_path: Path)
             assert creator.returncode == 0, stderr
         launch_ids: set[str] = {json.loads(stdout)["worker"]["launch_id"] for stdout, _stderr in outputs}
         assert len(launch_ids) == 1, f"one worker generation, got {launch_ids}"
-        assert len(live_worker_pids(schedules_dir=roots.schedules_dir)) == 1
         metadata = read_worker_metadata(schedules_dir=roots.schedules_dir)
         assert metadata is not None and metadata["launch_id"] in launch_ids
-        if manual.poll() is not None:
-            _out, manual_err = manual.communicate(timeout=10)
+        if metadata["pid"] != manual.pid:
+            # A manual worker that lost may still be inside its bounded launch-lock
+            # and lifetime-lock waits when the last creator returns; it must end refused.
+            _out, manual_err = manual.communicate(timeout=60)
             assert manual.returncode == 1
             assert "already running" in manual_err
-        else:
-            assert metadata["pid"] == manual.pid, "the live manual worker is the one shared owner"
+        assert live_worker_pids(schedules_dir=roots.schedules_dir) == [metadata["pid"]]
         assert _schedule_rows(schedules_dir=roots.schedules_dir) == 4
     finally:
         if manual.poll() is None:
@@ -737,11 +763,8 @@ async def test_killed_worker_is_reported_stopped_and_restarted_without_waiting_f
     first = await runtime.start_or_reuse()
     assert first.pid is not None
     os.kill(first.pid, signal.SIGKILL)
-    _wait_for(
-        predicate=lambda: not live_worker_pids(schedules_dir=roots.schedules_dir),
-        timeout_seconds=10,
-        message="the killed worker never exited",
-    )
+    _wait_until_reaped(pid=first.pid, timeout_seconds=10, message="the killed worker never exited")
+    assert not live_worker_pids(schedules_dir=roots.schedules_dir)
 
     stopped = await runtime.inspect_health()
     assert stopped.state == "stopped"
